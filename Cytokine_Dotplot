@@ -1,0 +1,563 @@
+```{r, Load_Packages_and_Data}
+library(tidyverse)
+library(dplyr)
+library(ggpubr)
+library(arsenal)
+library(ggplot2)
+library(outliers)
+library(patchwork)
+library(rstatix)
+library(ggpattern)
+library(pheatmap)
+library(EnvStats)
+library(dunn.test)
+library(ARTool)
+library(emmeans)
+
+
+#LDH_TEER = read_csv("2023_LDHTEER_MJR1-191_4H.csv")
+#LDH_TEER$LDH <- as.numeric(LDH_TEER$LDH)
+# LDH_TEER %>% summary()
+
+#SALA_prelim = read_csv("SALA_082925_MJR.csv")
+
+SALA_highdose = read_csv("SALA_MSD_MJR.csv")
+
+metadata_SALA1_1152 = read_csv("2025_SALA1_1152_metadata.csv") 
+```
+
+
+```{r, CYTOKINE_DOTPLOT}
+# ============================================================
+# RUNNER SCRIPT: change ONE variable to switch exposure + output filenames
+# Styled to match reference figure
+# Uses cowplot instead of patchwork to avoid unit coercion error
+# Panel background = light tint of exposure color (NONE hormone)
+# Estradiol panels = light green always
+# Border/strip = deep exposure color
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(lme4)
+  library(emmeans)
+  library(scales)
+  library(grid)
+  library(cowplot)
+})
+
+# ----------------------------
+# USER SETTINGS (EDIT HERE)
+# ----------------------------
+target_exposure   <- "Peat 25"   # <<< CHANGE THIS
+pbs_level         <- "PBS Control"
+exclude_exposures <- c("Untreated Control", "Peat 5")
+
+zero_cutoff     <- 0.30
+pseudocount     <- 1e-6
+alpha           <- 0.1
+emmeans_weights <- "equal"
+
+out_dir <- "."
+
+# ----------------------------
+# Derived (auto)
+# ----------------------------
+safe_exposure <- gsub("^_|_$", "", gsub("[^A-Za-z0-9]+", "_", target_exposure))
+out_prefix    <- file.path(out_dir, paste0("log2fc_anysig_fixedY_", safe_exposure))
+
+# ----------------------------
+# Exposure color palette
+# ----------------------------
+exposure_colors_deep <- c(
+  "Pine 25"       = "#1B4F8A",     # dark blue
+  "Peat 25"       = "gold4",
+  "Eucalyptus 25" = "darkorchid3",
+  "Red Oak 25"    = "deeppink2"
+)
+
+exposure_colors_light <- c(
+  "Pine 25"       = "#D6E8F7",     # light blue
+  "Peat 25"       = "#FFF3B0",     # light gold
+  "Eucalyptus 25" = "#F0E6FA",     # light purple
+  "Red Oak 25"    = "#FFE6F0"      # light pink
+)
+
+# Estradiol panels always get light green regardless of exposure
+estradiol_fill <- "#E8F5E9"   # light green
+
+# Resolve colors for current exposure (fallback to Pine blue if not in palette)
+border_color    <- unname(exposure_colors_deep[target_exposure])
+if (is.na(border_color))  border_color  <- "#1B4F8A"
+
+panel_fill_none <- unname(exposure_colors_light[target_exposure])
+if (is.na(panel_fill_none)) panel_fill_none <- "#D6E8F7"
+
+strip_text_color <- "white"
+border_size      <- 1.2
+
+# ----------------------------
+# 0) Validate
+# ----------------------------
+stopifnot(exists("SALA_full"), is.data.frame(SALA_full))
+stopifnot(exists("cytokine_llod"), is.data.frame(cytokine_llod))
+stopifnot(exists("impute_lod_sqrt2"), is.function(impute_lod_sqrt2))
+stopifnot(all(c("Analyte", "LLOD") %in% names(cytokine_llod)))
+
+req_cols    <- c("SEX", "CELLTYPE", "HORMONE", "EXPOSURE", "PLATE", "PATIENTCODE")
+missing_req <- setdiff(req_cols, names(SALA_full))
+if (length(missing_req) > 0) stop("SALA_full missing: ", paste(missing_req, collapse = ", "))
+if (!pbs_level       %in% unique(SALA_full$EXPOSURE)) stop("pbs_level not found")
+if (!target_exposure %in% unique(SALA_full$EXPOSURE)) stop("target_exposure not found")
+
+cytokine_cols_all <- intersect(names(SALA_full), cytokine_llod$Analyte)
+if (length(cytokine_cols_all) == 0) stop("No cytokine columns found")
+
+# ----------------------------
+# 1) Impute
+# ----------------------------
+imp    <- impute_lod_sqrt2(input_data = SALA_full, cols = cytokine_cols_all,
+                           cytokine_llod = cytokine_llod, zero_cutoff = zero_cutoff)
+df_use <- imp$data
+
+# ----------------------------
+# 2) Helpers
+# ----------------------------
+add_rescaled_size <- function(df, value_col,
+                              clamp_quantile = 0.95,
+                              transform = c("sqrt", "log1p", "none"),
+                              out_col = "size_val") {
+  transform <- match.arg(transform)
+  mag  <- abs(df[[value_col]])
+  cap  <- stats::quantile(mag, probs = clamp_quantile, na.rm = TRUE, names = FALSE)
+  if (!is.finite(cap) || cap <= 0) cap <- max(mag, na.rm = TRUE)
+  mag2 <- pmin(mag, cap)
+  df[[out_col]] <- switch(transform, sqrt = sqrt(mag2), log1p = log1p(mag2), none = mag2)
+  df
+}
+
+compute_sig_only_color_limit <- function(df, value_col, sig_col, quantile_sig = 0.90) {
+  vals_sig <- df %>% filter(.data[[sig_col]]) %>% pull(.data[[value_col]])
+  vals_all <- df %>% pull(.data[[value_col]])
+  base <- if (length(vals_sig) > 0) vals_sig else vals_all
+  lim  <- stats::quantile(abs(base), probs = quantile_sig, na.rm = TRUE, names = FALSE)
+  if (!is.finite(lim) || lim <= 0) lim <- max(abs(vals_all), na.rm = TRUE)
+  lim
+}
+
+make_log2fc_long <- function(df, cytokine_cols, pbs_level,
+                             exclude_exposures = character(0), pseudocount = 1e-6) {
+  d <- df %>%
+    filter(!EXPOSURE %in% exclude_exposures) %>%
+    mutate(
+      SEX         = as.character(SEX),
+      CELLTYPE    = factor(CELLTYPE),
+      HORMONE     = factor(HORMONE),
+      EXPOSURE    = factor(EXPOSURE),
+      PLATE       = factor(PLATE),
+      PATIENTCODE = factor(PATIENTCODE)
+    )
+
+  long <- d %>%
+    pivot_longer(cols = all_of(cytokine_cols), names_to = "CYTOKINE", values_to = "VALUE") %>%
+    filter(!is.na(VALUE)) %>%
+    mutate(log2_val = log2(as.numeric(VALUE) + pseudocount))
+
+  pbs <- long %>%
+    filter(EXPOSURE == pbs_level) %>%
+    select(PATIENTCODE, PLATE, CELLTYPE, HORMONE, CYTOKINE, log2_pbs = log2_val)
+
+  long %>%
+    filter(EXPOSURE != pbs_level) %>%
+    left_join(pbs, by = c("PATIENTCODE", "PLATE", "CELLTYPE", "HORMONE", "CYTOKINE")) %>%
+    mutate(log2FC = log2_val - log2_pbs)
+}
+
+screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
+                                          ctrl_level = "PBS Control",
+                                          exclude_exposures = character(0),
+                                          pseudocount = 1e-6,
+                                          group = c("All", "F", "M"),
+                                          alpha = 0.1,
+                                          emmeans_weights = c("equal", "proportional")) {
+  group           <- match.arg(group)
+  emmeans_weights <- match.arg(emmeans_weights)
+
+  d0 <- df %>%
+    filter(!EXPOSURE %in% exclude_exposures,
+            EXPOSURE %in% c(ctrl_level, target_exposure))
+
+  if (group %in% c("F", "M")) d0 <- d0 %>% filter(as.character(SEX) == group)
+
+  d0 <- d0 %>%
+    mutate(EXPOSURE = factor(EXPOSURE), PLATE = factor(PLATE),
+           PATIENTCODE = factor(PATIENTCODE), CELLTYPE = factor(CELLTYPE),
+           HORMONE = factor(HORMONE))
+
+  if (ctrl_level %in% levels(d0$EXPOSURE))
+    d0$EXPOSURE <- relevel(d0$EXPOSURE, ref = ctrl_level)
+
+  has_empty <- function(dat) any(xtabs(~ PLATE + EXPOSURE, data = dat) == 0)
+
+  get_contrast <- function(fit) {
+    emm  <- emmeans(fit, ~ EXPOSURE, weights = emmeans_weights)
+    levs <- levels(emm@grid$EXPOSURE)
+    v    <- if (identical(levs, c(ctrl_level, target_exposure))) c(-1, 1) else c(1, -1)
+    contrast(emm, method = list(v), adjust = "none")
+  }
+
+  combos        <- d0 %>% distinct(CELLTYPE, HORMONE)
+  cytokine_cols <- intersect(cytokine_cols, names(d0))
+  out           <- list()
+
+  for (i in seq_len(nrow(combos))) {
+    ct   <- combos$CELLTYPE[i]
+    ho   <- combos$HORMONE[i]
+    dsub <- d0 %>% filter(CELLTYPE == ct, HORMONE == ho)
+    if (!all(c(ctrl_level, target_exposure) %in% unique(dsub$EXPOSURE))) next
+
+    for (cyt in cytokine_cols) {
+      dat <- dsub %>% filter(!is.na(.data[[cyt]]))
+      if (nrow(dat) < 3) next
+      if (!all(c(ctrl_level, target_exposure) %in% unique(dat$EXPOSURE))) next
+
+      dat  <- dat %>% mutate(resp = log2(.data[[cyt]] + pseudocount))
+      form <- if (!has_empty(dat)) resp ~ PLATE * EXPOSURE + (1 | PATIENTCODE) else
+                                   resp ~ EXPOSURE + PLATE + (1 | PATIENTCODE)
+
+      fit <- try(suppressWarnings(lmer(form, data = dat)), silent = TRUE)
+      if (inherits(fit, "try-error"))
+        fit <- try(suppressWarnings(
+          lmer(resp ~ EXPOSURE + PLATE + (1 | PATIENTCODE), data = dat)), silent = TRUE)
+      if (inherits(fit, "try-error")) next
+
+      con <- try(get_contrast(fit), silent = TRUE)
+      if (inherits(con, "try-error")) {
+        fit2 <- try(suppressWarnings(
+          lmer(resp ~ EXPOSURE + PLATE + (1 | PATIENTCODE), data = dat)), silent = TRUE)
+        if (!inherits(fit2, "try-error")) con <- try(get_contrast(fit2), silent = TRUE)
+      }
+      if (inherits(con, "try-error")) next
+
+      s <- as.data.frame(summary(con))
+      out[[paste(group, ct, ho, cyt, sep = "|")]] <- tibble(
+        SEX = ifelse(group == "All", "All", group),
+        CELLTYPE = as.character(ct), HORMONE = as.character(ho),
+        EXPOSURE = target_exposure, CYTOKINE = cyt,
+        estimate = s$estimate[1], SE = s$SE[1], p.value = s$p.value[1]
+      )
+    }
+  }
+
+  bind_rows(out) %>%
+    group_by(SEX, CELLTYPE, HORMONE, EXPOSURE) %>%
+    mutate(q = p.adjust(p.value, method = "fdr"), sig = q < alpha) %>%
+    ungroup()
+}
+
+# ----------------------------
+# Theme: panel background varies by HORMONE facet
+# ggplot2 does not natively support per-facet backgrounds, so we use
+# geom_rect as a background layer keyed on HORMONE
+# ----------------------------
+ref_theme <- function() {
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.background  = element_rect(fill = NA,
+                                     colour = border_color,
+                                     linewidth = border_size),
+    panel.grid.major  = element_blank(),
+    panel.grid.minor  = element_blank(),
+    strip.background  = element_rect(fill = border_color,
+                                     colour = border_color,
+                                     linewidth = border_size),
+    strip.text        = element_text(color = strip_text_color, face = "bold", size = 11),
+    axis.title.x      = element_blank(),
+    axis.text.x       = element_text(face = "bold", size = 11),
+    axis.text.y       = element_text(face = "bold", size = 10),  # <<< bold added here
+    axis.title.y      = element_text(size = 11),
+    legend.position   = "right",
+    legend.title      = element_text(size = 10),
+    legend.text       = element_text(size = 9),
+    plot.background   = element_rect(fill = "transparent", colour = NA),
+    plot.title        = element_text(face = "bold", size = 13, hjust = 0.5)
+  )
+}
+
+# Helper: add a background rect layer that fills by HORMONE value
+# Must be the FIRST layer so dots render on top
+make_bg_layer <- function(df, hormone_col = "HORMONE",
+                           cytokine_col = "CYTOKINE") {
+  # We need xmin/xmax/ymin/ymax in discrete space
+  # Use Inf/-Inf to flood the entire panel
+  df %>%
+    distinct(.data[[hormone_col]], .data[[cytokine_col]]) %>%
+    mutate(
+      panel_fill = ifelse(
+        as.character(.data[[hormone_col]]) == "Estradiol",
+        estradiol_fill,
+        panel_fill_none
+      )
+    )
+}
+
+# ----------------------------
+# 3) Significance screening
+# ----------------------------
+sig_F <- screen_one_exposure_lmer_log2(
+  df_use, cytokine_cols_all, target_exposure, pbs_level,
+  exclude_exposures, pseudocount, group = "F",
+  alpha = alpha, emmeans_weights = emmeans_weights)
+
+sig_M <- screen_one_exposure_lmer_log2(
+  df_use, cytokine_cols_all, target_exposure, pbs_level,
+  exclude_exposures, pseudocount, group = "M",
+  alpha = alpha, emmeans_weights = emmeans_weights)
+
+sig_All <- screen_one_exposure_lmer_log2(
+  df_use, cytokine_cols_all, target_exposure, pbs_level,
+  exclude_exposures, pseudocount, group = "All",
+  alpha = alpha, emmeans_weights = emmeans_weights)
+
+recode_hormone <- function(df) {
+  df %>% mutate(
+    HORMONE = dplyr::recode(as.character(HORMONE),
+                            "NONE"      = "Control",
+                            "Estradiol" = "E2"),
+    HORMONE = factor(HORMONE, levels = c("Control", "E2"))
+  )
+}
+
+sig_F   <- recode_hormone(sig_F)
+sig_M   <- recode_hormone(sig_M)
+sig_All <- recode_hormone(sig_All)
+
+keep_cytokines <- bind_rows(sig_F, sig_M, sig_All) %>%
+  filter(sig) %>% pull(CYTOKINE) %>% unique()
+
+cat("Exposure:", target_exposure, "\n")
+cat("Kept cytokines (sig in any group, q<", alpha, "):", length(keep_cytokines), "\n")
+if (length(keep_cytokines) == 0) stop("No cytokines meet q<alpha; nothing to plot.")
+
+# ----------------------------
+# 4) log2FC
+# ----------------------------
+long_target <- make_log2fc_long(
+  df_use, keep_cytokines, pbs_level, exclude_exposures, pseudocount) %>%
+  filter(EXPOSURE == target_exposure) %>%
+  mutate(SEX = as.character(SEX)) %>%
+  filter(SEX %in% c("F", "M")) %>%
+  mutate(SEX = factor(SEX, levels = c("M", "F")))
+
+long_target <- make_log2fc_long(
+  df_use, keep_cytokines, pbs_level, exclude_exposures, pseudocount) %>%
+  filter(EXPOSURE == target_exposure) %>%
+  mutate(SEX = as.character(SEX)) %>%
+  filter(SEX %in% c("F", "M")) %>%
+  mutate(
+    SEX     = factor(SEX, levels = c("M", "F")),
+    HORMONE = dplyr::recode(as.character(HORMONE),
+                            "NONE"       = "Control",
+                            "Estradiol"  = "E2"),
+    HORMONE = factor(HORMONE, levels = c("Control", "E2"))  # Control first, E2 second
+  )
+
+if (nrow(long_target) == 0) stop("No log2FC rows for target exposure.")
+
+# ----------------------------
+# 5) Global y order
+# ----------------------------
+cyt_order <- long_target %>%
+  group_by(CYTOKINE) %>%
+  summarise(score = mean(abs(log2FC), na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(score)) %>%
+  pull(CYTOKINE)
+
+# ----------------------------
+# 6) Build plot dfs
+# ----------------------------
+
+# Pooled
+plot_df_pooled <- long_target %>%
+  group_by(CELLTYPE, HORMONE, CYTOKINE) %>%
+  summarise(mean_log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
+  mutate(CYTOKINE = factor(as.character(CYTOKINE), levels = cyt_order)) %>%
+  add_rescaled_size("mean_log2FC", transform = "sqrt", out_col = "size_val") %>%
+  left_join(
+    sig_All %>% filter(CYTOKINE %in% keep_cytokines) %>%
+      select(CELLTYPE, HORMONE, CYTOKINE, sig_pooled = sig),
+    by = c("CELLTYPE", "HORMONE", "CYTOKINE")
+  ) %>%
+  mutate(
+    sig_pooled = ifelse(is.na(sig_pooled), FALSE, sig_pooled),
+    All        = factor("All", levels = "All"),
+    # Panel fill determined by HORMONE
+   panel_fill = ifelse(as.character(HORMONE) == "E2",
+                    estradiol_fill, panel_fill_none)
+  )
+
+lim_col_pooled <- compute_sig_only_color_limit(
+  plot_df_pooled, "mean_log2FC", "sig_pooled", 0.90)
+
+# Sex split
+sig_map_sex <- bind_rows(sig_F, sig_M) %>%
+  filter(CYTOKINE %in% keep_cytokines) %>%
+  mutate(SEX = as.character(SEX)) %>%
+  filter(SEX %in% c("F", "M")) %>%
+  mutate(SEX = factor(SEX, levels = c("M", "F"))) %>%
+  select(SEX, CELLTYPE, HORMONE, CYTOKINE, sig)
+
+plot_df_sex <- long_target %>%
+  group_by(SEX, CELLTYPE, HORMONE, CYTOKINE) %>%
+  summarise(mean_log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    SEX      = factor(as.character(SEX), levels = c("M", "F")),
+    CYTOKINE = factor(as.character(CYTOKINE), levels = cyt_order)
+  ) %>%
+  add_rescaled_size("mean_log2FC", transform = "sqrt", out_col = "size_val") %>%
+  left_join(sig_map_sex, by = c("SEX", "CELLTYPE", "HORMONE", "CYTOKINE")) %>%
+  mutate(
+    sig = ifelse(is.na(sig), FALSE, sig),
+    panel_fill = ifelse(as.character(HORMONE) == "E2",
+                    estradiol_fill, panel_fill_none)
+  ) %>%
+  filter(as.character(SEX) %in% c("F", "M")) %>%
+  mutate(SEX = factor(as.character(SEX), levels = c("M", "F")))
+
+lim_col_sex <- compute_sig_only_color_limit(plot_df_sex, "mean_log2FC", "sig", 0.90)
+
+# Shared color limit
+lim_col <- max(lim_col_pooled, lim_col_sex)
+
+# ----------------------------
+# Per-exposure color scales for Mean log2FC
+# Pine and Red Oak: standard blue-white-red
+# Peat: gold tones
+# Eucalyptus: purple tones
+# ----------------------------
+color_scale <- switch(target_exposure,
+  "Peat 25" = scale_color_gradient2(
+    low      = "#5D3FD3",    # dark gold/brown
+    mid      = "grey95",
+    high     = "#CD7F32",    # bright gold
+    midpoint = 0,
+    limits   = c(-lim_col, lim_col), oob = scales::squish,
+    name     = "Mean log2FC\n(vs matched PBS)"
+  ),
+  "Eucalyptus 25" = scale_color_gradient2(
+    low      = "#5D3FD3",    # deep purple
+    mid      = "grey95",
+    high     = "#CD7F32",    # bright purple
+    midpoint = 0,
+    limits   = c(-lim_col, lim_col), oob = scales::squish,
+    name     = "Mean log2FC\n(vs matched PBS)"
+  ),
+  # Default for Pine 25 and Red Oak 25 (and anything else)
+  scale_color_gradient2(
+    low      = "#2C7BB6",    # blue
+    mid      = "grey90",
+    high     = "#D7191C",    # red
+    midpoint = 0,
+    limits   = c(-lim_col, lim_col), oob = scales::squish,
+    name     = "Mean log2FC\n(vs matched PBS)"
+  )
+)
+
+# ----------------------------
+# 7) Build plots
+# Key trick for per-facet background color:
+# Add geom_tile as the FIRST layer covering the whole panel,
+# filled by panel_fill (which is set per row based on HORMONE).
+# Then plot dots on top. The tile covers x+y discrete space.
+# ----------------------------
+# Helper: get y positions for manual gridlines (one per cytokine level)
+cyt_levels <- levels(factor(plot_df_pooled$CYTOKINE, levels = cyt_order))
+sex_levels <- c("M", "F")
+
+# LEFT: pooled
+p_pooled <- ggplot(plot_df_pooled, aes(x = All, y = CYTOKINE)) +
+  # 1) Background tile (per-facet color)
+  geom_tile(aes(fill = panel_fill), width = Inf, height = 1,
+            alpha = 1, show.legend = FALSE) +
+  scale_fill_identity() +
+  # 2) Manual gridlines — horizontal only (only 1 x position so no vertical needed)
+  geom_hline(yintercept = seq_along(cyt_levels),
+             color = "white", linewidth = 0.5) +
+  geom_vline(xintercept = seq_along("All"),
+             color = "white", linewidth = 0.5) +
+  # 3) Dots
+  geom_point(aes(color = mean_log2FC, size = size_val, shape = sig_pooled), alpha = 0.9) +
+  shape_scale_pooled +
+  facet_grid(rows = vars(CELLTYPE), cols = vars(HORMONE), drop = FALSE) +
+  scale_x_discrete(expand = expansion(mult = c(0.8, 0.8)), drop = TRUE) +
+  scale_y_discrete(drop = FALSE) +
+  color_scale + size_scale +
+  ref_theme() +
+  labs(title = paste0(target_exposure, " \u00b1 17β-Estradiol"), y = "Cytokine")
+
+# RIGHT: sex split
+p_sex <- ggplot(plot_df_sex, aes(x = SEX, y = CYTOKINE)) +
+  # 1) Background tile
+  geom_tile(aes(fill = panel_fill), width = Inf, height = 1,
+            alpha = 1, show.legend = FALSE) +
+  scale_fill_identity() +
+  # 2) Manual gridlines — horizontal + vertical (one per SEX level)
+  geom_hline(yintercept = seq_along(cyt_levels),
+             color = "white", linewidth = 0.5) +
+  geom_vline(xintercept = seq_along(sex_levels),
+             color = "white", linewidth = 0.5) +
+  # 3) Dots
+  geom_point(aes(color = mean_log2FC, size = size_val, shape = sig), alpha = 0.9) +
+  shape_scale_sex +
+  facet_grid(rows = vars(CELLTYPE), cols = vars(HORMONE), drop = FALSE) +
+  scale_x_discrete(expand = expansion(mult = c(0.4, 0.4)), drop = TRUE) +
+  scale_y_discrete(drop = FALSE) +
+  color_scale + size_scale +
+  ref_theme() +
+  theme(
+    axis.text.y  = element_blank(),
+    axis.title.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(title = paste0(target_exposure, " \u00b1 17β-Estradiol by Sex"), y = NULL)
+
+# ----------------------------
+# 8) Combine with cowplot
+# ----------------------------
+legend_shared  <- cowplot::get_legend(p_pooled)
+p_pooled_noleg <- p_pooled + theme(legend.position = "none")
+p_sex_noleg    <- p_sex    + theme(legend.position = "none")
+
+p_combined <- cowplot::plot_grid(
+  p_pooled_noleg,
+  p_sex_noleg,
+  legend_shared,
+  nrow       = 1,
+  rel_widths = c(1, 1.6, 0.4),
+  align      = "h",
+  axis       = "tb"
+)
+
+p_combined
+
+# ----------------------------
+# 9) Save
+# ----------------------------
+ggsave(paste0(out_prefix, "_combined.png"),
+       plot = p_combined,
+       width = 8, height = 6, units = "in", dpi = 300, bg = "white")
+
+ggsave(paste0(out_prefix, "_combined_transparent.png"),
+       plot = p_combined,
+       width = 8, height = 6, units = "in", dpi = 300, bg = "transparent")
+
+ggsave(paste0(out_prefix, "_pooled.png"),
+       plot = p_pooled,
+       width = 5, height = 6, units = "in", dpi = 300, bg = "white")
+
+ggsave(paste0(out_prefix, "_sex.png"),
+       plot = p_sex,
+       width = 8, height = 6, units = "in", dpi = 300, bg = "white")
+```
