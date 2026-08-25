@@ -27,8 +27,10 @@ ensure_dir <- function(path) {
 # ============================================================================
 
 average_nonzero_by_sample <- function(data) {
-  # Average replicate measurements within each sample
-  # Assuming columns follow pattern: SAMPLEID, then numeric columns for cytokines
+  # Average replicate measurements within each sample.
+  # All numeric values (including zeros) are included in the mean so that the
+  # downstream LOD-imputation step operates on unbiased sample averages.
+  # NA values are excluded via na.rm = TRUE.
   
   numeric_cols <- names(data)[sapply(data, is.numeric)]
   id_col <- names(data)[!names(data) %in% numeric_cols][1]
@@ -41,7 +43,7 @@ average_nonzero_by_sample <- function(data) {
     dplyr::group_by(.data[[id_col]]) %>%
     dplyr::summarise(
       dplyr::across(dplyr::all_of(numeric_cols),
-                    ~ mean(.[. > 0], na.rm = TRUE)),
+                    ~ mean(., na.rm = TRUE)),
       .groups = "drop"
     )
 }
@@ -72,6 +74,8 @@ apply_factor_spec <- function(data,
                               celltype_levels = CELLTYPE_LEVELS,
                               hormone_levels = HORMONE_LEVELS,
                               sex_levels = SEX_LEVELS) {
+  # NOTE: This is an alias for the factor-coercion already done inside
+  # build_sala_full(). Prefer calling build_sala_full() directly.
   data %>%
     dplyr::mutate(
       CELLTYPE = factor(CELLTYPE, levels = celltype_levels),
@@ -174,11 +178,19 @@ filter_genes <- function(data, background_threshold = GENE_BACKGROUND_THRESHOLD)
   median_counts  <- apply(counts, 1, median, na.rm = TRUE)
   overall_median <- median(median_counts, na.rm = TRUE)
   
-  keep_genes <- apply(
-    counts > (overall_median * background_threshold),
-    1,
-    function(x) sum(x, na.rm = TRUE) > ncol(counts) * 0.20
-  )
+  # Guard: if overall_median is 0 (sparse data), fall back to a count > 0 filter
+  # to avoid the threshold collapsing to "> 0 in ≥20% of samples" silently.
+  if (!is.finite(overall_median) || overall_median == 0) {
+    warning("filter_genes(): overall median is 0 or non-finite; ",
+            "applying a simple presence filter (count > 0 in ≥20% of samples).")
+    keep_genes <- apply(counts > 0, 1, function(x) sum(x, na.rm = TRUE) > ncol(counts) * 0.20)
+  } else {
+    keep_genes <- apply(
+      counts > (overall_median * background_threshold),
+      1,
+      function(x) sum(x, na.rm = TRUE) > ncol(counts) * 0.20
+    )
+  }
   
   filtered_data <- data[keep_genes, , drop = FALSE]
   return(filtered_data)
@@ -268,7 +280,7 @@ prepare_deg_export <- function(deg_data) {
       FC = 2^log2FC,
       log10_padj = -log10(adj.P.Val)
     ) %>%
-    dplyr::filter(adj.P.Val < 0.05) %>%
+    dplyr::filter(adj.P.Val < ADJ_P_CUTOFF) %>%
     dplyr::arrange(dplyr::desc(abs(log2FC)))
 }
 

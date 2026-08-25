@@ -270,12 +270,7 @@ sex_exposure_plot <- function(data, y_variable) {
     ggplot2::theme(legend.position = "right") +
     ggplot2::labs(y = y_variable, title = paste(y_variable, "and Sex")) +
     ggplot2::scale_fill_manual(values = c("M" = "lemonchiffon", "F" = "thistle1")) +
-    ggplot2::scale_color_manual(values = c(
-      "Peat_25" = "deeppink2", "Peat_5" = "deeppink2",
-      "Pine_25" = "darkorchid3", "Pine_5" = "darkorchid3",
-      "Eucalyptus_25" = "gold4", "Eucalyptus_5" = "gold4",
-      "RedOak_25" = "blue1", "RedOak_5" = "blue1",
-      "PBS_Control" = "gray40", "Untreated_Control" = "forestgreen")) +
+    ggplot2::scale_color_manual(values = color_exposure) +
     ggplot2::theme(
       axis.title   = ggplot2::element_text(size = 20, face = "bold"),
       axis.text.x  = ggplot2::element_blank(),
@@ -310,12 +305,7 @@ exposure_plot <- function(data, title, y_variable) {
     ggplot2::geom_jitter(
       position = ggplot2::position_jitterdodge(), size = 2, alpha = 1) +
     ggplot2::scale_fill_manual(values = c("M" = "lemonchiffon", "F" = "thistle1")) +
-    ggplot2::scale_color_manual(values = c(
-      "Peat_25" = "deeppink2", "Peat_5" = "deeppink2",
-      "Pine_25" = "darkorchid3", "Pine_5" = "darkorchid3",
-      "Eucalyptus_25" = "gold4", "Eucalyptus_5" = "gold4",
-      "RedOak_25" = "blue1", "RedOak_5" = "blue1",
-      "PBS_Control" = "gray40", "Untreated_Control" = "forestgreen")) +
+    ggplot2::scale_color_manual(values = color_exposure) +
     ggplot2::theme(
       legend.position  = "right",
       axis.title       = ggplot2::element_text(size = 20, face = "bold"),

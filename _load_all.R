@@ -2,7 +2,8 @@
 
 required_pkgs <- c(
   "here", "dplyr", "tidyr", "readr", "stringr",
-  "purrr", "tibble", "ggplot2", "ggnewscale", "ggpattern"
+  "purrr", "tibble", "ggplot2", "ggnewscale", "ggpattern",
+  "rvest"
 )
 
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
@@ -28,7 +29,7 @@ project_root <- here::here()
 message("Loading project from: ", project_root)
 
 # 1) Config first
-config_path <- here::here("R", "config.R")
+config_path <- here::here("config.R")
 if (!file.exists(config_path)) {
   stop("Missing config file: ", config_path)
 }
@@ -36,9 +37,9 @@ source(config_path, local = FALSE)
 
 # 2) Source function files in explicit order
 function_files <- c(
-  here::here("R", "functions_data.R"),
-  here::here("R", "functions_plots.R"),
-  here::here("R", "functions_analysis.R")
+  here::here("functions_data.R"),
+  here::here("functions_plots.R"),
+  here::here("functions_analysis.R")
 )
 
 missing_files <- function_files[!file.exists(function_files)]
