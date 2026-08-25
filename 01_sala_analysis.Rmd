@@ -11,8 +11,8 @@ output:
 knit: (function(input, ...) {
     rmarkdown::render(
       input,
-      output_dir = "../output/reports",
-      knit_root_dir = ".."
+      output_dir = "output/reports",
+      knit_root_dir = "."
     )
   })
 ---
