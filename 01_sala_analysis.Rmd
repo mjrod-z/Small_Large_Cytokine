@@ -1,0 +1,858 @@
+---
+title: "Small and Large Airway Cytokine Analysis (MSD, LDH, TEER)"
+author: "MJR"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: journal
+    code_folding: hide
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "../output/reports",
+      knit_root_dir = ".."
+    )
+  })
+---
+
+```{=html}
+<!-- ============================================================
+  Factors maintained throughout:
+    CELLTYPE : SAE | LAE   (CELLTYPE_LEVELS)
+    HORMONE  : NONE | Estradiol  (HORMONE_LEVELS)
+    SEX      : M | F       (SEX_LEVELS)
+    EXPOSURE : PBS Control | Pine 25 | Peat 25 | Eucalyptus 25 | Red Oak 25
+  ============================================================ -->
+```
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 10,
+  fig.height = 8
+)
+set.seed(4454)
+```
+
+------------------------------------------------------------------------
+
+# Setup
+
+## Load Libraries & Configuration
+
+```{r load-packages}
+source(here::here("R", "_load_all.R"))
+
+suppressPackageStartupMessages({
+  library(lme4)
+  library(emmeans)
+  library(variancePartition)
+  library(cowplot)
+  library(ggnewscale)
+  library(colorspace)
+  library(ggpattern)
+  library(ARTool)
+  library(ggpubr)
+  library(rstatix)
+  library(pheatmap)
+  library(dunn.test)
+  library(EnvStats)
+  library(outliers)
+})
+
+cat("✓ All packages loaded\n")
+cat("  Project root:", here::here(), "\n")
+```
+
+------------------------------------------------------------------------
+
+# Data Loading & Preparation
+
+## Load Raw Data
+
+```{r load-data}
+SALA_highdose       <- readr::read_csv(here::here(PATH_DATA_RAW, "SALA_MSD.csv"))
+metadata_SALA1_1152 <- readr::read_csv(here::here(PATH_DATA_RAW, "2025_SALA1_1152_metadata.csv"))
+
+# LDH / TEER — uncomment when data is available
+# LDH_TEER      <- readr::read_csv(here::here(PATH_DATA_RAW, "2023_LDHTEER_MJR1-191_4H.csv"))
+# LDH_TEER$LDH  <- as.numeric(LDH_TEER$LDH)
+
+cat("✓ Raw data loaded\n")
+cat("  MSD rows:", nrow(SALA_highdose),
+    "| Metadata rows:", nrow(metadata_SALA1_1152), "\n")
+```
+
+## Build SALA_full
+
+```{r build-sala-full}
+# average_nonzero_by_sample() and build_sala_full() live in functions_data.R
+# apply_factor_spec() enforces CELLTYPE / HORMONE / SEX factor levels from config.R
+
+SALA_avg  <- average_nonzero_by_sample(SALA_highdose)
+SALA_full <- build_sala_full(SALA_avg, metadata_SALA1_1152) %>%
+  dplyr::filter(EXPOSURE != "Untreated Control")
+
+cat("✓ SALA_full built\n")
+cat("  Rows    :", nrow(SALA_full), "\n")
+cat("  CELLTYPE:", paste(levels(SALA_full$CELLTYPE), collapse = " | "), "\n")
+cat("  HORMONE :", paste(levels(SALA_full$HORMONE),  collapse = " | "), "\n")
+cat("  SEX     :", paste(levels(SALA_full$SEX),      collapse = " | "), "\n")
+cat("  EXPOSURE:", paste(levels(SALA_full$EXPOSURE), collapse = " | "), "\n")
+
+# Export no-estradiol subset for downstream use
+SALA_cytokines <- SALA_full %>%
+  dplyr::filter(HORMONE == "NONE") %>%
+  dplyr::select(
+    SAMPLEID, CELLTYPE, PATIENTCODE, SEX, EXPOSURE, HORMONE,
+    dplyr::any_of(c("SMOKER",
+                    "IL10","IL12P70","IL1B","IL4","IL6","TNFA","IL2","VEGF"))
+  )
+
+save_table(SALA_cytokines, "SALA_no_ESTRADIOL.csv")
+cat("✓ SALA_no_ESTRADIOL.csv saved\n")
+cat("✓ SALA_no_ESTRADIOL.csv saved\n")
+```
+
+------------------------------------------------------------------------
+
+# LDH / TEER Analysis
+
+```{r ldh-teer, eval=FALSE}
+# Set eval=TRUE when LDH_TEER data is available
+
+LDH_TEER[LDH_TEER == ""] <- NA
+LDH_TEER_CLEAN <- na.omit(LDH_TEER)
+
+LDH_TEER_AVG <- LDH_TEER_CLEAN %>%
+  dplyr::group_by(PATIENTCODE, CELLTYPE, EXPOSURE, TIMEPOINT,
+                  SEX, GROUP, CONCENTRATION) %>%
+  dplyr::summarize(dplyr::across(c(LDH, TEERPRE, TEERPOST, TEERCHANGE), mean),
+                   .groups = "drop")
+
+LDH_Cytotox <- LDH_TEER_AVG %>%
+  dplyr::group_by(PATIENTCODE) %>%
+  dplyr::mutate(
+    Cytotox = (LDH - LDH[GROUP == "Control"]) /
+              (LDH[GROUP == "Positive Control"] - LDH[GROUP == "Control"]) * 100
+  ) %>%
+  dplyr::ungroup()
+
+cat("Shapiro-Wilk — Cytotoxicity:\n")
+print(shapiro.test(LDH_Cytotox$Cytotox))
+cat("Shapiro-Wilk — TEER change:\n")
+print(shapiro.test(LDH_Cytotox$TEERCHANGE))
+```
+
+------------------------------------------------------------------------
+
+# Cytokine Dotplots
+
+Loops over all 4 high-dose exposures in `ALL_HIGH_DOSE_EXPOSURES`.\
+For each exposure the pipeline:
+
+1.  Imputes values below LLOD (LOD/√2)\
+2.  Flags cytokines with \> 50 % imputed values and excludes them\
+3.  Screens for significance via per-sex LMER (All / F / M) within each CELLTYPE × HORMONE stratum\
+4.  Builds log₂FC relative to matched PBS\
+5.  Produces a combined cowplot (pooled + sex-stratified dotplots) faceted by **CELLTYPE × HORMONE**\
+6.  Saves per-cytokine bar plots and histograms, each faceted by **CELLTYPE × HORMONE**
+
+```{r cytokine-dotplot, fig.width=14, fig.height=8, results='asis'}
+# ── Shared color constants (match config.R) ───────────────────────────────────
+UP_COLOR       <- "#D7191C"
+DOWN_COLOR     <- "#2C7BB6"
+ESTRADIOL_FILL <- "#E8F5E9"
+
+# Identify cytokine columns present in SALA_full once, outside the loop
+cytokine_cols_all <- intersect(names(SALA_full), cytokine_llod$Analyte)
+
+# Run the full imputation once (all exposures share the same imputed dataset)
+imp <- impute_lod_sqrt2(
+  input_data    = SALA_full,
+  cols          = cytokine_cols_all,
+  cytokine_llod = cytokine_llod,
+  zero_cutoff   = ZERO_CUTOFF
+)
+df_use <- imp$data
+
+cat("✓ Global imputation complete\n")
+cat("  Valid cytokines:", length(imp$valid_cytokines), "\n")
+cat("  Skipped (>", ZERO_CUTOFF * 100, "% zeros):",
+    nrow(imp$skipped_cytokines), "\n\n")
+
+# ── Per-exposure loop ─────────────────────────────────────────────────────────
+for (target_exposure in ALL_HIGH_DOSE_EXPOSURES) {
+
+  cat("\n\n## Exposure:", target_exposure, "\n\n")
+
+  # Derived labels used everywhere in this iteration
+  exp_short       <- sub(" \\S+$", "", target_exposure)   # e.g. "Red Oak"
+  e2_label        <- paste(exp_short, "+ E2")              # e.g. "Red Oak + E2"
+  hormone_levels  <- c(exp_short, e2_label)                # display order
+  safe_exp        <- safe_name(target_exposure)
+  border_color    <- EXPOSURE_COLORS_DEEP[[target_exposure]]
+  panel_fill_none <- EXPOSURE_COLORS_LIGHT[[target_exposure]]
+
+  # ── 1) Flag high-imputation cytokines for this exposure ───────────────────
+  imputation_rates <- df_use %>%
+    dplyr::filter(
+      SEX      %in% c("F", "M"),
+      EXPOSURE %in% c(PBS_LEVEL, target_exposure)
+    ) %>%
+    tidyr::pivot_longer(cols = dplyr::all_of(cytokine_cols_all),
+                        names_to = "CYTOKINE", values_to = "VALUE") %>%
+    dplyr::left_join(cytokine_llod, by = c("CYTOKINE" = "Analyte")) %>%
+    dplyr::group_by(CYTOKINE, EXPOSURE, CELLTYPE, HORMONE) %>%
+    dplyr::summarise(
+      n_total     = dplyr::n(),
+      n_below     = sum(VALUE <= LLOD / sqrt(2) + PSEUDOCOUNT, na.rm = TRUE),
+      pct_imputed = round(n_below / n_total * 100, 1),
+      .groups     = "drop"
+    )
+
+  unreliable_cyt       <- imputation_rates %>%
+    dplyr::filter(pct_imputed > 50) %>%
+    dplyr::pull(CYTOKINE) %>%
+    unique()
+  cytokine_cols_screen <- setdiff(cytokine_cols_all, unreliable_cyt)
+
+  cat("  Cytokines >50% imputed (excluded):", length(unreliable_cyt), "\n")
+  cat("  Cytokines screened               :", length(cytokine_cols_screen), "\n")
+
+  # ── 2) Significance screening (functions_analysis.R) ─────────────────────
+  screen_args <- list(
+    df                = df_use,
+    cytokine_cols     = cytokine_cols_screen,
+    target_exposure   = target_exposure,
+    ctrl_level        = PBS_LEVEL,
+    exclude_exposures = EXCLUDE_EXPOSURES,
+    pseudocount       = PSEUDOCOUNT,
+    alpha             = ALPHA_Q,
+    emmeans_weights   = "equal"
+  )
+
+  sig_F   <- do.call(screen_one_exposure_lmer_log2,
+                     c(screen_args, list(group = "F")))
+  sig_M   <- do.call(screen_one_exposure_lmer_log2,
+                     c(screen_args, list(group = "M")))
+  sig_All <- do.call(screen_one_exposure_lmer_log2,
+                     c(screen_args, list(group = "All")))
+
+  # Recode HORMONE from "NONE"/"Estradiol" → display labels
+  # recode_hormone_labels() lives in functions_analysis.R
+  sig_F   <- recode_hormone_labels(sig_F,   exp_short, e2_label, hormone_levels)
+  sig_M   <- recode_hormone_labels(sig_M,   exp_short, e2_label, hormone_levels)
+  sig_All <- recode_hormone_labels(sig_All, exp_short, e2_label, hormone_levels)
+
+  keep_cytokines <- dplyr::bind_rows(sig_F, sig_M, sig_All) %>%
+    dplyr::filter(sig) %>%
+    dplyr::pull(CYTOKINE) %>%
+    unique()
+
+  cat("  Significant cytokines (q <", ALPHA_Q, "):", length(keep_cytokines), "\n")
+
+  if (length(keep_cytokines) == 0) {
+    cat("  → No significant cytokines; skipping plots.\n")
+    next
+  }
+
+  # ── 3) log2FC relative to matched PBS ────────────────────────────────────
+  # make_log2fc_long() lives in functions_analysis.R
+  long_target <- make_log2fc_long(df_use, keep_cytokines) %>%
+    dplyr::filter(
+      EXPOSURE == target_exposure,
+      as.character(SEX) %in% c("F", "M")
+    ) %>%
+    dplyr::mutate(SEX = factor(as.character(SEX), levels = SEX_LEVELS)) %>%
+    recode_hormone_labels(exp_short, e2_label, hormone_levels)
+
+  if (nrow(long_target) == 0) {
+    cat("  No log2FC rows for this exposure.\n")
+    next
+  }
+
+  # ── 4) Global y-axis order (by mean |log2FC|) ─────────────────────────────
+  cyt_order <- long_target %>%
+    dplyr::group_by(CYTOKINE) %>%
+    dplyr::summarise(score = mean(abs(log2FC), na.rm = TRUE), .groups = "drop") %>%
+    dplyr::arrange(dplyr::desc(score)) %>%
+    dplyr::pull(CYTOKINE)
+
+  # ── 5) Single-source q maps ───────────────────────────────────────────────
+  sig_map_sex <- dplyr::bind_rows(sig_F, sig_M) %>%
+    dplyr::filter(CYTOKINE %in% keep_cytokines) %>%
+    dplyr::transmute(
+      SEX      = factor(as.character(SEX),     levels = SEX_LEVELS),
+      CELLTYPE = as.character(CELLTYPE),
+      HORMONE  = factor(as.character(HORMONE), levels = hormone_levels),
+      CYTOKINE = as.character(CYTOKINE),
+      q        = as.numeric(q)
+    ) %>%
+    dplyr::group_by(SEX, CELLTYPE, HORMONE, CYTOKINE) %>%
+    dplyr::summarise(
+      q   = min(q, na.rm = TRUE),
+      sig = q < ALPHA_Q,
+      .groups = "drop"
+    )
+
+  sig_map_all <- sig_All %>%
+    dplyr::filter(CYTOKINE %in% keep_cytokines) %>%
+    dplyr::transmute(
+      CELLTYPE = as.character(CELLTYPE),
+      HORMONE  = factor(as.character(HORMONE), levels = hormone_levels),
+      CYTOKINE = as.character(CYTOKINE),
+      q        = as.numeric(q)
+    ) %>%
+    dplyr::group_by(CELLTYPE, HORMONE, CYTOKINE) %>%
+    dplyr::summarise(
+      q          = min(q, na.rm = TRUE),
+      sig_pooled = q < ALPHA_Q,
+      .groups    = "drop"
+    )
+
+ # ── 6) Build plot data frames ─────────────────────────────────────────────
+make_plot_df <- function(df, grp_vars, sig_join, sig_col) {
+  df %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(grp_vars))) %>%
+    dplyr::summarise(mean_log2FC = mean(log2FC, na.rm = TRUE),
+                     .groups = "drop") %>%
+    dplyr::mutate(
+      CYTOKINE = factor(as.character(CYTOKINE), levels = cyt_order)
+    ) %>%
+    add_rescaled_size("mean_log2FC", transform = "sqrt", out_col = "size_val") %>%
+    dplyr::left_join(sig_join, by = grp_vars) %>%
+    dplyr::mutate(
+      q          = ifelse(is.na(q), 1, q),
+      !!sig_col  := ifelse(is.na(.data[[sig_col]]), FALSE, .data[[sig_col]]),
+      panel_fill = ifelse(as.character(HORMONE) == e2_label,
+                          ESTRADIOL_FILL, panel_fill_none),
+      direction  = dplyr::case_when(
+        mean_log2FC > 0 ~ "Up",
+        mean_log2FC < 0 ~ "Down",
+        TRUE            ~ "Zero"
+      )
+    )
+}
+
+# Build FULL dataframes (all data, not filtered)
+plot_df_pooled <- make_plot_df(
+  long_target,
+  c("CELLTYPE", "HORMONE", "CYTOKINE"),
+  sig_map_all, "sig_pooled"
+) %>%
+  dplyr::mutate(All = factor("All", levels = "All"))
+
+plot_df_sex <- make_plot_df(
+  long_target %>%
+    dplyr::mutate(SEX = factor(as.character(SEX), levels = SEX_LEVELS)),
+  c("SEX", "CELLTYPE", "HORMONE", "CYTOKINE"),
+  sig_map_sex, "sig"
+) %>%
+  dplyr::filter(as.character(SEX) %in% c("F", "M")) %>%
+  dplyr::mutate(SEX = factor(as.character(SEX), levels = SEX_LEVELS))
+
+cyt_levels <- levels(factor(plot_df_pooled$CYTOKINE, levels = cyt_order))
+
+# ── 7) Filter to significant for DOTPLOTS only ─────────────────────────────
+plot_df_pooled_sig <- plot_df_pooled %>%
+  dplyr::filter(sig_pooled)
+
+plot_df_sex_sig <- plot_df_sex %>%
+  dplyr::filter(sig)
+
+# ── 8) Build dotplots ──────────────────────────────────────────────────────
+p_pooled <- make_dotplot(
+  df           = plot_df_pooled_sig,
+  x_var        = "All",
+  title_str    = paste(target_exposure, "\u2014 Pooled (All Samples)"),
+  cyt_levels   = cyt_levels,
+  border_color = border_color,
+  up_color     = UP_COLOR,
+  down_color   = DOWN_COLOR,
+  show_y       = TRUE
+)
+
+p_sex <- make_dotplot(
+  df           = plot_df_sex_sig,
+  x_var        = "SEX",
+  title_str    = paste(target_exposure, "\u2014 By Sex"),
+  cyt_levels   = cyt_levels,
+  border_color = border_color,
+  up_color     = UP_COLOR,
+  down_color   = DOWN_COLOR,
+  show_y       = FALSE
+)
+
+# ── 9) Combine with cowplot ──────────────────────────────────────────────
+legend_shared  <- cowplot::get_legend(p_pooled)
+p_pooled_noleg <- p_pooled + ggplot2::theme(legend.position = "none")
+p_sex_noleg    <- p_sex    + ggplot2::theme(legend.position = "none")
+
+p_combined <- cowplot::plot_grid(
+  p_pooled_noleg, p_sex_noleg, legend_shared,
+  nrow       = 1,
+  rel_widths = c(1.2, 1.2, 0.4),
+  align      = "h",
+  axis       = "tb"
+)
+
+print(p_combined)
+
+out_prefix <- paste0("dotplot_", safe_exp)
+save_plot(paste0(out_prefix, "_combined.png"),
+          p_combined, width = 14, height = 6, dpi = 300, bg = "white")
+save_plot(paste0(out_prefix, "_combined_transparent.png"),
+          p_combined, width = 14, height = 6, dpi = 300, bg = "transparent")
+save_plot(paste0(out_prefix, "_pooled.png"),
+          p_pooled,   width = 6,  height = 6, dpi = 300, bg = "white")
+save_plot(paste0(out_prefix, "_sex.png"),
+          p_sex,      width = 10, height = 6, dpi = 300, bg = "white")
+
+  # ── 10) Per-cytokine bar plots & histograms ────────────────────────────────
+  # make_cytokine_barplot() and make_cytokine_histogram() in functions_plots.R
+
+  for (cyt in keep_cytokines) {
+
+    donor_plate <- imp$data %>%
+      dplyr::filter(EXPOSURE == target_exposure,
+                    SEX %in% c("F", "M")) %>%
+      dplyr::distinct(PATIENTCODE)
+
+    d_raw <- dplyr::bind_rows(
+      imp$data %>%
+        dplyr::filter(SEX %in% c("F", "M"),
+                      EXPOSURE == target_exposure) %>%
+        dplyr::semi_join(donor_plate, by = "PATIENTCODE"),
+      imp$data %>%
+        dplyr::filter(SEX %in% c("F", "M"),
+                      EXPOSURE == PBS_LEVEL) %>%
+        dplyr::semi_join(donor_plate, by = "PATIENTCODE")
+    ) %>%
+      dplyr::mutate(
+        HORMONE  = dplyr::recode(as.character(HORMONE),
+                                 "NONE"      = exp_short,
+                                 "Estradiol" = e2_label),
+        HORMONE  = factor(HORMONE,  levels = hormone_levels),
+        SEX      = factor(as.character(SEX), levels = SEX_LEVELS),
+        VALUE    = .data[[cyt]],
+        EXPOSURE = factor(EXPOSURE, levels = c(PBS_LEVEL, target_exposure))
+      )
+
+    # Significance labels from single-source q map
+    sig_for_cyt <- sig_map_sex %>%
+      dplyr::filter(CYTOKINE == cyt) %>%
+      dplyr::select(CELLTYPE, HORMONE, SEX, q, sig)
+
+    male_pt_fill <- colorspace::lighten(border_color, amount = 0.4)
+
+    summary_raw <- d_raw %>%
+      dplyr::group_by(SEX, EXPOSURE, HORMONE, CELLTYPE) %>%
+      dplyr::summarise(
+        mu = mean(VALUE, na.rm = TRUE),
+        sd = sd(VALUE,   na.rm = TRUE),
+        n  = dplyr::n(),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        panel_fill = ifelse(as.character(HORMONE) == e2_label,
+                            ESTRADIOL_FILL, panel_fill_none),
+        bar_fill   = border_color,
+        bar_color  = border_color,
+        direction  = dplyr::case_when(
+          mu > 0 ~ "Up",
+          mu < 0 ~ "Down",
+          TRUE   ~ "Zero"
+        ),
+        sig_color  = dplyr::case_when(
+          direction == "Up"   ~ UP_COLOR,
+          direction == "Down" ~ DOWN_COLOR,
+          TRUE                ~ "grey50"
+        ),
+        x_label = factor(
+          dplyr::case_when(
+            SEX == "M" & EXPOSURE == PBS_LEVEL       ~ "M Control",
+            SEX == "M" & EXPOSURE == target_exposure ~ paste("M", exp_short),
+            SEX == "F" & EXPOSURE == PBS_LEVEL       ~ "F Control",
+            SEX == "F" & EXPOSURE == target_exposure ~ paste("F", exp_short)
+          ),
+          levels = c("M Control", paste("M", exp_short),
+                     "F Control", paste("F", exp_short))
+        )
+      ) %>%
+      dplyr::left_join(sig_for_cyt, by = c("CELLTYPE", "HORMONE", "SEX")) %>%
+      dplyr::mutate(
+        q         = as.numeric(q),
+        sig       = ifelse(is.na(sig), FALSE, sig),
+        sig_label = dplyr::case_when(
+          is.na(q)        ~ "",
+          q < 0.01        ~ "***",
+          q < 0.05        ~ "**",
+          q < ALPHA_Q     ~ "*",
+          q < TREND_ALPHA ~ "#",
+          TRUE            ~ ""
+        )
+      )
+
+    d_raw <- d_raw %>%
+      dplyr::mutate(
+        x_label = factor(
+          dplyr::case_when(
+            SEX == "M" & EXPOSURE == PBS_LEVEL       ~ "M Control",
+            SEX == "M" & EXPOSURE == target_exposure ~ paste("M", exp_short),
+            SEX == "F" & EXPOSURE == PBS_LEVEL       ~ "F Control",
+            SEX == "F" & EXPOSURE == target_exposure ~ paste("F", exp_short)
+          ),
+          levels = c("M Control", paste("M", exp_short),
+                     "F Control", paste("F", exp_short))
+        ),
+        point_fill  = dplyr::case_when(
+          SEX == "M" & EXPOSURE == PBS_LEVEL       ~ "grey80",
+          SEX == "M" & EXPOSURE == target_exposure ~ male_pt_fill,
+          TRUE                                     ~ "white"
+        ),
+        point_color = dplyr::case_when(
+          EXPOSURE == PBS_LEVEL       ~ "grey40",
+          EXPOSURE == target_exposure ~ border_color,
+          TRUE                        ~ "grey40"
+        )
+      )
+
+    # Histogram — make_cytokine_histogram() in functions_plots.R
+    p_hist <- make_cytokine_histogram(d_raw, cyt, target_exposure)
+
+    # Bar plot — make_cytokine_barplot() in functions_plots.R
+    p_bar <- make_cytokine_barplot(
+      summary_raw     = summary_raw,
+      d_raw           = d_raw,
+      cyt             = cyt,
+      target_exposure = target_exposure,
+      exp_short       = exp_short,
+      e2_label        = e2_label,
+      hormone_levels  = hormone_levels,
+      border_color    = border_color,
+      panel_fill_none = panel_fill_none,
+      alpha_q         = ALPHA_Q,
+      trend_alpha     = TREND_ALPHA,
+      up_color        = UP_COLOR,
+      down_color      = DOWN_COLOR,
+      estradiol_fill  = ESTRADIOL_FILL
+    )
+
+    cyt_safe <- safe_name(cyt)
+    cyt_subdir <- paste0("cytokine_plots_", safe_exp)
+    ensure_dir(here::here(PATH_OUTPUT_FIGS, cyt_subdir))
+
+    save_plot(file.path(cyt_subdir, paste0("histogram_", cyt_safe, ".png")),
+              p_hist, width = 8, height = 5, dpi = 150, bg = "white")
+    save_plot(file.path(cyt_subdir, paste0("barplot_",   cyt_safe, ".png")),
+              p_bar,  width = 8, height = 6, dpi = 150, bg = "white")
+  }
+
+  cat("✓ Done:", target_exposure, "\n\n")
+}
+```
+------------------------------------------------------------------------
+
+# LMER Significance Tables
+
+Runs the 14-step lmer → significance-table pipeline for each of the four CELLTYPE × HORMONE strata. `run_lmer_chunk()` lives in `functions_analysis.R` and calls `exposure_lmer_pairwise()`, `interaction_lmer_pairwise()`, `summarize_to_wide()`, and `build_lmer_sig_table()`.
+
+## LAE — No Hormone
+
+```{r lmer-lae-none}
+LAE_NONE_sig <- run_lmer_chunk("LAE_NONE", "LAE", "NONE", sala_full = SALA_full)
+```
+
+## LAE — Estradiol
+
+```{r lmer-lae-e2}
+LAE_E2_sig <- run_lmer_chunk("LAE_E2", "LAE", "Estradiol", sala_full = SALA_full)
+```
+
+## SAE — No Hormone
+
+```{r lmer-sae-none}
+SAE_NONE_sig <- run_lmer_chunk("SAE_NONE", "SAE", "NONE", sala_full = SALA_full)
+```
+
+## SAE — Estradiol
+
+```{r lmer-sae-e2}
+SAE_E2_sig <- run_lmer_chunk("SAE_E2", "SAE", "Estradiol", sala_full = SALA_full)
+```
+
+------------------------------------------------------------------------
+
+# Smoker Variance Analysis
+
+Uses `variancePartition::fitExtractVarPartModel()` to partition cytokine variance across SMOKER, SEX, HORMONE, CELLTYPE, EXPOSURE, and PATIENTCODE. Loops over all four high-dose exposures. PCA plots use the last exposure's matrix (Red Oak 25 by default).
+
+```{r smoker-variance, fig.width=14, fig.height=10}
+suppressPackageStartupMessages(library(variancePartition))
+
+stopifnot("SMOKER" %in% names(SALA_full))
+
+vp_results_list <- list()
+vp_summary_list <- list()
+
+for (exp in ALL_HIGH_DOSE_EXPOSURES) {
+
+  cat("\n── Variance partition:", exp, "──\n")
+
+  df_exp <- imp$data %>%
+    dplyr::filter(
+      SEX      %in% c("F", "M"),
+      EXPOSURE %in% c(PBS_LEVEL, exp)
+    ) %>%
+    dplyr::mutate(
+      SMOKER      = factor(SMOKER),
+      SEX         = factor(SEX,      levels = SEX_LEVELS),
+      HORMONE     = factor(HORMONE,  levels = HORMONE_LEVELS),
+      CELLTYPE    = factor(CELLTYPE, levels = CELLTYPE_LEVELS),
+      PATIENTCODE = factor(PATIENTCODE),
+      EXPOSURE    = factor(EXPOSURE)
+    )
+
+  if (!"SMOKER" %in% names(df_exp) ||
+      length(unique(df_exp$SMOKER)) < 2) {
+    cat("  ⚠ SMOKER not available or has < 2 levels; skipping.\n")
+    next
+  }
+
+  cyt_mat <- df_exp %>%
+    dplyr::select(dplyr::all_of(cytokine_cols_all)) %>%
+    dplyr::mutate(dplyr::across(dplyr::everything(),
+                                ~ log2(as.numeric(.) + PSEUDOCOUNT))) %>%
+    as.matrix() %>%
+    t()   # variancePartition wants features × samples
+
+  rv      <- apply(cyt_mat, 1, var, na.rm = TRUE)
+  cyt_mat <- cyt_mat[rv > 0 & !is.na(rv), ]
+  cat("  Retained", nrow(cyt_mat), "cytokines\n")
+
+  vp_form <- ~ (1 | SMOKER) + (1 | SEX) + (1 | HORMONE) +
+               (1 | CELLTYPE) + (1 | EXPOSURE) +
+               (1 | PATIENTCODE)
+
+  vp_fit <- tryCatch(
+    variancePartition::fitExtractVarPartModel(cyt_mat, vp_form, df_exp),
+    error = function(e) {
+      cat("  ⚠ Failed:", conditionMessage(e), "\n")
+      NULL
+    }
+  )
+  if (is.null(vp_fit)) next
+
+  vp_results_list[[exp]] <- vp_fit
+  vp_summary_list[[exp]] <- as.data.frame(vp_fit) %>%
+    tibble::rownames_to_column("Cytokine") %>%
+    dplyr::mutate(
+      dplyr::across(where(is.numeric), ~ round(. * 100, 2)),
+      Exposure = exp
+    )
+
+  cat("  ✓ Done\n")
+}
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+if (length(vp_results_list) > 0) {
+
+  vp_summary_all <- dplyr::bind_rows(vp_summary_list)
+  save_table(vp_summary_all, "smoker_variance_all_exposures.csv")
+
+  # Violin plots per exposure
+  vp_plots <- lapply(names(vp_results_list), function(exp) {
+    variancePartition::plotVarPart(
+      variancePartition::sortCols(vp_results_list[[exp]])) +
+      ggplot2::labs(title = exp) +
+      ggplot2::theme(
+        plot.title  = ggplot2::element_text(face = "bold",
+                                            hjust = 0.5, size = 11),
+        axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 9)
+      )
+  })
+
+  p_vp_combined <- cowplot::plot_grid(
+    plotlist   = vp_plots,
+    nrow       = 2, ncol = 2,
+    labels     = "AUTO", label_size = 12
+  )
+  print(p_vp_combined)
+  save_plot("smoker_variance_partition_all_exposures.png",
+            p_vp_combined, width = 14, height = 10, dpi = 300, bg = "white")
+
+  # SMOKER summary dot plot
+  p_smoker_dot <- vp_summary_all %>%
+    dplyr::select(Cytokine, Exposure, SMOKER) %>%
+    dplyr::mutate(
+      Exposure = factor(Exposure, levels = ALL_HIGH_DOSE_EXPOSURES),
+      Cytokine = reorder(Cytokine, SMOKER, FUN = mean)
+    ) %>%
+    ggplot2::ggplot(ggplot2::aes(x = Exposure, y = Cytokine,
+                                 size = SMOKER, color = SMOKER)) +
+    ggplot2::geom_point(alpha = 0.85) +
+    ggplot2::scale_size_continuous(name   = "% Variance",
+                                   range  = c(1, 8), limits = c(0, NA)) +
+    ggplot2::scale_color_gradient(low    = "grey80",
+                                  high   = UP_COLOR,
+                                  name   = "% Variance") +
+    ggplot2::labs(
+      title = "SMOKER contribution to cytokine variance by fuel type",
+      x     = NULL,
+      y     = "Cytokine"
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      plot.title       = ggplot2::element_text(face = "bold",
+                                               hjust = 0.5, size = 13),
+      panel.border     = ggplot2::element_rect(color = "black",
+                                               fill = NA, linewidth = 0.5),
+      panel.grid.major = ggplot2::element_line(color = "gray88"),
+      axis.text.x      = ggplot2::element_text(angle = 30,
+                                               hjust = 1, face = "bold"),
+      axis.text.y      = ggplot2::element_text(face = "bold"),
+      legend.position  = "right"
+    )
+  print(p_smoker_dot)
+  save_plot("smoker_variance_summary_dotplot.png",
+            p_smoker_dot, width = 8, height = 7, dpi = 300, bg = "white")
+
+  # PCA (uses last loop's cyt_mat / df_exp)
+  pca_mat <- t(cyt_mat)
+  cv      <- apply(pca_mat, 2, var, na.rm = TRUE)
+  pca_mat <- pca_mat[, cv > 0 & !is.na(cv)]
+  pca_res <- prcomp(pca_mat, center = TRUE, scale. = TRUE)
+  var_exp <- summary(pca_res)$importance[2, 1:2] * 100
+
+  pca_df <- as.data.frame(pca_res$x[, 1:2]) %>%
+    tibble::rownames_to_column("rowid") %>%
+    dplyr::bind_cols(
+      df_exp %>%
+        dplyr::select(SMOKER, SEX, HORMONE, CELLTYPE, EXPOSURE, PATIENTCODE)
+    )
+
+  # PCA A: coloured by SMOKER
+  p_pca_smoker <- ggplot2::ggplot(
+    pca_df,
+    ggplot2::aes(PC1, PC2, fill = SMOKER, color = SMOKER, shape = SEX)
+  ) +
+    ggplot2::stat_ellipse(ggplot2::aes(group = SMOKER),
+                          geom = "polygon", alpha = 0.12,
+                          linewidth = 0.6, show.legend = FALSE) +
+    ggplot2::geom_point(size = 3, alpha = 0.85, stroke = 0.8) +
+    ggplot2::scale_fill_manual(
+      values = c("Y" = UP_COLOR,   "N" = DOWN_COLOR),
+      labels = c("Y" = "Smoker",   "N" = "Non-smoker"),
+      name   = "Smoking status") +
+    ggplot2::scale_color_manual(
+      values = c("Y" = UP_COLOR,   "N" = DOWN_COLOR),
+      labels = c("Y" = "Smoker",   "N" = "Non-smoker"),
+      name   = "Smoking status") +
+    ggplot2::scale_shape_manual(
+      values = c("M" = 21, "F" = 22),
+      labels = c("M" = "Male", "F" = "Female"),
+      name   = "Sex") +
+    ggplot2::labs(
+      x        = paste0("PC1 (", round(var_exp[1], 1), "%)"),
+      y        = paste0("PC2 (", round(var_exp[2], 1), "%)"),
+      title    = "PCA \u2014 Cytokine profiles by smoking status",
+      subtitle = paste0("Last exposure: ", tail(names(vp_results_list), 1),
+                        " + PBS")
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      plot.title       = ggplot2::element_text(face = "bold",
+                                               hjust = 0.5, size = 13),
+      plot.subtitle    = ggplot2::element_text(hjust = 0.5, size = 10,
+                                               color = "grey40"),
+      panel.border     = ggplot2::element_rect(color = "black",
+                                               fill = NA, linewidth = 0.5),
+      panel.grid.major = ggplot2::element_line(color = "gray88"),
+      panel.grid.minor = ggplot2::element_blank()
+    )
+
+  # PCA B: coloured by EXPOSURE
+  p_pca_exposure <- ggplot2::ggplot(
+    pca_df,
+    ggplot2::aes(PC1, PC2, fill = EXPOSURE, color = EXPOSURE, shape = SMOKER)
+  ) +
+    ggplot2::stat_ellipse(ggplot2::aes(group = EXPOSURE),
+                          geom = "polygon", alpha = 0.12,
+                          linewidth = 0.6, show.legend = FALSE) +
+    ggplot2::geom_point(size = 3, alpha = 0.85, stroke = 0.8) +
+    ggplot2::scale_fill_manual(
+      values = c(EXPOSURE_COLORS_DEEP, "PBS_Control" = "grey50"),
+      name   = "Exposure") +
+    ggplot2::scale_color_manual(
+      values = c(EXPOSURE_COLORS_DEEP, "PBS_Control" = "grey50"),
+      name   = "Exposure") +
+    ggplot2::scale_shape_manual(
+      values = c("Y" = 24, "N" = 21),
+      labels = c("Y" = "Smoker", "N" = "Non-smoker"),
+      name   = "Smoking status") +
+    ggplot2::labs(
+      x        = paste0("PC1 (", round(var_exp[1], 1), "%)"),
+      y        = paste0("PC2 (", round(var_exp[2], 1), "%)"),
+      title    = "PCA \u2014 Cytokine profiles by exposure",
+      subtitle = "Shape = smoking status"
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      plot.title       = ggplot2::element_text(face = "bold",
+                                               hjust = 0.5, size = 13),
+      plot.subtitle    = ggplot2::element_text(hjust = 0.5, size = 10,
+                                               color = "grey40"),
+      panel.border     = ggplot2::element_rect(color = "black",
+                                               fill = NA, linewidth = 0.5),
+      panel.grid.major = ggplot2::element_line(color = "gray88"),
+      panel.grid.minor = ggplot2::element_blank()
+    )
+
+  p_pca_combined <- cowplot::plot_grid(
+    p_pca_smoker, p_pca_exposure,
+    nrow       = 1,
+    labels     = c("A", "B"),
+    label_size = 14
+  )
+  print(p_pca_combined)
+  save_plot("smoker_pca_combined.png",
+            p_pca_combined, width = 14, height = 6, dpi = 300, bg = "white")
+
+  # Decision guide
+  cat("\n=== SMOKER DECISION GUIDE ===\n")
+  cat("SMOKER >5% variance in ≥1 cytokine\n")
+  cat("  → Add SMOKER as fixed effect in screen_one_exposure_lmer_log2()\n")
+  cat("  → Formula: resp ~ EXPOSURE + SMOKER + (1|PATIENTCODE)\n\n")
+
+  cat("Cytokines where SMOKER explains >5% variance:\n")
+  vp_summary_all %>%
+    dplyr::filter(SMOKER > 5) %>%
+    dplyr::select(Exposure, Cytokine, SMOKER) %>%
+    dplyr::arrange(dplyr::desc(SMOKER)) %>%
+    print()
+
+} else {
+  cat("⚠ No variance partition results to plot.\n")
+}
+```
+
+------------------------------------------------------------------------
+
+# Session Information
+
+```{r session-info}
+cat("════════════════════════════════════════════════\n")
+cat("  01_SALA_ANALYSIS COMPLETE\n")
+cat("════════════════════════════════════════════════\n\n")
+cat("Outputs saved to:\n")
+cat("  Figures :", here::here(PATH_OUTPUT_FIGS),   "\n")
+cat("  Tables  :", here::here(PATH_OUTPUT_TABLES), "\n")
+cat("  Reports :", here::here(PATH_OUTPUT_REPORT), "\n\n")
+sessionInfo()
+```
