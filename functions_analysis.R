@@ -48,13 +48,13 @@ make_log2fc_long <- function(df, cytokine_cols,
   
   pbs <- long %>%
     dplyr::filter(EXPOSURE == pbs_level) %>%
-    dplyr::select(PATIENTCODE, CELLTYPE, HORMONE, CYTOKINE,
+    dplyr::select(PATIENTCODE, SEX, CELLTYPE, HORMONE, CYTOKINE,
                   log2_pbs = log2_val)
   
   long %>%
     dplyr::filter(EXPOSURE != pbs_level) %>%
     dplyr::left_join(pbs,
-                     by = c("PATIENTCODE","CELLTYPE","HORMONE","CYTOKINE")) %>%
+                     by = c("PATIENTCODE","SEX","CELLTYPE","HORMONE","CYTOKINE")) %>%
     dplyr::mutate(log2FC = log2_val - log2_pbs)
 }
 
@@ -88,9 +88,11 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
   
   get_contrast <- function(fit) {
     emm  <- emmeans::emmeans(fit, ~ EXPOSURE, weights = emmeans_weights)
-    levs <- levels(emm@grid$EXPOSURE)
+    levs <- levels(emmeans::summary(emm)$EXPOSURE)
     v    <- if (identical(levs, c(ctrl_level, target_exposure))) c(-1, 1) else c(1, -1)
-    emmeans::contrast(emm, method = list(v), adjust = "none")
+    contrast_list        <- list(v)
+    names(contrast_list) <- paste0(target_exposure, " - ", ctrl_level)
+    emmeans::contrast(emm, method = contrast_list, adjust = "none")
   }
   
   combos        <- d0 %>% dplyr::distinct(CELLTYPE, HORMONE)
@@ -111,8 +113,13 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
       dat  <- dat %>% dplyr::mutate(resp = log2(.data[[cyt]] + pseudocount))
       form <- resp ~ EXPOSURE + (1 | PATIENTCODE)
       
-      fit <- try(suppressWarnings(lme4::lmer(form, data = dat)), silent = TRUE)
+      fit <- try(lme4::lmer(form, data = dat), silent = TRUE)
       if (inherits(fit, "try-error")) next
+      # Check for convergence / singular-fit warnings stored in the fit object
+      if (length(lme4::isSingular(fit)) > 0 && lme4::isSingular(fit)) {
+        warning("Singular fit for ", cyt, " in CELLTYPE=", ct, " HORMONE=", ho,
+                "; estimates may be unreliable.")
+      }
       
       con <- try(get_contrast(fit), silent = TRUE)
       if (inherits(con, "try-error")) next
@@ -173,9 +180,10 @@ exposure_lmer_pairwise <- function(data, group = "All", adjust_method = "fdr",
       silent = TRUE)
     if (inherits(model, "try-error")) { warning("Model failed for ", resp); next }
     
-    emm      <- emmeans::emmeans(model, ~ EXPOSURE)
+    emm      <- emmeans::emmeans(model, ~ EXPOSURE, weights = "equal")
+    ctrl_idx <- which(levels(data$EXPOSURE) == ctrl_level)
     pairwise <- emmeans::contrast(emm, method = "trt.vs.ctrl",
-                                  ref = ctrl_level, adjust = adjust_method)
+                                  ref = ctrl_idx, adjust = adjust_method)
     pairwise_df          <- as.data.frame(summary(pairwise))
     pairwise_df$response <- resp
     results_list[[resp]] <- pairwise_df
@@ -224,9 +232,10 @@ interaction_lmer_pairwise <- function(data, group = "All", adjust_method = "fdr"
       warning("Interaction model failed for ", resp); next
     }
     
-    emm_exp  <- emmeans::emmeans(model, ~ EXPOSURE)
+    emm_exp  <- emmeans::emmeans(model, ~ EXPOSURE, weights = "equal")
+    ctrl_idx <- which(levels(data$EXPOSURE) == ctrl_level)
     pw_exp   <- emmeans::contrast(emm_exp, "trt.vs.ctrl",
-                                  ref = ctrl_level, adjust = adjust_method)
+                                  ref = ctrl_idx, adjust = adjust_method)
     exp_df   <- as.data.frame(summary(pw_exp))
     exp_df$type     <- "Exposure_vs_Control"
     exp_df$response <- resp
@@ -292,10 +301,18 @@ exposure_art_pairwise <- function(data, group = "All", adjust_method = "fdr",
       if (nrow(r) > 0) r[["Pr(>F)"]][1] else NA
     } else NA
     
-    m.art.con <- ARTool::artlm.con(m.art, "EXPOSURE")
-    emm       <- emmeans::emmeans(m.art.con, ~ EXPOSURE)
-    pairwise  <- emmeans::contrast(emm, "trt.vs.ctrl",
-                                   ref = ctrl_level, adjust = adjust_method)
+    # art.con() is the correct way to get pairwise contrasts from an ART model
+    # (artlm.con() + emmeans() produces unreliable d.f. for interaction contrasts).
+    pairwise_con <- try(
+      ARTool::art.con(m.art, "EXPOSURE", adjust = adjust_method),
+      silent = TRUE
+    )
+    if (inherits(pairwise_con, "try-error")) {
+      warning("art.con() failed for ", response); next
+    }
+    ctrl_idx <- which(levels(filtered_data$EXPOSURE) == ctrl_level)
+    pairwise <- emmeans::contrast(pairwise_con, "trt.vs.ctrl",
+                                  ref = ctrl_idx, adjust = adjust_method)
     
     res               <- as.data.frame(pairwise)
     res$response      <- response
@@ -345,8 +362,6 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
   lmer_M   <- exposure_lmer_pairwise(d_filt, "M",   "fdr", valid_cyts)
   lmer_int <- interaction_lmer_pairwise(d_filt, "All", "fdr", valid_cyts)
   
-  assign(paste0(label, "_lmer_interaction"), lmer_int, envir = .GlobalEnv)
-  
   out_csv <- paste0("MSD_SALA_", label, "_lmer.csv")
   sig_tbl <- build_lmer_sig_table(
     lmer_All      = lmer_All,
@@ -361,10 +376,9 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
   )
   
   cat("  Saved:", out_csv, "\n")
-  invisible(sig_tbl)
+  # Return both the significance table and the interaction results
+  invisible(list(sig_table = sig_tbl, lmer_interaction = lmer_int))
 }
-
-# ── Build significance table (14-step pipeline) ───────────────────────────────
 
 build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
                                  msd_summary, pbs_control,
@@ -387,16 +401,20 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
                                fmt(lmer_F,   "F"),
                                fmt(lmer_M,   "M"))
   
-  # Step 7: stars with direction
+  # Step 7: apply FDR correction per group, then assign direction-aware stars
+  # Stars are based on the FDR-adjusted q-value, not the raw p.value.
   stars_df <- combined %>%
+    dplyr::group_by(response) %>%
+    dplyr::mutate(q = p.adjust(p.value, method = "fdr")) %>%
+    dplyr::ungroup() %>%
     dplyr::mutate(stars = dplyr::case_when(
-      p.value < 0.001 & estimate > 0 ~ "***",
-      p.value < 0.001 & estimate < 0 ~ "###",
-      p.value < 0.01  & estimate > 0 ~ "**",
-      p.value < 0.01  & estimate < 0 ~ "##",
-      p.value < 0.05  & estimate > 0 ~ "*",
-      p.value < 0.05  & estimate < 0 ~ "#",
-      p.value < trend_alpha & estimate != 0 ~ "~",
+      q < 0.001 & estimate > 0 ~ "***",
+      q < 0.001 & estimate < 0 ~ "###",
+      q < 0.01  & estimate > 0 ~ "**",
+      q < 0.01  & estimate < 0 ~ "##",
+      q < alpha & estimate > 0 ~ "*",
+      q < alpha & estimate < 0 ~ "#",
+      q < trend_alpha & estimate != 0 ~ "~",
       TRUE ~ ""
     ))
   
@@ -492,6 +510,8 @@ impute_lod_sqrt2 <- function(input_data, cols = NULL, cytokine_llod, zero_cutoff
     mean(is.na(vals) | vals <= 0) <= zero_cutoff
   }, logical(1))]
   
+  skipped_cytokines <- setdiff(cols, valid_cytokines)
+  
   out <- input_data
   for (col in valid_cytokines) {
     llod_val <- llod_map[[col]]
@@ -502,7 +522,7 @@ impute_lod_sqrt2 <- function(input_data, cols = NULL, cytokine_llod, zero_cutoff
     }
   }
   
-  list(data = out, valid_cytokines = valid_cytokines)
+  list(data = out, valid_cytokines = valid_cytokines, skipped_cytokines = skipped_cytokines)
 }
 
 summarize_to_wide <- function(data, measure_vars) {
@@ -532,67 +552,10 @@ summarize_to_wide <- function(data, measure_vars) {
   dplyr::bind_rows(by_sex, all_rows) %>%
     dplyr::mutate(
       mu = ifelse(is.nan(mu), NA_real_, mu),
-      sd = ifelse(is.nan(sd), 0, sd),
-      Value = sprintf("%.3f ± %.3f", mu, sd)
+      sd = ifelse(is.na(sd) | is.nan(sd), 0, sd),
+      Value = sprintf("%.3f \u00b1 %.3f", mu, sd)
     ) %>%
     dplyr::select(Measurement, EXPOSURE, Value) %>%
     tidyr::pivot_wider(names_from = EXPOSURE, values_from = Value) %>%
     dplyr::arrange(Measurement)
-}
-
-# ── Convenience wrapper: run all 4 CELLTYPE × HORMONE strata ─────────────────
-
-run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
-                           sala_full     = NULL,
-                           llod_table    = cytokine_llod,
-                           zero_co       = ZERO_CUTOFF,
-                           alpha_q       = ALPHA_Q,
-                           trend_a       = TREND_ALPHA) {
-  
-  cat("\n── LMER:", label, "──\n")
-  
-  if (is.null(sala_full))
-    stop("sala_full must be provided as a data frame containing the full SALA dataset")
-  
-  d_sub <- sala_full %>%
-    dplyr::filter(CELLTYPE == celltype_filter, HORMONE == hormone_filter)
-  
-  imp_res      <- impute_lod_sqrt2(d_sub, cytokine_llod = llod_table,
-                                   zero_cutoff = zero_co)
-  d_imp        <- imp_res$data
-  valid_cyts   <- imp_res$valid_cytokines
-  
-  d_filt <- d_imp %>%
-    dplyr::filter(EXPOSURE != "Untreated_Control") %>%
-    dplyr::mutate(EXPOSURE    = factor(EXPOSURE),
-                  SEX         = factor(SEX),
-                  PATIENTCODE = factor(PATIENTCODE))
-  
-  msd_sum <- summarize_to_wide(d_filt, measure_vars = valid_cyts)
-  pbs_ctl <- msd_sum %>%
-    dplyr::select(Measurement, `PBS_Control`) %>%
-    dplyr::arrange(Measurement)
-  
-  lmer_All <- exposure_lmer_pairwise(d_filt, "All", "fdr", valid_cyts)
-  lmer_F   <- exposure_lmer_pairwise(d_filt, "F",   "fdr", valid_cyts)
-  lmer_M   <- exposure_lmer_pairwise(d_filt, "M",   "fdr", valid_cyts)
-  lmer_int <- interaction_lmer_pairwise(d_filt, "All", "fdr", valid_cyts)
-  
-  assign(paste0(label, "_lmer_interaction"), lmer_int, envir = .GlobalEnv)
-  
-  out_csv <- paste0("MSD_SALA_", label, "_lmer.csv")
-  sig_tbl <- build_lmer_sig_table(
-    lmer_All      = lmer_All,
-    lmer_F        = lmer_F,
-    lmer_M        = lmer_M,
-    msd_summary   = msd_sum,
-    pbs_control   = pbs_ctl,
-    cytokine_llod = llod_table,
-    out_filename  = out_csv,
-    alpha         = alpha_q,
-    trend_alpha   = trend_a
-  )
-  
-  cat("  Saved:", out_csv, "\n")
-  invisible(sig_tbl)
 }

@@ -46,7 +46,7 @@ set.seed(4454)
 ## Load Libraries & Configuration
 
 ```{r load-packages}
-source(here::here("R", "_load_all.R"))
+source(here::here("_load_all.R"))
 
 suppressPackageStartupMessages({
   library(lme4)
@@ -54,15 +54,8 @@ suppressPackageStartupMessages({
   library(variancePartition)
   library(cowplot)
   library(ggnewscale)
-  library(colorspace)
   library(ggpattern)
   library(ARTool)
-  library(ggpubr)
-  library(rstatix)
-  library(pheatmap)
-  library(dunn.test)
-  library(EnvStats)
-  library(outliers)
 })
 
 cat("✓ All packages loaded\n")
@@ -96,7 +89,7 @@ cat("  MSD rows:", nrow(SALA_highdose),
 
 SALA_avg  <- average_nonzero_by_sample(SALA_highdose)
 SALA_full <- build_sala_full(SALA_avg, metadata_SALA1_1152) %>%
-  dplyr::filter(EXPOSURE != "Untreated Control")
+  dplyr::filter(EXPOSURE != "Untreated_Control")
 
 cat("✓ SALA_full built\n")
 cat("  Rows    :", nrow(SALA_full), "\n")
@@ -115,7 +108,6 @@ SALA_cytokines <- SALA_full %>%
   )
 
 save_table(SALA_cytokines, "SALA_no_ESTRADIOL.csv")
-cat("✓ SALA_no_ESTRADIOL.csv saved\n")
 cat("✓ SALA_no_ESTRADIOL.csv saved\n")
 ```
 
@@ -449,7 +441,8 @@ save_plot(paste0(out_prefix, "_sex.png"),
       dplyr::filter(CYTOKINE == cyt) %>%
       dplyr::select(CELLTYPE, HORMONE, SEX, q, sig)
 
-    male_pt_fill <- colorspace::lighten(border_color, amount = 0.4)
+    male_pt_fill <- grDevices::adjustcolor(border_color, alpha.f = 1,
+                                           red.f = 1.3, green.f = 1.3, blue.f = 1.3)
 
     summary_raw <- d_raw %>%
       dplyr::group_by(SEX, EXPOSURE, HORMONE, CELLTYPE) %>%
@@ -491,9 +484,7 @@ save_plot(paste0(out_prefix, "_sex.png"),
         sig       = ifelse(is.na(sig), FALSE, sig),
         sig_label = dplyr::case_when(
           is.na(q)        ~ "",
-          q < 0.01        ~ "***",
-          q < 0.05        ~ "**",
-          q < ALPHA_Q     ~ "*",
+          q < alpha       ~ "*",
           q < TREND_ALPHA ~ "#",
           TRUE            ~ ""
         )
@@ -566,25 +557,33 @@ Runs the 14-step lmer → significance-table pipeline for each of the four CELLT
 ## LAE — No Hormone
 
 ```{r lmer-lae-none}
-LAE_NONE_sig <- run_lmer_chunk("LAE_NONE", "LAE", "NONE", sala_full = SALA_full)
+LAE_NONE_res  <- run_lmer_chunk("LAE_NONE", "LAE", "NONE", sala_full = SALA_full)
+LAE_NONE_sig  <- LAE_NONE_res$sig_table
+LAE_NONE_lmer_interaction <- LAE_NONE_res$lmer_interaction
 ```
 
 ## LAE — Estradiol
 
 ```{r lmer-lae-e2}
-LAE_E2_sig <- run_lmer_chunk("LAE_E2", "LAE", "Estradiol", sala_full = SALA_full)
+LAE_E2_res  <- run_lmer_chunk("LAE_E2", "LAE", "Estradiol", sala_full = SALA_full)
+LAE_E2_sig  <- LAE_E2_res$sig_table
+LAE_E2_lmer_interaction <- LAE_E2_res$lmer_interaction
 ```
 
 ## SAE — No Hormone
 
 ```{r lmer-sae-none}
-SAE_NONE_sig <- run_lmer_chunk("SAE_NONE", "SAE", "NONE", sala_full = SALA_full)
+SAE_NONE_res  <- run_lmer_chunk("SAE_NONE", "SAE", "NONE", sala_full = SALA_full)
+SAE_NONE_sig  <- SAE_NONE_res$sig_table
+SAE_NONE_lmer_interaction <- SAE_NONE_res$lmer_interaction
 ```
 
 ## SAE — Estradiol
 
 ```{r lmer-sae-e2}
-SAE_E2_sig <- run_lmer_chunk("SAE_E2", "SAE", "Estradiol", sala_full = SALA_full)
+SAE_E2_res  <- run_lmer_chunk("SAE_E2", "SAE", "Estradiol", sala_full = SALA_full)
+SAE_E2_sig  <- SAE_E2_res$sig_table
+SAE_E2_lmer_interaction <- SAE_E2_res$lmer_interaction
 ```
 
 ------------------------------------------------------------------------
@@ -594,8 +593,6 @@ SAE_E2_sig <- run_lmer_chunk("SAE_E2", "SAE", "Estradiol", sala_full = SALA_full
 Uses `variancePartition::fitExtractVarPartModel()` to partition cytokine variance across SMOKER, SEX, HORMONE, CELLTYPE, EXPOSURE, and PATIENTCODE. Loops over all four high-dose exposures. PCA plots use the last exposure's matrix (Red Oak 25 by default).
 
 ```{r smoker-variance, fig.width=14, fig.height=10}
-suppressPackageStartupMessages(library(variancePartition))
-
 stopifnot("SMOKER" %in% names(SALA_full))
 
 vp_results_list <- list()
@@ -629,8 +626,10 @@ for (exp in ALL_HIGH_DOSE_EXPOSURES) {
     dplyr::select(dplyr::all_of(cytokine_cols_all)) %>%
     dplyr::mutate(dplyr::across(dplyr::everything(),
                                 ~ log2(as.numeric(.) + PSEUDOCOUNT))) %>%
-    as.matrix() %>%
-    t()   # variancePartition wants features × samples
+    as.matrix()
+  # Preserve sample IDs so downstream PCA join is key-based, not positional
+  rownames(cyt_mat) <- df_exp$SAMPLEID
+  cyt_mat <- t(cyt_mat)   # variancePartition wants features × samples
 
   rv      <- apply(cyt_mat, 1, var, na.rm = TRUE)
   cyt_mat <- cyt_mat[rv > 0 & !is.na(rv), ]
@@ -731,10 +730,11 @@ if (length(vp_results_list) > 0) {
   var_exp <- summary(pca_res)$importance[2, 1:2] * 100
 
   pca_df <- as.data.frame(pca_res$x[, 1:2]) %>%
-    tibble::rownames_to_column("rowid") %>%
-    dplyr::bind_cols(
+    tibble::rownames_to_column("SAMPLEID") %>%
+    dplyr::left_join(
       df_exp %>%
-        dplyr::select(SMOKER, SEX, HORMONE, CELLTYPE, EXPOSURE, PATIENTCODE)
+        dplyr::select(SAMPLEID, SMOKER, SEX, HORMONE, CELLTYPE, EXPOSURE, PATIENTCODE),
+      by = "SAMPLEID"
     )
 
   # PCA A: coloured by SMOKER
