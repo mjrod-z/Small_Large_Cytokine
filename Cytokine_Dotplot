@@ -398,10 +398,10 @@ exposure_lmer_pairwise <- function(data, group = "All", adjust_method = "fdr",
     
     # Build model formula with proper random effects
     # Use (1|PATIENTCODE) + (1|PLATE) instead of (1|PATIENTCODE + PLATE)
-    model_formula <- if ("PLATE" %in% names(df) && length(unique(df$PLATE)) > 1) {
+    model_formula <- if ("PLATE" %in% names(df) && length(unique(stats::na.omit(df$PLATE))) > 1) {
       as.formula(paste(resp, "~ EXPOSURE + PLATE + (1|PATIENTCODE)"))
     } else {
-      as.formula(paste(resp, "~ EXPOSURE + PLATE + (1|PATIENTCODE)"))
+      as.formula(paste(resp, "~ EXPOSURE + (1|PATIENTCODE)"))
     }
     
     model <- try(lmer(model_formula, data = df), silent = TRUE)
@@ -653,7 +653,9 @@ pbs_level         <- "PBS Control"
 exclude_exposures <- c("Untreated Control", "Peat 5")
 zero_cutoff       <- 0.30
 pseudocount       <- 1e-6
-alpha             <- 0.1
+ALPHA_Q           <- 0.05
+TREND_ALPHA       <- 0.10
+SEX_LEVELS        <- c("M", "F")
 emmeans_weights   <- "equal"
 out_dir           <- "."
 
@@ -870,21 +872,77 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
     ungroup()
 }
 
+run_group_lmer_screen <- function(df, cytokine_cols, target_exposure,
+                                  ctrl_level = "PBS Control",
+                                  exclude_exposures = character(0),
+                                  sex_group = "All") {
+  d0 <- df %>%
+    filter(!EXPOSURE %in% exclude_exposures,
+           EXPOSURE %in% c(ctrl_level, target_exposure))
+  if (sex_group %in% SEX_LEVELS) {
+    d0 <- d0 %>% filter(as.character(SEX) == sex_group)
+  } else {
+    d0 <- d0 %>% filter(as.character(SEX) %in% SEX_LEVELS)
+  }
+  d0 <- d0 %>%
+    mutate(
+      EXPOSURE    = factor(EXPOSURE),
+      PATIENTCODE = factor(PATIENTCODE),
+      PLATE       = factor(PLATE),
+      CELLTYPE    = factor(CELLTYPE),
+      HORMONE     = factor(HORMONE)
+    )
+  strata <- d0 %>% distinct(CELLTYPE, HORMONE)
+  out <- vector("list", nrow(strata))
+  for (i in seq_len(nrow(strata))) {
+    ct <- strata$CELLTYPE[i]
+    ho <- strata$HORMONE[i]
+    dsub <- d0 %>% filter(CELLTYPE == ct, HORMONE == ho)
+    if (!all(c(ctrl_level, target_exposure) %in% unique(as.character(dsub$EXPOSURE)))) next
+    lmer_res <- try(
+      exposure_lmer_pairwise(
+        dsub,
+        group = "All",
+        adjust_method = "fdr",
+        response_columns = intersect(cytokine_cols, names(dsub)),
+        ctrl_level = ctrl_level
+      ),
+      silent = TRUE
+    )
+    if (inherits(lmer_res, "try-error") || nrow(lmer_res) == 0) next
+    out[[i]] <- lmer_res %>%
+      transmute(
+        SEX      = sex_group,
+        CELLTYPE = as.character(ct),
+        HORMONE  = as.character(ho),
+        EXPOSURE = target_exposure,
+        CYTOKINE = response,
+        estimate = estimate,
+        SE       = SE,
+        p.value  = p.value
+      )
+  }
+  bind_rows(out) %>%
+    group_by(SEX, CELLTYPE, HORMONE, EXPOSURE) %>%
+    mutate(
+      q   = p.adjust(p.value, method = "fdr"),
+      sig = q < ALPHA_Q
+    ) %>%
+    ungroup()
+}
+
 # ----------------------------
 # 3) Significance screening
 # ----------------------------
-sig_F <- screen_one_exposure_lmer_log2(
+sig_F <- run_group_lmer_screen(
   df_use, cytokine_cols_all, target_exposure, pbs_level,
-  exclude_exposures, pseudocount, group = "F",
-  alpha = alpha, emmeans_weights = emmeans_weights)
-sig_M <- screen_one_exposure_lmer_log2(
+  exclude_exposures, sex_group = "F")
+sig_M <- run_group_lmer_screen(
   df_use, cytokine_cols_all, target_exposure, pbs_level,
-  exclude_exposures, pseudocount, group = "M",
-  alpha = alpha, emmeans_weights = emmeans_weights)
-sig_All <- screen_one_exposure_lmer_log2(
+  exclude_exposures, sex_group = "M")
+sig_All <- run_group_lmer_screen(
   df_use, cytokine_cols_all, target_exposure, pbs_level,
-  exclude_exposures, pseudocount, group = "All",
-  alpha = alpha, emmeans_weights = emmeans_weights)
+  exclude_exposures, sex_group = "All")
 
 # ----------------------------
 # Hormone recode — uses e2_label defined at top
@@ -906,8 +964,10 @@ keep_cytokines <- bind_rows(sig_F, sig_M, sig_All) %>%
   filter(sig) %>% pull(CYTOKINE) %>% unique()
 
 cat("Exposure:", target_exposure, "\n")
-cat("Kept cytokines (sig in any group, q<", alpha, "):", length(keep_cytokines), "\n")
-if (length(keep_cytokines) == 0) stop("No cytokines meet q<alpha; nothing to plot.")
+cat("Kept cytokines (sig in any group, q<", ALPHA_Q, "):", length(keep_cytokines), "\n")
+if (length(keep_cytokines) == 0) {
+  cat("No cytokines meet q <", ALPHA_Q, "; skipping plots.\n")
+} else {
 
 # ----------------------------
 # 4) log2FC
@@ -916,13 +976,13 @@ long_target <- make_log2fc_long(
   df_use, keep_cytokines, pbs_level, exclude_exposures, pseudocount) %>%
   filter(EXPOSURE == target_exposure) %>%
   mutate(SEX = as.character(SEX)) %>%
-  filter(SEX %in% c("F", "M")) %>%
+  filter(SEX %in% SEX_LEVELS) %>%
   mutate(
-    SEX     = factor(SEX, levels = c("M", "F")),
+    SEX     = factor(SEX, levels = SEX_LEVELS),
     HORMONE = dplyr::recode(as.character(HORMONE),
                             "NONE"      = exp_short,
-                            "Estradiol" = e2_label),       # <<< e2_label
-    HORMONE = factor(HORMONE, levels = hormone_levels)     # <<< hormone_levels
+                            "Estradiol" = e2_label),
+    HORMONE = factor(HORMONE, levels = hormone_levels)
   )
 if (nrow(long_target) == 0) stop("No log2FC rows for target exposure.")
 
@@ -938,56 +998,83 @@ cyt_order <- long_target %>%
 # ----------------------------
 # 6) Build plot dfs
 # ----------------------------
+sig_map_sex <- bind_rows(sig_F, sig_M) %>%
+  filter(CYTOKINE %in% keep_cytokines) %>%
+  transmute(
+    SEX      = factor(as.character(SEX), levels = SEX_LEVELS),
+    CELLTYPE = as.character(CELLTYPE),
+    HORMONE  = factor(as.character(HORMONE), levels = hormone_levels),
+    CYTOKINE = as.character(CYTOKINE),
+    q        = as.numeric(q),
+    p.value  = as.numeric(p.value),
+    estimate = as.numeric(estimate)
+  ) %>%
+  group_by(SEX, CELLTYPE, HORMONE, CYTOKINE) %>%
+  summarise(
+    q        = min(q, na.rm = TRUE),
+    p.value  = min(p.value, na.rm = TRUE),
+    estimate = mean(estimate, na.rm = TRUE),
+    sig      = q < ALPHA_Q,
+    .groups = "drop"
+  )
+
+sig_map_all <- sig_All %>%
+  filter(CYTOKINE %in% keep_cytokines) %>%
+  transmute(
+    CELLTYPE = as.character(CELLTYPE),
+    HORMONE  = factor(as.character(HORMONE), levels = hormone_levels),
+    CYTOKINE = as.character(CYTOKINE),
+    q        = as.numeric(q),
+    p.value  = as.numeric(p.value),
+    estimate = as.numeric(estimate)
+  ) %>%
+  group_by(CELLTYPE, HORMONE, CYTOKINE) %>%
+  summarise(
+    q          = min(q, na.rm = TRUE),
+    p.value    = min(p.value, na.rm = TRUE),
+    estimate   = mean(estimate, na.rm = TRUE),
+    sig_pooled = q < ALPHA_Q,
+    .groups = "drop"
+  )
+
 plot_df_pooled <- long_target %>%
   group_by(CELLTYPE, HORMONE, CYTOKINE) %>%
   summarise(mean_log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
   mutate(CYTOKINE = factor(as.character(CYTOKINE), levels = cyt_order)) %>%
   add_rescaled_size("mean_log2FC", transform = "sqrt", out_col = "size_val") %>%
-  left_join(
-    sig_All %>% filter(CYTOKINE %in% keep_cytokines) %>%
-      select(CELLTYPE, HORMONE, CYTOKINE, sig_pooled = sig),
-    by = c("CELLTYPE", "HORMONE", "CYTOKINE")
-  ) %>%
+  left_join(sig_map_all, by = c("CELLTYPE", "HORMONE", "CYTOKINE")) %>%
   mutate(
+    q          = ifelse(is.na(q), 1, q),
     sig_pooled = ifelse(is.na(sig_pooled), FALSE, sig_pooled),
     All        = factor("All", levels = "All"),
-    panel_fill = ifelse(as.character(HORMONE) == e2_label, estradiol_fill, panel_fill_none),  # <<< e2_label
+    panel_fill = ifelse(as.character(HORMONE) == e2_label, estradiol_fill, panel_fill_none),
     direction  = case_when(
       mean_log2FC > 0 ~ "Up",
       mean_log2FC < 0 ~ "Down",
       TRUE            ~ "Zero"
-    ),
-    dot_shape  = ifelse(sig_pooled, 21, 1)
-  )
-
-sig_map_sex <- bind_rows(sig_F, sig_M) %>%
-  filter(CYTOKINE %in% keep_cytokines) %>%
-  mutate(SEX = as.character(SEX)) %>%
-  filter(SEX %in% c("F", "M")) %>%
-  mutate(SEX = factor(SEX, levels = c("M", "F"))) %>%
-  select(SEX, CELLTYPE, HORMONE, CYTOKINE, sig)
+    )
+  ) %>%
+  filter(sig_pooled)
 
 plot_df_sex <- long_target %>%
+  mutate(SEX = factor(as.character(SEX), levels = SEX_LEVELS)) %>%
   group_by(SEX, CELLTYPE, HORMONE, CYTOKINE) %>%
   summarise(mean_log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
-  mutate(
-    SEX      = factor(as.character(SEX), levels = c("M", "F")),
-    CYTOKINE = factor(as.character(CYTOKINE), levels = cyt_order)
-  ) %>%
+  mutate(CYTOKINE = factor(as.character(CYTOKINE), levels = cyt_order)) %>%
   add_rescaled_size("mean_log2FC", transform = "sqrt", out_col = "size_val") %>%
   left_join(sig_map_sex, by = c("SEX", "CELLTYPE", "HORMONE", "CYTOKINE")) %>%
   mutate(
+    q          = ifelse(is.na(q), 1, q),
     sig        = ifelse(is.na(sig), FALSE, sig),
-    panel_fill = ifelse(as.character(HORMONE) == e2_label, estradiol_fill, panel_fill_none),  # <<< e2_label
+    panel_fill = ifelse(as.character(HORMONE) == e2_label, estradiol_fill, panel_fill_none),
     direction  = case_when(
       mean_log2FC > 0 ~ "Up",
       mean_log2FC < 0 ~ "Down",
       TRUE            ~ "Zero"
-    ),
-    dot_shape  = ifelse(sig, 21, 1)
+    )
   ) %>%
-  filter(as.character(SEX) %in% c("F", "M")) %>%
-  mutate(SEX = factor(as.character(SEX), levels = c("M", "F")))
+  filter(sig) %>%
+  mutate(SEX = factor(as.character(SEX), levels = SEX_LEVELS))
 
 # ----------------------------
 # 7) Shared scales
@@ -1022,7 +1109,7 @@ size_scale <- scale_size_continuous(
 )
 
 cyt_levels <- levels(factor(plot_df_pooled$CYTOKINE, levels = cyt_order))
-sex_levels <- c("M", "F")
+sex_levels <- SEX_LEVELS
 
 # ----------------------------
 # 8) Build dotplots
@@ -1033,20 +1120,14 @@ p_pooled <- ggplot(plot_df_pooled, aes(x = All, y = CYTOKINE)) +
   new_scale_fill() +
   geom_hline(yintercept = seq_along(cyt_levels), color = "white", linewidth = 0.5) +
   geom_vline(xintercept = seq_along("All"),       color = "white", linewidth = 0.5) +
-  geom_point(aes(fill = direction, color = direction, size = size_val, shape = dot_shape),
+  geom_point(aes(fill = direction, color = direction, size = size_val),
              stroke = 0.5, alpha = 0.9) +
-  scale_shape_identity(
-    name   = "Significance",
-    guide  = guide_legend(override.aes = list(size = 4, fill = "grey40", color = "grey40")),
-    labels = c("21" = "q < 0.1", "1" = "q >= 0.1"),
-    breaks = c(21, 1)
-  ) +
   fill_scale + color_scale + size_scale +
   facet_grid(rows = vars(CELLTYPE), cols = vars(HORMONE), drop = FALSE) +
   scale_x_discrete(expand = expansion(mult = c(0.8, 0.8)), drop = TRUE) +
   scale_y_discrete(drop = FALSE) +
   ref_theme() +
-  labs(title = paste0(target_exposure, " +/- 17B-Estradiol"), y = "Cytokine")
+  labs(title = paste0(target_exposure, " — Pooled (All Samples)"), y = "Cytokine")
 
 p_sex <- ggplot(plot_df_sex, aes(x = SEX, y = CYTOKINE)) +
   geom_tile(aes(fill = panel_fill), width = Inf, height = 1, alpha = 1, show.legend = FALSE) +
@@ -1054,14 +1135,8 @@ p_sex <- ggplot(plot_df_sex, aes(x = SEX, y = CYTOKINE)) +
   new_scale_fill() +
   geom_hline(yintercept = seq_along(cyt_levels), color = "white", linewidth = 0.5) +
   geom_vline(xintercept = seq_along(sex_levels), color = "white", linewidth = 0.5) +
-  geom_point(aes(fill = direction, color = direction, size = size_val, shape = dot_shape),
+  geom_point(aes(fill = direction, color = direction, size = size_val),
              stroke = 0.5, alpha = 0.9) +
-  scale_shape_identity(
-    name   = "Significance",
-    guide  = guide_legend(override.aes = list(size = 4, fill = "grey40", color = "grey40")),
-    labels = c("21" = "q < 0.1", "1" = "q >= 0.1"),
-    breaks = c(21, 1)
-  ) +
   fill_scale + color_scale + size_scale +
   facet_grid(rows = vars(CELLTYPE), cols = vars(HORMONE), drop = FALSE) +
   scale_x_discrete(expand = expansion(mult = c(0.8, 0.8)), drop = TRUE) +
@@ -1072,12 +1147,12 @@ p_sex <- ggplot(plot_df_sex, aes(x = SEX, y = CYTOKINE)) +
     axis.title.y = element_blank(),
     axis.ticks.y = element_blank()
   ) +
-  labs(title = paste0(target_exposure, " +/- 17B-Estradiol by Sex"), y = NULL)
+  labs(title = paste0(target_exposure, " — By Sex"), y = NULL)
 
 # ----------------------------
 # 9) Combine with cowplot
 # ----------------------------
-legend_shared  <- cowplot::get_legend(p_pooled)
+legend_shared  <- cowplot::get_legend(if (nrow(plot_df_pooled) > 0) p_pooled else p_sex)
 p_pooled_noleg <- p_pooled + theme(legend.position = "none")
 p_sex_noleg    <- p_sex    + theme(legend.position = "none")
 
@@ -1099,23 +1174,25 @@ if (!dir.exists(cytokine_out_dir)) dir.create(cytokine_out_dir, recursive = TRUE
 for (cyt in keep_cytokines) {
 
   # 1. Plate-matched sample selection
-  plates_target <- imp$data %>%
+  donor_plate <- imp$data %>%
     filter(EXPOSURE == target_exposure, SEX %in% c("F", "M")) %>%
-    pull(PLATE) %>% unique()
+    distinct(PATIENTCODE)
 
   # 2. Raw data for this cytokine
-  d_raw <- imp$data %>%
-    filter(
-      SEX      %in% c("F", "M"),
-      EXPOSURE %in% c(target_exposure, pbs_level),
-      PLATE    %in% plates_target
+  d_raw <- bind_rows(
+      imp$data %>%
+        filter(SEX %in% SEX_LEVELS, EXPOSURE == target_exposure) %>%
+        semi_join(donor_plate, by = "PATIENTCODE"),
+      imp$data %>%
+        filter(SEX %in% SEX_LEVELS, EXPOSURE == pbs_level) %>%
+        semi_join(donor_plate, by = "PATIENTCODE")
     ) %>%
     mutate(
       HORMONE  = dplyr::recode(as.character(HORMONE),
                                "NONE"      = exp_short,
                                "Estradiol" = e2_label),
       HORMONE  = factor(HORMONE,  levels = hormone_levels),
-      SEX      = factor(SEX,      levels = c("M", "F")),
+      SEX      = factor(SEX,      levels = SEX_LEVELS),
       CYTOKINE = cyt,
       VALUE    = .data[[cyt]],
       EXPOSURE = factor(EXPOSURE, levels = c(pbs_level, target_exposure))
@@ -1168,27 +1245,22 @@ for (cyt in keep_cytokines) {
     )
 
   # 4. Pull significance
-  sig_for_cyt <- bind_rows(sig_F, sig_M) %>%
+  sig_for_cyt <- sig_map_sex %>%
     filter(CYTOKINE == cyt) %>%
-    mutate(
-      SEX     = factor(as.character(SEX), levels = c("M", "F")),
-      HORMONE = factor(as.character(HORMONE), levels = hormone_levels),
-      q       = as.numeric(q)
-    ) %>%
-    select(CELLTYPE, HORMONE, SEX, q) %>%
-    distinct(CELLTYPE, HORMONE, SEX, .keep_all = TRUE)
+    select(CELLTYPE, HORMONE, SEX, q, p.value, sig)
 
   # 5. Join significance
   summary_raw <- summary_raw %>%
     left_join(sig_for_cyt, by = c("CELLTYPE", "HORMONE", "SEX")) %>%
     mutate(
       q = as.numeric(q),
+      sig = ifelse(is.na(sig), FALSE, sig),
       sig_label = case_when(
-        q < 0.01 ~ "***",
-        q < 0.05 ~ "**",
-        q < 0.10 ~ "*",
-        q < 0.20 ~ "#",
         is.na(q) ~ "",
+        q < 0.001 ~ "***",
+        q < 0.01 ~ "**",
+        q < ALPHA_Q ~ "*",
+        q < TREND_ALPHA ~ "#",
         TRUE     ~ ""
       )
     )
@@ -1448,11 +1520,12 @@ for (cyt in keep_cytokines) {
 # 11) Save dotplots
 # ----------------------------
 ggsave(paste0(out_prefix, "_combined.png"),
-       plot = p_combined, width = 8, height = 6, units = "in", dpi = 300, bg = "white")
+       plot = p_combined, width = 14, height = 6, units = "in", dpi = 300, bg = "white")
 ggsave(paste0(out_prefix, "_combined_transparent.png"),
-       plot = p_combined, width = 8, height = 6, units = "in", dpi = 300, bg = "transparent")
+       plot = p_combined, width = 14, height = 6, units = "in", dpi = 300, bg = "transparent")
 ggsave(paste0(out_prefix, "_pooled.png"),
-       plot = p_pooled, width = 5, height = 6, units = "in", dpi = 300, bg = "white")
+       plot = p_pooled, width = 6, height = 6, units = "in", dpi = 300, bg = "white")
 ggsave(paste0(out_prefix, "_sex.png"),
-       plot = p_sex, width = 8, height = 6, units = "in", dpi = 300, bg = "white")
+       plot = p_sex, width = 10, height = 6, units = "in", dpi = 300, bg = "white")
+}
 ```
