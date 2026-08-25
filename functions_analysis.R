@@ -138,7 +138,23 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
     }
   }
   
-  dplyr::bind_rows(out) %>%
+  out_df <- dplyr::bind_rows(out)
+  if (nrow(out_df) == 0) {
+    out_df <- tibble::tibble(
+      SEX      = character(),
+      CELLTYPE = character(),
+      HORMONE  = character(),
+      EXPOSURE = character(),
+      CYTOKINE = character(),
+      estimate = numeric(),
+      SE       = numeric(),
+      p.value  = numeric(),
+      q        = numeric(),
+      sig      = logical()
+    )
+  }
+  
+  out_df %>%
     dplyr::group_by(SEX, CELLTYPE, HORMONE, EXPOSURE) %>%
     dplyr::mutate(q   = p.adjust(p.value, method = "fdr"),
                   sig = q < alpha) %>%
