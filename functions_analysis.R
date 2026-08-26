@@ -86,6 +86,23 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
   if (ctrl_level %in% levels(d0$EXPOSURE))
     d0$EXPOSURE <- relevel(d0$EXPOSURE, ref = ctrl_level)
   
+  # Empty result template, used whenever nothing survives screening
+  # (e.g. too few samples in this SEX/CELLTYPE/HORMONE stratum). Returning
+  # this instead of an empty bind_rows() output avoids a downstream
+  # `dplyr::group_by()` error on a 0-row/0-column tibble.
+  empty_result <- tibble::tibble(
+    SEX      = character(),
+    CELLTYPE = character(),
+    HORMONE  = character(),
+    EXPOSURE = character(),
+    CYTOKINE = character(),
+    estimate = numeric(),
+    SE       = numeric(),
+    p.value  = numeric(),
+    q        = numeric(),
+    sig      = logical()
+  )
+  
   get_contrast <- function(fit) {
     emm  <- emmeans::emmeans(fit, ~ EXPOSURE, weights = emmeans_weights)
     levs <- levels(emmeans::summary(emm)$EXPOSURE)
@@ -138,7 +155,16 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
     }
   }
   
-  dplyr::bind_rows(out) %>%
+  result <- dplyr::bind_rows(out)
+  
+  if (nrow(result) == 0) {
+    warning("screen_one_exposure_lmer_log2(): no cytokines survived screening for ",
+            "group='", group, "', target_exposure='", target_exposure,
+            "'. Returning an empty result.")
+    return(empty_result)
+  }
+  
+  result %>%
     dplyr::group_by(SEX, CELLTYPE, HORMONE, EXPOSURE) %>%
     dplyr::mutate(q   = p.adjust(p.value, method = "fdr"),
                   sig = q < alpha) %>%
