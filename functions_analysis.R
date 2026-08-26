@@ -392,7 +392,7 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
   lmer_F   <- exposure_lmer_pairwise(d_filt, "F",   "fdr", valid_cyts)
   lmer_M   <- exposure_lmer_pairwise(d_filt, "M",   "fdr", valid_cyts)
   lmer_int <- interaction_lmer_pairwise(d_filt, "All", "fdr", valid_cyts)
-
+  
   # Convert LMER results to plot-compatible format (used by cytokine dotplots
   # and bar plots instead of the retired screen_one_exposure_lmer_log2()).
   lmer_plot_data <- lmer_results_to_plot_format(
@@ -401,7 +401,7 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
     hormone  = hormone_filter,
     alpha    = alpha_q
   )
-
+  
   out_csv <- paste0("MSD_SALA_", label, "_lmer.csv")
   sig_tbl <- build_lmer_sig_table(
     lmer_All      = lmer_All,
@@ -444,19 +444,15 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
   
   # Step 7: apply FDR correction per group, then assign direction-aware stars
   # Stars are based on the FDR-adjusted q-value, not the raw p.value.
-  stars_df <- combined %>%
+    stars_df <- combined %>%
     dplyr::group_by(response) %>%
     dplyr::mutate(q = p.adjust(p.value, method = "fdr")) %>%
     dplyr::ungroup() %>%
     dplyr::mutate(stars = dplyr::case_when(
-      q < 0.001 & estimate > 0 ~ "***",
-      q < 0.001 & estimate < 0 ~ "###",
-      q < 0.01  & estimate > 0 ~ "**",
-      q < 0.01  & estimate < 0 ~ "##",
-      q < alpha & estimate > 0 ~ "*",
-      q < alpha & estimate < 0 ~ "#",
-      q < trend_alpha & estimate != 0 ~ "~",
-      TRUE ~ ""
+      q < 0.001 ~ "***",
+      q < 0.01  ~ "**",
+      q < 0.05  ~ "*",
+      TRUE      ~ ""
     ))
   
   # Steps 8-9: pivot stars long
@@ -547,13 +543,13 @@ lmer_results_to_plot_format <- function(lmer_All, lmer_F, lmer_M,
       dplyr::select(SEX, CELLTYPE, HORMONE, EXPOSURE, CYTOKINE,
                     estimate, SE, p.value)
   }
-
+  
   combined <- dplyr::bind_rows(
     parse_rows(lmer_All, "All"),
     parse_rows(lmer_F,   "F"),
     parse_rows(lmer_M,   "M")
   )
-
+  
   # FDR correction matching build_lmer_sig_table(): group by CYTOKINE
   # across all sex groups and exposures together.
   combined %>%
