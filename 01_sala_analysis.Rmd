@@ -97,18 +97,6 @@ cat("  CELLTYPE:", paste(levels(SALA_full$CELLTYPE), collapse = " | "), "\n")
 cat("  HORMONE :", paste(levels(SALA_full$HORMONE),  collapse = " | "), "\n")
 cat("  SEX     :", paste(levels(SALA_full$SEX),      collapse = " | "), "\n")
 cat("  EXPOSURE:", paste(levels(SALA_full$EXPOSURE), collapse = " | "), "\n")
-
-# Export no-estradiol subset for downstream use
-SALA_cytokines <- SALA_full %>%
-  dplyr::filter(HORMONE == "NONE") %>%
-  dplyr::select(
-    SAMPLEID, CELLTYPE, PATIENTCODE, SEX, EXPOSURE, HORMONE,
-    dplyr::any_of(c("SMOKER",
-                    "IL10","IL12P70","IL1B","IL4","IL6","TNFA","IL2","VEGF"))
-  )
-
-save_table(SALA_cytokines, "SALA_no_ESTRADIOL.csv")
-cat("✓ SALA_no_ESTRADIOL.csv saved\n")
 ```
 
 ------------------------------------------------------------------------
@@ -223,6 +211,32 @@ lmer_results_all <- dplyr::bind_rows(
 )
 cat("✓ lmer_results_all:", nrow(lmer_results_all), "rows\n")
 cat("  Significant (q <", ALPHA_Q, "):", sum(lmer_results_all$sig, na.rm = TRUE), "\n")
+
+# Long-format export: raw values + LMER significance per cytokine/exposure/sex
+SALA_TMR_sig <- SALA_full %>%
+  dplyr::filter(HORMONE == "NONE") %>%
+  dplyr::select(
+    SAMPLEID, CELLTYPE, PATIENTCODE, SEX, EXPOSURE, HORMONE,
+    dplyr::any_of("SMOKER"),
+    dplyr::any_of(cytokine_cols_all)
+  ) %>%
+  tidyr::pivot_longer(
+    cols      = dplyr::any_of(cytokine_cols_all),
+    names_to  = "CYTOKINE",
+    values_to = "VALUE"
+  ) %>%
+  dplyr::left_join(
+    lmer_results_all %>%
+      dplyr::filter(HORMONE == "NONE") %>%
+      dplyr::select(SEX, CELLTYPE, HORMONE, EXPOSURE, CYTOKINE, q, sig),
+    by = c("SEX", "CELLTYPE", "HORMONE", "EXPOSURE", "CYTOKINE")
+  ) %>%
+  dplyr::mutate(
+    sig = ifelse(is.na(sig), FALSE, sig)   # PBS rows / untested combos = not sig
+  )
+
+save_table(SALA_TMR_sig, "SALA_no_ESTRADIOL_with_sig.csv")
+cat("✓ SALA_no_ESTRADIOL_with_sig.csv saved (includes sig/q columns)\n")
 ```
 
 --------
@@ -516,10 +530,11 @@ save_plot(paste0(out_prefix, "_sex.png"),
         q         = as.numeric(q),
         sig       = ifelse(is.na(sig), FALSE, sig),
         sig_label = dplyr::case_when(
-          is.na(q)        ~ "",
-          q < ALPHA_Q     ~ "*",
-          q < TREND_ALPHA ~ "#",
-          TRUE            ~ ""
+          is.na(q)  ~ "",
+          q < 0.001 ~ "***",
+          q < 0.01  ~ "**",
+          q < 0.05  ~ "*",
+          TRUE      ~ ""
         )
       )
 
@@ -584,7 +599,7 @@ save_plot(paste0(out_prefix, "_sex.png"),
 
 ------------------------------------------------------------------------
 
-# Smoker Variance Analysis
+# Variance Analysis
 
 Uses `variancePartition::fitExtractVarPartModel()` to partition cytokine variance across SMOKER, SEX, HORMONE, CELLTYPE, EXPOSURE, and PATIENTCODE. Loops over all four high-dose exposures. PCA plots use the last exposure's matrix (Red Oak 25 by default).
 
@@ -839,6 +854,130 @@ if (length(vp_results_list) > 0) {
 ```
 
 ------------------------------------------------------------------------
+
+```{r pca-by-factors, fig.width=14, fig.height=10}
+# ── PCA across ALL exposures/celltypes/hormones (independent of smoker loop) ──
+# Uses the global `imp$data` / `cytokine_cols_all` from cytokine-setup, so it
+# is NOT tied to whichever exposure happened to run last in the SMOKER loop.
+
+pca_full_df <- imp$data %>%
+  dplyr::filter(SEX %in% c("F", "M")) %>%
+  dplyr::mutate(
+    SEX         = factor(SEX,      levels = SEX_LEVELS),
+    HORMONE     = factor(HORMONE,  levels = HORMONE_LEVELS),
+    CELLTYPE    = factor(CELLTYPE, levels = CELLTYPE_LEVELS),
+    EXPOSURE    = factor(EXPOSURE),
+    PATIENTCODE = factor(PATIENTCODE)
+  )
+
+cyt_mat_full <- pca_full_df %>%
+  dplyr::select(dplyr::all_of(cytokine_cols_all)) %>%
+  dplyr::mutate(dplyr::across(dplyr::everything(),
+                              ~ log2(as.numeric(.) + PSEUDOCOUNT))) %>%
+  as.matrix()
+rownames(cyt_mat_full) <- pca_full_df$SAMPLEID
+
+cv_full      <- apply(cyt_mat_full, 2, var, na.rm = TRUE)
+cyt_mat_full <- cyt_mat_full[, cv_full > 0 & !is.na(cv_full)]
+
+pca_res_full <- prcomp(cyt_mat_full, center = TRUE, scale. = TRUE)
+var_exp_full <- summary(pca_res_full)$importance[2, 1:2] * 100
+
+pca_df_full <- as.data.frame(pca_res_full$x[, 1:2]) %>%
+  tibble::rownames_to_column("SAMPLEID") %>%
+  dplyr::left_join(
+    pca_full_df %>%
+      dplyr::select(SAMPLEID, SEX, HORMONE, CELLTYPE, EXPOSURE, PATIENTCODE),
+    by = "SAMPLEID"
+  )
+
+pc_labs <- c(
+  x = paste0("PC1 (", round(var_exp_full[1], 1), "%)"),
+  y = paste0("PC2 (", round(var_exp_full[2], 1), "%)")
+)
+
+base_pca_theme <- ggplot2::theme_minimal(base_size = 12) +
+  ggplot2::theme(
+    plot.title       = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+    plot.subtitle    = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey40"),
+    panel.border     = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+    panel.grid.major = ggplot2::element_line(color = "gray88"),
+    panel.grid.minor = ggplot2::element_blank(),
+    strip.text       = ggplot2::element_text(face = "bold")
+  )
+
+# ── A) By EXPOSURE (wood fuel) ────────────────────────────────────────────
+p_pca_exposure_all <- ggplot2::ggplot(
+  pca_df_full, ggplot2::aes(PC1, PC2, fill = EXPOSURE, color = EXPOSURE)
+) +
+  ggplot2::stat_ellipse(ggplot2::aes(group = EXPOSURE),
+                        geom = "polygon", alpha = 0.10,
+                        linewidth = 0.6, show.legend = FALSE) +
+  ggplot2::geom_point(shape = 21, size = 2.5, alpha = 0.85, stroke = 0.6) +
+  ggplot2::scale_fill_manual(values = c(EXPOSURE_COLORS_DEEP, "PBS_Control" = "grey50"),
+                             name = "Exposure") +
+  ggplot2::scale_color_manual(values = c(EXPOSURE_COLORS_DEEP, "PBS_Control" = "grey50"),
+                              name = "Exposure") +
+  ggplot2::labs(x = pc_labs["x"], y = pc_labs["y"],
+                title = "PCA \u2014 By Exposure (wood fuel)") +
+  base_pca_theme
+
+# ── B) By AIRWAY (CELLTYPE) ────────────────────────────────────────────────
+p_pca_celltype <- ggplot2::ggplot(
+  pca_df_full, ggplot2::aes(PC1, PC2, fill = CELLTYPE, color = CELLTYPE)
+) +
+  ggplot2::stat_ellipse(ggplot2::aes(group = CELLTYPE),
+                        geom = "polygon", alpha = 0.10,
+                        linewidth = 0.6, show.legend = FALSE) +
+  ggplot2::geom_point(shape = 21, size = 2.5, alpha = 0.85, stroke = 0.6) +
+  ggplot2::scale_fill_manual(values = c("SAE" = DOWN_COLOR, "LAE" = UP_COLOR), name = "Airway") +
+  ggplot2::scale_color_manual(values = c("SAE" = DOWN_COLOR, "LAE" = UP_COLOR), name = "Airway") +
+  ggplot2::labs(x = pc_labs["x"], y = pc_labs["y"],
+                title = "PCA \u2014 By Airway (SAE vs LAE)") +
+  base_pca_theme
+
+# ── C) By SEX ───────────────────────────────────────────────────────────────
+p_pca_sex <- ggplot2::ggplot(
+  pca_df_full, ggplot2::aes(PC1, PC2, fill = SEX, color = SEX)
+) +
+  ggplot2::stat_ellipse(ggplot2::aes(group = SEX),
+                        geom = "polygon", alpha = 0.10,
+                        linewidth = 0.6, show.legend = FALSE) +
+  ggplot2::geom_point(shape = 21, size = 2.5, alpha = 0.85, stroke = 0.6) +
+  ggplot2::scale_fill_manual(values = c("F" = "#D7191C", "M" = "#2C7BB6"), name = "Sex") +
+  ggplot2::scale_color_manual(values = c("F" = "#D7191C", "M" = "#2C7BB6"), name = "Sex") +
+  ggplot2::labs(x = pc_labs["x"], y = pc_labs["y"], title = "PCA \u2014 By Sex") +
+  base_pca_theme
+
+# ── D) By HORMONE ─────────────────────────────────────────────────────────
+p_pca_hormone <- ggplot2::ggplot(
+  pca_df_full, ggplot2::aes(PC1, PC2, fill = HORMONE, color = HORMONE)
+) +
+  ggplot2::stat_ellipse(ggplot2::aes(group = HORMONE),
+                        geom = "polygon", alpha = 0.10,
+                        linewidth = 0.6, show.legend = FALSE) +
+  ggplot2::geom_point(shape = 21, size = 2.5, alpha = 0.85, stroke = 0.6) +
+  ggplot2::scale_fill_manual(values = c("NONE" = "grey50", "Estradiol" = "#4DAF4A"), name = "Hormone") +
+  ggplot2::scale_color_manual(values = c("NONE" = "grey50", "Estradiol" = "#4DAF4A"), name = "Hormone") +
+  ggplot2::labs(x = pc_labs["x"], y = pc_labs["y"], title = "PCA \u2014 By Hormone") +
+  base_pca_theme
+
+p_pca_factors_combined <- cowplot::plot_grid(
+  p_pca_exposure_all, p_pca_celltype, p_pca_sex, p_pca_hormone,
+  nrow = 2, ncol = 2,
+  labels = "AUTO", label_size = 14
+)
+print(p_pca_factors_combined)
+
+save_plot("pca_by_exposure_airway_sex_hormone.png",
+          p_pca_factors_combined, width = 14, height = 10, dpi = 300, bg = "white")
+
+# Individual saves in case you want them separately
+save_plot("pca_by_exposure.png", p_pca_exposure_all, width = 7, height = 6, dpi = 300, bg = "white")
+save_plot("pca_by_airway.png",   p_pca_celltype,      width = 7, height = 6, dpi = 300, bg = "white")
+save_plot("pca_by_sex.png",      p_pca_sex,           width = 7, height = 6, dpi = 300, bg = "white")
+save_plot("pca_by_hormone.png",  p_pca_hormone,       width = 7, height = 6, dpi = 300, bg = "white")
+```
 
 # Session Information
 
