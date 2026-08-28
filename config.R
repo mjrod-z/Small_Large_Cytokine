@@ -14,7 +14,7 @@ PATH_OUTPUT_REPORT  <- file.path(PATH_OUTPUT, "reports")
 # ── Analysis constants ────────────────────────────────────────────────────────
 ZERO_CUTOFF       <- 0.30
 PSEUDOCOUNT       <- 1e-6
-ALPHA_Q           <- 0.10
+ALPHA_Q           <- 0.05
 TREND_ALPHA       <- 0.20
 PBS_LEVEL         <- "PBS_Control"  # Changed from "PBS Control"
 EXCLUDE_EXPOSURES <- c("Untreated_Control", "Peat_5")

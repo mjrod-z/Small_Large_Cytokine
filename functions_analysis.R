@@ -59,6 +59,11 @@ make_log2fc_long <- function(df, cytokine_cols,
 }
 
 # ── LMER screening: one exposure vs PBS, per CELLTYPE × HORMONE × SEX ────────
+# NOTE: screen_one_exposure_lmer_log2() is SUPERSEDED and no longer called in
+# 01_sala_analysis.Rmd.  The single source of statistical truth is now the
+# exposure_lmer_pairwise() pipeline run inside run_lmer_chunk(), whose output
+# is returned as lmer_plot_data and used for both significance tables AND plots.
+# This function is kept here for reference only.
 
 screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
                                           ctrl_level        = "PBS_Control",
@@ -85,6 +90,23 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
   
   if (ctrl_level %in% levels(d0$EXPOSURE))
     d0$EXPOSURE <- relevel(d0$EXPOSURE, ref = ctrl_level)
+  
+  # Empty result template, used whenever nothing survives screening
+  # (e.g. too few samples in this SEX/CELLTYPE/HORMONE stratum). Returning
+  # this instead of an empty bind_rows() output avoids a downstream
+  # `dplyr::group_by()` error on a 0-row/0-column tibble.
+  empty_result <- tibble::tibble(
+    SEX      = character(),
+    CELLTYPE = character(),
+    HORMONE  = character(),
+    EXPOSURE = character(),
+    CYTOKINE = character(),
+    estimate = numeric(),
+    SE       = numeric(),
+    p.value  = numeric(),
+    q        = numeric(),
+    sig      = logical()
+  )
   
   get_contrast <- function(fit) {
     emm  <- emmeans::emmeans(fit, ~ EXPOSURE, weights = emmeans_weights)
@@ -138,23 +160,16 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
     }
   }
   
-  out_df <- dplyr::bind_rows(out)
-  if (nrow(out_df) == 0) {
-    out_df <- tibble::tibble(
-      SEX      = character(),
-      CELLTYPE = character(),
-      HORMONE  = character(),
-      EXPOSURE = character(),
-      CYTOKINE = character(),
-      estimate = numeric(),
-      SE       = numeric(),
-      p.value  = numeric(),
-      q        = numeric(),
-      sig      = logical()
-    )
+  result <- dplyr::bind_rows(out)
+  
+  if (nrow(result) == 0) {
+    warning("screen_one_exposure_lmer_log2(): no cytokines survived screening for ",
+            "group='", group, "', target_exposure='", target_exposure,
+            "'. Returning an empty result.")
+    return(empty_result)
   }
   
-  out_df %>%
+  result %>%
     dplyr::group_by(SEX, CELLTYPE, HORMONE, EXPOSURE) %>%
     dplyr::mutate(q   = p.adjust(p.value, method = "fdr"),
                   sig = q < alpha) %>%
@@ -378,6 +393,15 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
   lmer_M   <- exposure_lmer_pairwise(d_filt, "M",   "fdr", valid_cyts)
   lmer_int <- interaction_lmer_pairwise(d_filt, "All", "fdr", valid_cyts)
   
+  # Convert LMER results to plot-compatible format (used by cytokine dotplots
+  # and bar plots instead of the retired screen_one_exposure_lmer_log2()).
+  lmer_plot_data <- lmer_results_to_plot_format(
+    lmer_All, lmer_F, lmer_M,
+    celltype = celltype_filter,
+    hormone  = hormone_filter,
+    alpha    = alpha_q
+  )
+  
   out_csv <- paste0("MSD_SALA_", label, "_lmer.csv")
   sig_tbl <- build_lmer_sig_table(
     lmer_All      = lmer_All,
@@ -392,8 +416,9 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
   )
   
   cat("  Saved:", out_csv, "\n")
-  # Return both the significance table and the interaction results
-  invisible(list(sig_table = sig_tbl, lmer_interaction = lmer_int))
+  # Return significance table, interaction results, and plot-ready LMER data
+  invisible(list(sig_table = sig_tbl, lmer_interaction = lmer_int,
+                 lmer_plot_data = lmer_plot_data))
 }
 
 build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
@@ -419,19 +444,15 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
   
   # Step 7: apply FDR correction per group, then assign direction-aware stars
   # Stars are based on the FDR-adjusted q-value, not the raw p.value.
-  stars_df <- combined %>%
+    stars_df <- combined %>%
     dplyr::group_by(response) %>%
     dplyr::mutate(q = p.adjust(p.value, method = "fdr")) %>%
     dplyr::ungroup() %>%
     dplyr::mutate(stars = dplyr::case_when(
-      q < 0.001 & estimate > 0 ~ "***",
-      q < 0.001 & estimate < 0 ~ "###",
-      q < 0.01  & estimate > 0 ~ "**",
-      q < 0.01  & estimate < 0 ~ "##",
-      q < alpha & estimate > 0 ~ "*",
-      q < alpha & estimate < 0 ~ "#",
-      q < trend_alpha & estimate != 0 ~ "~",
-      TRUE ~ ""
+      q < 0.001 ~ "***",
+      q < 0.01  ~ "**",
+      q < 0.05  ~ "*",
+      TRUE      ~ ""
     ))
   
   # Steps 8-9: pivot stars long
@@ -499,6 +520,43 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
   
   save_table(sig_table, out_filename)
   invisible(sig_table)
+}
+
+# ── Convert exposure_lmer_pairwise() output to plot-compatible format ─────────
+# Used internally by run_lmer_chunk() to produce lmer_plot_data.
+# FDR correction matches build_lmer_sig_table() exactly:
+#   group_by(CYTOKINE) %>% p.adjust(p.value, method = "fdr")
+# so q-values are IDENTICAL between significance tables and plots.
+
+lmer_results_to_plot_format <- function(lmer_All, lmer_F, lmer_M,
+                                        celltype, hormone,
+                                        alpha = ALPHA_Q) {
+  parse_rows <- function(df, sex_label) {
+    df %>%
+      dplyr::mutate(
+        SEX      = sex_label,
+        CELLTYPE = celltype,
+        HORMONE  = hormone,
+        EXPOSURE = stringr::str_replace(contrast, " - PBS_Control$", ""),
+        CYTOKINE = response
+      ) %>%
+      dplyr::select(SEX, CELLTYPE, HORMONE, EXPOSURE, CYTOKINE,
+                    estimate, SE, p.value)
+  }
+  
+  combined <- dplyr::bind_rows(
+    parse_rows(lmer_All, "All"),
+    parse_rows(lmer_F,   "F"),
+    parse_rows(lmer_M,   "M")
+  )
+  
+  # FDR correction matching build_lmer_sig_table(): group by CYTOKINE
+  # across all sex groups and exposures together.
+  combined %>%
+    dplyr::group_by(CYTOKINE) %>%
+    dplyr::mutate(q = p.adjust(p.value, method = "fdr")) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(sig = q < alpha)
 }
 
 # ── LLOD imputation + summary helpers ─────────────────────────────────────────
