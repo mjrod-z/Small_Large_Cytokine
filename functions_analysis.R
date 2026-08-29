@@ -383,7 +383,10 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
                   SEX         = factor(SEX),
                   PATIENTCODE = factor(PATIENTCODE))
   
-  msd_sum <- summarize_to_wide(d_filt, measure_vars = valid_cyts)
+  # Export tables should include all cytokines present in the dataset, even if a
+  # cytokine is excluded from LMER testing (e.g., zero-cutoff screening).
+  export_cyts <- intersect(llod_table$Analyte, names(d_filt))
+  msd_sum <- summarize_to_wide(d_filt, measure_vars = export_cyts)
   pbs_ctl <- msd_sum %>%
     dplyr::select(Measurement, `PBS_Control`) %>%
     dplyr::arrange(Measurement)
