@@ -389,6 +389,184 @@ plot_gsea_barplot <- function(gsea_data, n_top = 12, facet_by = "sample_name",
                   fill = "FDR q-val")
 }
 
+# ── Single-combination cytokine bar plot helpers ──────────────────────────────
+
+# Build styled barplot for exactly one cytokine + one exposure + one sex +
+# one airway.  Reuses make_cytokine_barplot() to preserve manuscript style.
+make_cytokine_barplot_single_combo <- function(
+    df, cytokine, target_exposure, sex, airway,
+    pbs_level      = PBS_LEVEL,
+    up_color       = UP_COLOR_DEFAULT,
+    down_color     = DOWN_COLOR_DEFAULT,
+    estradiol_fill = ESTRADIOL_FILL_DEFAULT
+) {
+  stopifnot(cytokine %in% names(df))
+
+  exp_short      <- sub(" \\S+$", "", target_exposure)
+  e2_label       <- paste(exp_short, "+ E2")
+  hormone_levels <- c(exp_short, e2_label)
+  border_color   <- EXPOSURE_COLORS_DEEP[[target_exposure]]
+  panel_fill_none <- EXPOSURE_COLORS_LIGHT[[target_exposure]]
+
+  d_raw <- dplyr::bind_rows(
+    df %>%
+      dplyr::filter(SEX == sex, CELLTYPE == airway,
+                    EXPOSURE == target_exposure,
+                    HORMONE %in% c("NONE", "Estradiol")),
+    df %>%
+      dplyr::filter(SEX == sex, CELLTYPE == airway,
+                    EXPOSURE == pbs_level,
+                    HORMONE %in% c("NONE", "Estradiol"))
+  ) %>%
+    dplyr::mutate(
+      HORMONE  = dplyr::recode(as.character(HORMONE),
+                               "NONE" = exp_short, "Estradiol" = e2_label),
+      HORMONE  = factor(HORMONE, levels = hormone_levels),
+      SEX      = factor(as.character(SEX),      levels = c("M", "F")),
+      CELLTYPE = factor(as.character(CELLTYPE),  levels = c("LAE", "SAE")),
+      VALUE    = as.numeric(.data[[cytokine]]),
+      EXPOSURE = factor(as.character(EXPOSURE),  levels = c(pbs_level, target_exposure))
+    )
+
+  if (nrow(d_raw) == 0) return(NULL)
+
+  male_pt_fill <- grDevices::adjustcolor(border_color, alpha.f = 1,
+                                         red.f = 1.3, green.f = 1.3, blue.f = 1.3)
+
+  d_raw <- d_raw %>%
+    dplyr::mutate(
+      x_label = factor(
+        dplyr::case_when(
+          EXPOSURE == pbs_level       ~ "Control",
+          EXPOSURE == target_exposure ~ exp_short,
+          TRUE ~ as.character(EXPOSURE)
+        ),
+        levels = c("Control", exp_short)
+      ),
+      point_fill = dplyr::case_when(
+        SEX == "M" & EXPOSURE == pbs_level       ~ "grey80",
+        SEX == "M" & EXPOSURE == target_exposure ~ male_pt_fill,
+        TRUE                                     ~ "white"
+      ),
+      point_color = dplyr::case_when(
+        EXPOSURE == pbs_level       ~ "grey40",
+        EXPOSURE == target_exposure ~ border_color,
+        TRUE                        ~ "grey40"
+      )
+    )
+
+  summary_raw <- d_raw %>%
+    dplyr::group_by(SEX, EXPOSURE, HORMONE, CELLTYPE) %>%
+    dplyr::summarise(
+      mu = mean(VALUE, na.rm = TRUE),
+      sd = stats::sd(VALUE, na.rm = TRUE),
+      n  = dplyr::n(),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      panel_fill = ifelse(as.character(HORMONE) == e2_label,
+                          estradiol_fill, panel_fill_none),
+      bar_fill   = border_color,
+      bar_color  = border_color,
+      direction  = dplyr::case_when(
+        mu > 0 ~ "Up", mu < 0 ~ "Down", TRUE ~ "Zero"
+      ),
+      sig_color  = dplyr::case_when(
+        direction == "Up"   ~ up_color,
+        direction == "Down" ~ down_color,
+        TRUE                ~ "grey50"
+      ),
+      x_label = factor(
+        dplyr::case_when(
+          EXPOSURE == pbs_level       ~ "Control",
+          EXPOSURE == target_exposure ~ exp_short,
+          TRUE ~ as.character(EXPOSURE)
+        ),
+        levels = c("Control", exp_short)
+      ),
+      sig_label = ""
+    )
+
+  make_cytokine_barplot(
+    summary_raw     = summary_raw,
+    d_raw           = d_raw,
+    cyt             = cytokine,
+    target_exposure = target_exposure,
+    exp_short       = exp_short,
+    e2_label        = e2_label,
+    hormone_levels  = hormone_levels,
+    border_color    = border_color,
+    panel_fill_none = panel_fill_none,
+    up_color        = up_color,
+    down_color      = down_color,
+    estradiol_fill  = estradiol_fill
+  ) +
+    ggplot2::labs(
+      title = paste0(cytokine, " \u2014 ", target_exposure,
+                     " | SEX=", sex, " | AIRWAY=", airway)
+    )
+}
+
+# Loop all combinations of cytokines x exposures x sexes x airways,
+# optionally saving each plot.
+plot_all_cytokine_single_combo_bars <- function(
+    df,
+    cytokines,
+    exposures  = ALL_HIGH_DOSE_EXPOSURES,
+    sexes      = c("M", "F"),
+    airways    = c("LAE", "SAE"),
+    save       = TRUE,
+    out_subdir = "single_combo_barplots",
+    width      = 8,
+    height     = 5,
+    dpi        = 150
+) {
+  out <- list()
+
+  if (save) {
+    ensure_dir(here::here(PATH_OUTPUT_FIGS, out_subdir))
+  }
+
+  for (cyt in cytokines) {
+    for (exp in exposures) {
+      for (sx in sexes) {
+        for (aw in airways) {
+          p <- make_cytokine_barplot_single_combo(
+            df              = df,
+            cytokine        = cyt,
+            target_exposure = exp,
+            sex             = sx,
+            airway          = aw
+          )
+
+          key      <- paste(cyt, exp, sx, aw, sep = "__")
+          out[[key]] <- p
+
+          if (!is.null(p)) {
+            print(p)
+            if (save) {
+              fn <- paste0(
+                "barplot_", safe_name(cyt), "_",
+                safe_name(exp), "_SEX_", sx, "_AIRWAY_", aw, ".png"
+              )
+              save_plot(
+                filename = file.path(out_subdir, fn),
+                plot     = p,
+                width    = width,
+                height   = height,
+                dpi      = dpi,
+                bg       = "white"
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+
+  invisible(out)
+}
+
 # ── Save helpers ──────────────────────────────────────────────────────────────
 
 save_plot <- function(filename, plot = ggplot2::last_plot(),

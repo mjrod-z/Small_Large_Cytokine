@@ -735,6 +735,25 @@ save_plot(paste0(out_prefix, "_sex.png"),
 
 ------------------------------------------------------------------------
 
+# Individual Combination Bar Plots
+
+One plot per cytokine × exposure × sex × airway combination.
+Each plot shows only that subset (Control vs fuel, with NONE/E2 hormone panels).
+
+```{r individual_bar_plots, fig.width=8, fig.height=5}
+plot_list <- plot_all_cytokine_single_combo_bars(
+  df         = imp$data,
+  cytokines  = c("IL6", "IL8", "IL13", "TNFA"),
+  exposures  = ALL_HIGH_DOSE_EXPOSURES,
+  sexes      = c("M", "F"),
+  airways    = c("LAE", "SAE"),
+  save       = TRUE,
+  out_subdir = "single_combo_barplots"
+)
+```
+
+------------------------------------------------------------------------
+
 # Variance Analysis
 
 Uses `variancePartition::fitExtractVarPartModel()` to partition cytokine variance across SMOKER, SEX, HORMONE, CELLTYPE, EXPOSURE, and PATIENTCODE. Loops over all four high-dose exposures. PCA plots use the last exposure's matrix (Red Oak 25 by default).
