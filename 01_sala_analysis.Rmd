@@ -747,6 +747,7 @@ plot_list <- plot_all_cytokine_single_combo_bars(
   exposures  = ALL_HIGH_DOSE_EXPOSURES,
   sexes      = c("M", "F"),
   airways    = c("LAE", "SAE"),
+  sig_data   = lmer_results_all,
   save       = TRUE,
   out_subdir = "single_combo_barplots"
 )
