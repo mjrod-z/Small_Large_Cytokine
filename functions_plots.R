@@ -437,6 +437,36 @@ plot_all_cytokine_single_combo_bars <- function(
   invisible(out)
 }
 
+# ── Save helpers ──────────────────────────────────────────────────────────────
+
+save_plot <- function(filename, plot = ggplot2::last_plot(),
+                      width = 10, height = 8, dpi = 300,
+                      path = PATH_OUTPUT_FIGURES, bg = "white") {
+  dir.create(path, showWarnings = FALSE, recursive = TRUE)
+
+  ggplot2::ggsave(
+    filename = file.path(path, filename),
+    plot = plot,
+    width = width,
+    height = height,
+    dpi = dpi,
+    units = "in",
+    bg = bg
+  )
+
+  cat("✓ Saved plot:", file.path(path, filename), "\n")
+  invisible(TRUE)
+}
+
+save_table <- function(data, filename, path = PATH_OUTPUT_TABLES) {
+  dir.create(path, showWarnings = FALSE, recursive = TRUE)
+
+  readr::write_csv(data, file = file.path(path, filename))
+
+  cat("✓ Saved table:", file.path(path, filename), "\n")
+  invisible(TRUE)
+}
+
 # ── Per-cytokine histogram ────────────────────────────────────────────────────
 
 make_cytokine_histogram <- function(d_raw, cyt, target_exposure) {
