@@ -62,15 +62,29 @@ cat("✓ All packages loaded\n")
 cat("  Project root:", here::here(), "\n")
 
 # ── Export guard: ensures table exports include ALL analyzed cytokines ─────────
-# Apply before every save_table() call. Adds `analyzed_by_model` flag and
-# coerces `sig` to FALSE for untested rows rather than silently dropping them.
+# Apply before every save_table() call.
+#   • Adds `analyzed_by_model` flag and coerces `sig` to FALSE for untested rows.
+#   • When `ref_cytokines` is supplied, rows are added for any cytokine in that
+#     reference vector that is absent from `df`, so the exported table always
+#     covers the full starting panel even if a cytokine was never modelled.
 ensure_all_analyzed_for_export <- function(df,
-                                           cytokine_col = "CYTOKINE",
-                                           q_col        = "q",
-                                           sig_col      = "sig") {
+                                           cytokine_col  = "CYTOKINE",
+                                           q_col         = "q",
+                                           sig_col       = "sig",
+                                           ref_cytokines = NULL) {
   stopifnot(cytokine_col %in% names(df))
   if (!q_col   %in% names(df)) df[[q_col]]   <- NA_real_
   if (!sig_col %in% names(df)) df[[sig_col]] <- NA
+
+  # Inject placeholder rows for any ref cytokine absent from df
+  if (!is.null(ref_cytokines)) {
+    present <- unique(df[[cytokine_col]])
+    missing_cyts <- setdiff(ref_cytokines, present)
+    if (length(missing_cyts) > 0) {
+      stub <- tibble::tibble(!!cytokine_col := missing_cyts)
+      df <- dplyr::bind_rows(df, stub)
+    }
+  }
 
   df %>%
     dplyr::mutate(
@@ -211,7 +225,8 @@ Runs the 14-step lmer → significance-table pipeline for each of the four CELLT
 ## LAE — No Hormone
 
 ```{r lmer-lae-none}
-LAE_NONE_res  <- run_lmer_chunk("LAE_NONE", "LAE", "NONE", sala_full = SALA_full)
+LAE_NONE_res  <- run_lmer_chunk("LAE_NONE", "LAE", "NONE", sala_full = SALA_full,
+                                all_cytokines = export_cytokines)
 LAE_NONE_sig  <- LAE_NONE_res$sig_table
 LAE_NONE_lmer_interaction <- LAE_NONE_res$lmer_interaction
 ```
@@ -219,7 +234,8 @@ LAE_NONE_lmer_interaction <- LAE_NONE_res$lmer_interaction
 ## LAE — Estradiol
 
 ```{r lmer-lae-e2}
-LAE_E2_res  <- run_lmer_chunk("LAE_E2", "LAE", "Estradiol", sala_full = SALA_full)
+LAE_E2_res  <- run_lmer_chunk("LAE_E2", "LAE", "Estradiol", sala_full = SALA_full,
+                              all_cytokines = export_cytokines)
 LAE_E2_sig  <- LAE_E2_res$sig_table
 LAE_E2_lmer_interaction <- LAE_E2_res$lmer_interaction
 ```
@@ -227,7 +243,8 @@ LAE_E2_lmer_interaction <- LAE_E2_res$lmer_interaction
 ## SAE — No Hormone
 
 ```{r lmer-sae-none}
-SAE_NONE_res  <- run_lmer_chunk("SAE_NONE", "SAE", "NONE", sala_full = SALA_full)
+SAE_NONE_res  <- run_lmer_chunk("SAE_NONE", "SAE", "NONE", sala_full = SALA_full,
+                                all_cytokines = export_cytokines)
 SAE_NONE_sig  <- SAE_NONE_res$sig_table
 SAE_NONE_lmer_interaction <- SAE_NONE_res$lmer_interaction
 ```
@@ -235,7 +252,8 @@ SAE_NONE_lmer_interaction <- SAE_NONE_res$lmer_interaction
 ## SAE — Estradiol
 
 ```{r lmer-sae-e2}
-SAE_E2_res  <- run_lmer_chunk("SAE_E2", "SAE", "Estradiol", sala_full = SALA_full)
+SAE_E2_res  <- run_lmer_chunk("SAE_E2", "SAE", "Estradiol", sala_full = SALA_full,
+                              all_cytokines = export_cytokines)
 SAE_E2_sig  <- SAE_E2_res$sig_table
 SAE_E2_lmer_interaction <- SAE_E2_res$lmer_interaction
 ```
@@ -281,7 +299,8 @@ SALA_TMR_all_analyzed <- SALA_full %>%
   )
 
 SALA_TMR_all_analyzed <- ensure_all_analyzed_for_export(
-  SALA_TMR_all_analyzed, cytokine_col = "CYTOKINE", q_col = "q", sig_col = "sig"
+  SALA_TMR_all_analyzed, cytokine_col = "CYTOKINE", q_col = "q", sig_col = "sig",
+  ref_cytokines = export_cytokines
 )
 save_table(SALA_TMR_all_analyzed, "SALA_no_ESTRADIOL_all_analyzed_with_sig.csv")
 cat("✓ SALA_no_ESTRADIOL_all_analyzed_with_sig.csv saved (full starting panel + q/sig)\n")
@@ -727,11 +746,17 @@ for (exp in ALL_HIGH_DOSE_EXPOSURES) {
 if (length(vp_results_list) > 0) {
 
   vp_summary_all <- dplyr::bind_rows(vp_summary_list)
+  # NOTE: VP modelling requires LOD imputation, so the VP export is intentionally
+  # restricted to the LLOD-matched panel (cytokine_cols_all). Cytokines present
+  # in the raw MSD data but absent from cytokine_llod cannot be modelled and are
+  # therefore not included here. ref_cytokines is set to cytokine_cols_all (not
+  # export_cytokines) to reflect this intentional restriction accurately.
   vp_summary_all_out <- ensure_all_analyzed_for_export(
     vp_summary_all %>% dplyr::rename(CYTOKINE = Cytokine),
-    cytokine_col = "CYTOKINE",
-    q_col        = "q",
-    sig_col      = "sig"
+    cytokine_col  = "CYTOKINE",
+    q_col         = "q",
+    sig_col       = "sig",
+    ref_cytokines = cytokine_cols_all
   ) %>%
     dplyr::rename(Cytokine = CYTOKINE)
   save_table(vp_summary_all_out, "smoker_variance_all_exposures.csv")

@@ -362,7 +362,8 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
                            llod_table    = cytokine_llod,
                            zero_co       = ZERO_CUTOFF,
                            alpha_q       = ALPHA_Q,
-                           trend_a       = TREND_ALPHA) {
+                           trend_a       = TREND_ALPHA,
+                           all_cytokines = NULL) {
   
   cat("\n── LMER:", label, "──\n")
   
@@ -412,7 +413,8 @@ run_lmer_chunk <- function(label, celltype_filter, hormone_filter,
     cytokine_llod = llod_table,
     out_filename  = out_csv,
     alpha         = alpha_q,
-    trend_alpha   = trend_a
+    trend_alpha   = trend_a,
+    all_cytokines = all_cytokines
   )
   
   cat("  Saved:", out_csv, "\n")
@@ -425,9 +427,10 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
                                  msd_summary, pbs_control,
                                  cytokine_llod,
                                  out_filename,
-                                 alpha       = 0.1,
-                                 trend_alpha = 0.2,
-                                 epsilon     = 1e-5) {
+                                 alpha         = 0.1,
+                                 trend_alpha   = 0.2,
+                                 epsilon       = 1e-5,
+                                 all_cytokines = NULL) {
   
   # Step 6: format with group suffixes
   fmt <- function(df, grp) {
@@ -517,7 +520,24 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
     )) %>%
     dplyr::select(Measurement, `PBS_Control`, dplyr::everything(),
                   -Analyte_Base, -LLOD)
-  
+
+  # Append placeholder rows for raw-panel cytokines not reached by the model
+  # (absent from cytokine_llod or dropped by zero-cutoff filter). These rows
+  # will have NA for all exposure columns and PBS_Control so they are clearly
+  # identifiable as untested in the exported CSV.
+  if (!is.null(all_cytokines)) {
+    tested_cyts <- gsub("_(All|F|M)$", "", sig_table$Measurement) %>% unique()
+    missing_cyts <- setdiff(all_cytokines, tested_cyts)
+    if (length(missing_cyts) > 0) {
+      # Build one "_All" stub row per missing cytokine with NA exposure values
+      stub_rows <- tibble::tibble(
+        Measurement = paste0(missing_cyts, "_All"),
+        PBS_Control = NA_character_
+      )
+      sig_table <- dplyr::bind_rows(sig_table, stub_rows)
+    }
+  }
+
   save_table(sig_table, out_filename)
   invisible(sig_table)
 }
