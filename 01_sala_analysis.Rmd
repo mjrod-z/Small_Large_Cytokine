@@ -60,6 +60,24 @@ suppressPackageStartupMessages({
 
 cat("✓ All packages loaded\n")
 cat("  Project root:", here::here(), "\n")
+
+# ── Export guard: ensures table exports include ALL analyzed cytokines ─────────
+# Apply before every save_table() call. Adds `analyzed_by_model` flag and
+# coerces `sig` to FALSE for untested rows rather than silently dropping them.
+ensure_all_analyzed_for_export <- function(df,
+                                           cytokine_col = "CYTOKINE",
+                                           q_col        = "q",
+                                           sig_col      = "sig") {
+  stopifnot(cytokine_col %in% names(df))
+  if (!q_col   %in% names(df)) df[[q_col]]   <- NA_real_
+  if (!sig_col %in% names(df)) df[[sig_col]] <- NA
+
+  df %>%
+    dplyr::mutate(
+      analyzed_by_model = !is.na(.data[[q_col]]),
+      !!sig_col := dplyr::coalesce(.data[[sig_col]], FALSE)
+    )
+}
 ```
 
 ------------------------------------------------------------------------
@@ -212,8 +230,10 @@ lmer_results_all <- dplyr::bind_rows(
 cat("✓ lmer_results_all:", nrow(lmer_results_all), "rows\n")
 cat("  Significant (q <", ALPHA_Q, "):", sum(lmer_results_all$sig, na.rm = TRUE), "\n")
 
-# Long-format export: raw values + LMER significance per cytokine/exposure/sex
-SALA_TMR_sig <- SALA_full %>%
+# Long-format export: ALL analyzed cytokines + q/sig (not only significant)
+# `analyzed_by_lmer` = TRUE when the cytokine was tested in the mixed model;
+# `sig` is retained as a metadata flag (FALSE for untested/PBS rows).
+SALA_TMR_all_analyzed <- SALA_full %>%
   dplyr::filter(HORMONE == "NONE") %>%
   dplyr::select(
     SAMPLEID, CELLTYPE, PATIENTCODE, SEX, EXPOSURE, HORMONE,
@@ -232,11 +252,19 @@ SALA_TMR_sig <- SALA_full %>%
     by = c("SEX", "CELLTYPE", "HORMONE", "EXPOSURE", "CYTOKINE")
   ) %>%
   dplyr::mutate(
-    sig = ifelse(is.na(sig), FALSE, sig)   # PBS rows / untested combos = not sig
+    analyzed_by_lmer = !is.na(q),          # TRUE if tested in mixed model
+    sig              = dplyr::coalesce(sig, FALSE)  # PBS/untested combos = not sig
   )
 
-save_table(SALA_TMR_sig, "SALA_no_ESTRADIOL_with_sig.csv")
-cat("✓ SALA_no_ESTRADIOL_with_sig.csv saved (includes sig/q columns)\n")
+SALA_TMR_all_analyzed <- ensure_all_analyzed_for_export(
+  SALA_TMR_all_analyzed, cytokine_col = "CYTOKINE", q_col = "q", sig_col = "sig"
+)
+save_table(SALA_TMR_all_analyzed, "SALA_no_ESTRADIOL_all_analyzed_with_sig.csv")
+cat("✓ SALA_no_ESTRADIOL_all_analyzed_with_sig.csv saved (all analyzed cytokines + q/sig)\n")
+cat("  Unique cytokines in export:", dplyr::n_distinct(SALA_TMR_all_analyzed$CYTOKINE), "\n")
+cat("  Unique cytokines tested by LMER:", dplyr::n_distinct(lmer_results_all$CYTOKINE), "\n")
+cat("  Rows with analyzed_by_lmer=TRUE:", sum(SALA_TMR_all_analyzed$analyzed_by_lmer), "\n")
+cat("  Rows with analyzed_by_lmer=FALSE:", sum(!SALA_TMR_all_analyzed$analyzed_by_lmer), "\n")
 ```
 
 --------
@@ -674,7 +702,16 @@ for (exp in ALL_HIGH_DOSE_EXPOSURES) {
 if (length(vp_results_list) > 0) {
 
   vp_summary_all <- dplyr::bind_rows(vp_summary_list)
-  save_table(vp_summary_all, "smoker_variance_all_exposures.csv")
+  vp_summary_all_out <- ensure_all_analyzed_for_export(
+    vp_summary_all %>% dplyr::rename(CYTOKINE = Cytokine),
+    cytokine_col = "CYTOKINE",
+    q_col        = "q",
+    sig_col      = "sig"
+  ) %>%
+    dplyr::rename(Cytokine = CYTOKINE)
+  save_table(vp_summary_all_out, "smoker_variance_all_exposures.csv")
+  cat("✓ smoker_variance_all_exposures.csv saved (all variance-partitioned cytokines)\n")
+  cat("  Unique cytokines in VP export:", dplyr::n_distinct(vp_summary_all_out$Cytokine), "\n")
 
   # Violin plots per exposure
   vp_plots <- lapply(names(vp_results_list), function(exp) {
