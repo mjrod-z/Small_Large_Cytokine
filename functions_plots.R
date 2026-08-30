@@ -321,7 +321,11 @@ make_cytokine_barplot_single_combo <- function(
       dplyr::mutate(
         SEX = factor(as.character(SEX), levels = c("M", "F")),
         CELLTYPE = factor(as.character(CELLTYPE), levels = c("LAE", "SAE")),
-        HORMONE = factor(as.character(HORMONE), levels = hormone_levels),
+        HORMONE = factor(
+          dplyr::recode(as.character(HORMONE),
+                        "NONE" = exp_short, "Estradiol" = e2_label),
+          levels = hormone_levels
+        ),
         q = as.numeric(q),
         sig = dplyr::coalesce(sig, FALSE),
         sig_label = dplyr::case_when(
