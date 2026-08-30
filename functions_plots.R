@@ -235,6 +235,7 @@ make_cytokine_barplot <- function(summary_raw, d_raw, cyt,
 make_cytokine_barplot_single_combo <- function(
     df, cytokine, target_exposure, sex, airway,
     pbs_level      = PBS_LEVEL,
+    alpha_q        = ALPHA_Q,
     up_color       = UP_COLOR_DEFAULT,
     down_color     = DOWN_COLOR_DEFAULT,
     estradiol_fill = ESTRADIOL_FILL_DEFAULT,
@@ -330,7 +331,7 @@ make_cytokine_barplot_single_combo <- function(
     )
 
   if (!is.null(sig_data)) {
-    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q", "sig")
+    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
     missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
     if (length(missing_sig_cols) > 0) {
       stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
@@ -347,7 +348,7 @@ make_cytokine_barplot_single_combo <- function(
         ),
         EXPOSURE = factor(as.character(EXPOSURE), levels = c(pbs_level, target_exposure)),
         q = as.numeric(q),
-        sig = dplyr::coalesce(sig, q < ALPHA_Q, FALSE)
+        sig = dplyr::if_else(is.na(q), FALSE, q < alpha_q)
       ) %>%
       dplyr::filter(
         CYTOKINE == cytokine,
@@ -363,7 +364,8 @@ make_cytokine_barplot_single_combo <- function(
       ) %>%
       dplyr::mutate(
         q = dplyr::if_else(is.infinite(q), NA_real_, q),
-        sig_label = sig_label_from_q(q, alpha_q = ALPHA_Q)
+        sig = dplyr::if_else(is.na(q), FALSE, q < alpha_q),
+        sig_label = sig_label_from_q(q, alpha_q = alpha_q)
       )
 
     summary_raw <- summary_raw %>%
@@ -411,7 +413,7 @@ plot_all_cytokine_single_combo_bars <- function(
   out <- list()
 
   if (!is.null(sig_data)) {
-    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q", "sig")
+    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
     missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
     if (length(missing_sig_cols) > 0) {
       stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))

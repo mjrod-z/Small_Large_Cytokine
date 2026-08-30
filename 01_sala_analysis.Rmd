@@ -664,7 +664,7 @@ save_plot(paste0(out_prefix, "_sex.png"),
       dplyr::left_join(sig_for_cyt, by = c("CELLTYPE", "HORMONE", "SEX")) %>%
       dplyr::mutate(
         q         = as.numeric(q),
-        sig       = dplyr::coalesce(sig, q < ALPHA_Q, FALSE),
+        sig       = dplyr::if_else(is.na(q), FALSE, q < ALPHA_Q),
         sig_label = sig_label_from_q(q, alpha_q = ALPHA_Q)
       )
 
