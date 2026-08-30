@@ -159,8 +159,32 @@ validity is now determined consistently by the LMER pipeline (`valid_cytokines` 
 objects are used only for visualization (log₂FC, bar heights, raw-data points).
 
 ```{r cytokine-setup}
-# Identify cytokine columns present in SALA_full once, outside the loop
+# ── Full starting-panel cytokine list ─────────────────────────────────────────
+# All numeric columns in SALA_highdose are cytokine measurements; metadata
+# columns are non-numeric or are listed in NON_CYTOKINE_COLUMNS.
+NON_CYTOKINE_COLUMNS <- c(
+  "SAMPLEID", "Sample_ID", "SampleID",
+  "PATIENTCODE", "CELLTYPE", "EXPOSURE", "HORMONE", "SEX",
+  "GROUP", "CONCENTRATION", "TIMEPOINT", "SMOKER", "PLATE"
+)
+cytokines_started_with <- setdiff(
+  names(SALA_highdose)[sapply(SALA_highdose, is.numeric)],
+  NON_CYTOKINE_COLUMNS
+)
+
+# Export cytokine list: full starting panel intersected with SALA_full columns.
+# Used for all table exports so the exported data retains every cytokine from
+# the raw MSD panel, not only those present in the LLOD reference table.
+export_cytokines <- intersect(cytokines_started_with, names(SALA_full))
+
+# Model/imputation list (unchanged): only cytokines with an LLOD reference.
+# Statistical testing and imputation continue to use this restricted set.
 cytokine_cols_all <- intersect(names(SALA_full), cytokine_llod$Analyte)
+
+cat("✓ Cytokine lists built\n")
+cat("  Starting panel (raw MSD)   :", length(cytokines_started_with), "\n")
+cat("  Available for export       :", length(export_cytokines), "\n")
+cat("  Available for model/impute :", length(cytokine_cols_all), "\n\n")
 
 # Global imputation for visualization (dotplots, bar plots, smoker variance PCA).
 # Statistical testing uses the per-stratum imputation inside run_lmer_chunk().
@@ -238,10 +262,10 @@ SALA_TMR_all_analyzed <- SALA_full %>%
   dplyr::select(
     SAMPLEID, CELLTYPE, PATIENTCODE, SEX, EXPOSURE, HORMONE,
     dplyr::any_of("SMOKER"),
-    dplyr::any_of(cytokine_cols_all)
+    dplyr::any_of(export_cytokines)
   ) %>%
   tidyr::pivot_longer(
-    cols      = dplyr::any_of(cytokine_cols_all),
+    cols      = dplyr::any_of(export_cytokines),
     names_to  = "CYTOKINE",
     values_to = "VALUE"
   ) %>%
@@ -260,9 +284,10 @@ SALA_TMR_all_analyzed <- ensure_all_analyzed_for_export(
   SALA_TMR_all_analyzed, cytokine_col = "CYTOKINE", q_col = "q", sig_col = "sig"
 )
 save_table(SALA_TMR_all_analyzed, "SALA_no_ESTRADIOL_all_analyzed_with_sig.csv")
-cat("✓ SALA_no_ESTRADIOL_all_analyzed_with_sig.csv saved (all analyzed cytokines + q/sig)\n")
-cat("  Unique cytokines in export:", dplyr::n_distinct(SALA_TMR_all_analyzed$CYTOKINE), "\n")
-cat("  Unique cytokines tested by LMER:", dplyr::n_distinct(lmer_results_all$CYTOKINE), "\n")
+cat("✓ SALA_no_ESTRADIOL_all_analyzed_with_sig.csv saved (full starting panel + q/sig)\n")
+cat("  Starting panel cytokines   :", length(cytokines_started_with), "\n")
+cat("  Cytokines in export        :", dplyr::n_distinct(SALA_TMR_all_analyzed$CYTOKINE), "\n")
+cat("  Cytokines tested by LMER   :", dplyr::n_distinct(lmer_results_all$CYTOKINE), "\n")
 cat("  Rows with analyzed_by_lmer=TRUE:", sum(SALA_TMR_all_analyzed$analyzed_by_lmer), "\n")
 cat("  Rows with analyzed_by_lmer=FALSE:", sum(!SALA_TMR_all_analyzed$analyzed_by_lmer), "\n")
 ```
