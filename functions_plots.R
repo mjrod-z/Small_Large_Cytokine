@@ -8,6 +8,24 @@ UP_COLOR_DEFAULT   <- "#D7191C"
 DOWN_COLOR_DEFAULT <- "#2C7BB6"
 ESTRADIOL_FILL_DEFAULT <- "#E8F5E9"
 
+# ── Label helpers ───────────────────────────────────────────────────────────────
+
+short_exposure_label <- function(exposure) {
+  exposure %>%
+    gsub("_", " ", ., fixed = TRUE) %>%
+    sub(" \\d+$", "", .)
+}
+
+sig_label_from_q <- function(q, alpha_q = ALPHA_Q) {
+  dplyr::case_when(
+    is.na(q)   ~ "",
+    q < 0.001  ~ "***",
+    q < 0.01   ~ "**",
+    q < alpha_q ~ "*",
+    TRUE       ~ ""
+  )
+}
+
 # ── Size rescaling helper ─────────────────────────────────────────────────────
 
 add_rescaled_size <- function(df, value_col,
@@ -104,14 +122,7 @@ make_dotplot <- function(df, x_var, title_str,
 
 make_cytokine_barplot <- function(summary_raw, d_raw, cyt,
                                   target_exposure, exp_short,
-                                  e2_label, hormone_levels,
-                                  border_color,
-                                  panel_fill_none,
-                                  alpha_q     = ALPHA_Q,
-                                  trend_alpha = TREND_ALPHA,
-                                  up_color    = UP_COLOR_DEFAULT,
-                                  down_color  = DOWN_COLOR_DEFAULT,
-                                  estradiol_fill = ESTRADIOL_FILL_DEFAULT) {
+                                  border_color) {
   
   y_max     <- max(summary_raw$mu + summary_raw$sd, na.rm = TRUE)
   y_bracket <- y_max * 1.10
@@ -224,6 +235,7 @@ make_cytokine_barplot <- function(summary_raw, d_raw, cyt,
 make_cytokine_barplot_single_combo <- function(
     df, cytokine, target_exposure, sex, airway,
     pbs_level      = PBS_LEVEL,
+    alpha_q        = ALPHA_Q,
     up_color       = UP_COLOR_DEFAULT,
     down_color     = DOWN_COLOR_DEFAULT,
     estradiol_fill = ESTRADIOL_FILL_DEFAULT,
@@ -231,7 +243,7 @@ make_cytokine_barplot_single_combo <- function(
 ) {
   stopifnot(cytokine %in% names(df))
 
-  exp_short       <- sub(" \\S+$", "", target_exposure)
+  exp_short       <- short_exposure_label(target_exposure)
   e2_label        <- paste(exp_short, "+ E2")
   hormone_levels  <- c(exp_short, e2_label)
   border_color    <- EXPOSURE_COLORS_DEEP[[target_exposure]]
@@ -313,10 +325,18 @@ make_cytokine_barplot_single_combo <- function(
         ),
         levels = c("Control", exp_short)
       ),
+      q = NA_real_,
+      sig = FALSE,
       sig_label = ""
     )
 
   if (!is.null(sig_data)) {
+    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
+    missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
+    if (length(missing_sig_cols) > 0) {
+      stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
+    }
+
     sig_data <- sig_data %>%
       dplyr::mutate(
         SEX = factor(as.character(SEX), levels = c("M", "F")),
@@ -326,29 +346,41 @@ make_cytokine_barplot_single_combo <- function(
                         "NONE" = exp_short, "Estradiol" = e2_label),
           levels = hormone_levels
         ),
+        EXPOSURE = factor(as.character(EXPOSURE), levels = c(pbs_level, target_exposure)),
         q = as.numeric(q),
-        sig = dplyr::coalesce(sig, FALSE),
-        sig_label = dplyr::case_when(
-          is.na(q)  ~ "",
-          q < 0.001 ~ "***",
-          q < 0.01  ~ "**",
-          q < 0.05  ~ "*",
-          TRUE      ~ ""
-        )
+        sig = dplyr::if_else(is.na(q), FALSE, q < alpha_q)
       ) %>%
-      dplyr::filter(CYTOKINE == cytokine)
+      dplyr::filter(
+        CYTOKINE == cytokine,
+        EXPOSURE == target_exposure,
+        SEX == sex,
+        CELLTYPE == airway
+      ) %>%
+      dplyr::group_by(CELLTYPE, HORMONE, SEX, EXPOSURE) %>%
+      dplyr::summarise(
+        q = suppressWarnings(min(q, na.rm = TRUE)),
+        sig = any(sig %in% TRUE, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        q = dplyr::if_else(is.infinite(q), NA_real_, q),
+        sig = dplyr::if_else(is.na(q), FALSE, q < alpha_q),
+        sig_label = sig_label_from_q(q, alpha_q = alpha_q)
+      )
 
     summary_raw <- summary_raw %>%
       dplyr::left_join(
-        sig_data %>% dplyr::select(CELLTYPE, HORMONE, SEX, q, sig, sig_label),
-        by = c("CELLTYPE", "HORMONE", "SEX")
+        sig_data %>%
+          dplyr::select(CELLTYPE, HORMONE, SEX, EXPOSURE, q, sig, sig_label) %>%
+          dplyr::rename(q_sig = q, sig_sig = sig, sig_label_sig = sig_label),
+        by = c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE")
       ) %>%
       dplyr::mutate(
-        sig_label = dplyr::coalesce(sig_label.y, sig_label.x),
-        sig       = dplyr::coalesce(sig.y, FALSE),
-        q         = dplyr::coalesce(q.y, q.x)
+        sig_label = dplyr::coalesce(sig_label_sig, sig_label),
+        sig       = dplyr::coalesce(sig_sig, sig, FALSE),
+        q         = dplyr::coalesce(q_sig, q)
       ) %>%
-      dplyr::select(-dplyr::ends_with(".x"), -dplyr::ends_with(".y"))
+      dplyr::select(-q_sig, -sig_sig, -sig_label_sig)
   }
 
   make_cytokine_barplot(
@@ -357,13 +389,7 @@ make_cytokine_barplot_single_combo <- function(
     cyt             = cytokine,
     target_exposure = target_exposure,
     exp_short       = exp_short,
-    e2_label        = e2_label,
-    hormone_levels  = hormone_levels,
-    border_color    = border_color,
-    panel_fill_none = panel_fill_none,
-    up_color        = up_color,
-    down_color      = down_color,
-    estradiol_fill  = estradiol_fill
+    border_color    = border_color
   ) +
     ggplot2::labs(
       title = paste0(cytokine, " — ", target_exposure,
@@ -385,6 +411,14 @@ plot_all_cytokine_single_combo_bars <- function(
     dpi        = 150
 ) {
   out <- list()
+
+  if (!is.null(sig_data)) {
+    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
+    missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
+    if (length(missing_sig_cols) > 0) {
+      stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
+    }
+  }
 
   if (save) {
     ensure_dir(here::here(PATH_OUTPUT_FIGS, out_subdir))

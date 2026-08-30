@@ -23,7 +23,7 @@ knit: (function(input, ...) {
     CELLTYPE : SAE | LAE   (CELLTYPE_LEVELS)
     HORMONE  : NONE | Estradiol  (HORMONE_LEVELS)
     SEX      : M | F       (SEX_LEVELS)
-    EXPOSURE : PBS Control | Pine 25 | Peat 25 | Eucalyptus 25 | Red Oak 25
+    EXPOSURE : PBS_Control | Pine_25 | Peat_25 | Eucalyptus_25 | RedOak_25
   ============================================================ -->
 ```
 
@@ -213,7 +213,7 @@ df_use <- imp$data
 cat("✓ Global imputation complete\n")
 cat("  Valid cytokines:", length(imp$valid_cytokines), "\n")
 cat("  Skipped (>", ZERO_CUTOFF * 100, "% zeros):",
-    nrow(imp$skipped_cytokines), "\n\n")
+    length(imp$skipped_cytokines), "\n\n")
 ```
 
 --------
@@ -399,7 +399,7 @@ for (target_exposure in ALL_HIGH_DOSE_EXPOSURES) {
   cat("\n\n## Exposure:", target_exposure, "\n\n")
 
   # Derived labels used everywhere in this iteration
-  exp_short       <- sub(" \\S+$", "", target_exposure)   # e.g. "Red Oak"
+  exp_short       <- short_exposure_label(target_exposure) # e.g. "Red Oak"
   e2_label        <- paste(exp_short, "+ E2")              # e.g. "Red Oak + E2"
   hormone_levels  <- c(exp_short, e2_label)                # display order
   safe_exp        <- safe_name(target_exposure)
@@ -664,14 +664,8 @@ save_plot(paste0(out_prefix, "_sex.png"),
       dplyr::left_join(sig_for_cyt, by = c("CELLTYPE", "HORMONE", "SEX")) %>%
       dplyr::mutate(
         q         = as.numeric(q),
-        sig       = ifelse(is.na(sig), FALSE, sig),
-        sig_label = dplyr::case_when(
-          is.na(q)  ~ "",
-          q < 0.001 ~ "***",
-          q < 0.01  ~ "**",
-          q < 0.05  ~ "*",
-          TRUE      ~ ""
-        )
+        sig       = dplyr::if_else(is.na(q), FALSE, q < ALPHA_Q),
+        sig_label = sig_label_from_q(q, alpha_q = ALPHA_Q)
       )
 
     d_raw <- d_raw %>%
@@ -708,15 +702,7 @@ save_plot(paste0(out_prefix, "_sex.png"),
       cyt             = cyt,
       target_exposure = target_exposure,
       exp_short       = exp_short,
-      e2_label        = e2_label,
-      hormone_levels  = hormone_levels,
-      border_color    = border_color,
-      panel_fill_none = panel_fill_none,
-      alpha_q         = ALPHA_Q,
-      trend_alpha     = TREND_ALPHA,
-      up_color        = UP_COLOR,
-      down_color      = DOWN_COLOR,
-      estradiol_fill  = ESTRADIOL_FILL
+      border_color    = border_color
     )
 
     cyt_safe <- safe_name(cyt)
