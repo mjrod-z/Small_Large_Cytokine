@@ -309,6 +309,70 @@ cat("  Cytokines in export        :", dplyr::n_distinct(SALA_TMR_all_analyzed$CY
 cat("  Cytokines tested by LMER   :", dplyr::n_distinct(lmer_results_all$CYTOKINE), "\n")
 cat("  Rows with analyzed_by_lmer=TRUE:", sum(SALA_TMR_all_analyzed$analyzed_by_lmer), "\n")
 cat("  Rows with analyzed_by_lmer=FALSE:", sum(!SALA_TMR_all_analyzed$analyzed_by_lmer), "\n")
+
+# ── Wide mean ± SD summary table (all cytokines, all groups, significance as metadata) ──
+# Helper: format "mean ± sd" from a numeric vector
+fmt_mean_sd <- function(x, digits = 3) {
+  m <- mean(x, na.rm = TRUE)
+  s <- sd(x,   na.rm = TRUE)
+  if (is.na(m)) return(NA_character_)
+  sprintf(paste0("%.", digits, "f \u00b1 %.", digits, "f"),
+          m, ifelse(is.na(s), 0, s))
+}
+
+exposure_order <- c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)
+
+summary_long <- df_use %>%
+  dplyr::filter(HORMONE == "NONE") %>%
+  tidyr::pivot_longer(
+    cols      = dplyr::any_of(export_cytokines),
+    names_to  = "CYTOKINE",
+    values_to = "VALUE"
+  ) %>%
+  dplyr::mutate(SEX = as.character(SEX))
+
+tab_all <- summary_long %>%
+  dplyr::group_by(CYTOKINE, EXPOSURE) %>%
+  dplyr::summarise(stat = fmt_mean_sd(VALUE), .groups = "drop") %>%
+  dplyr::mutate(CYTOKINE_SEX = paste0(CYTOKINE, "_All"))
+
+tab_sex <- summary_long %>%
+  dplyr::filter(SEX %in% c("F", "M")) %>%
+  dplyr::group_by(CYTOKINE, SEX, EXPOSURE) %>%
+  dplyr::summarise(stat = fmt_mean_sd(VALUE), .groups = "drop") %>%
+  dplyr::mutate(CYTOKINE_SEX = paste0(CYTOKINE, "_", SEX))
+
+tab_stats <- dplyr::bind_rows(tab_all, tab_sex) %>%
+  dplyr::select(CYTOKINE_SEX, CYTOKINE, EXPOSURE, stat) %>%
+  dplyr::mutate(EXPOSURE = factor(EXPOSURE, levels = exposure_order)) %>%
+  tidyr::pivot_wider(names_from = EXPOSURE, values_from = stat)
+
+qsig <- lmer_results_all %>%
+  dplyr::filter(HORMONE == "NONE") %>%
+  dplyr::mutate(
+    SEX = as.character(SEX),
+    CYTOKINE_SEX = paste0(CYTOKINE, "_",
+                          dplyr::if_else(SEX %in% c("F", "M"), SEX, "All"))
+  ) %>%
+  dplyr::group_by(CYTOKINE_SEX, CYTOKINE) %>%
+  dplyr::summarise(
+    min_q   = suppressWarnings(min(q, na.rm = TRUE)),
+    any_sig = any(sig %in% TRUE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    min_q   = dplyr::if_else(is.infinite(min_q), NA_real_, min_q),
+    any_sig = dplyr::coalesce(any_sig, FALSE)
+  )
+
+cytokine_mean_sd_table <- tab_stats %>%
+  dplyr::left_join(qsig, by = c("CYTOKINE_SEX", "CYTOKINE")) %>%
+  dplyr::arrange(CYTOKINE, CYTOKINE_SEX)
+
+save_table(cytokine_mean_sd_table, "cytokine_mean_sd_all_rows_with_qsig.csv")
+cat("✓ cytokine_mean_sd_all_rows_with_qsig.csv saved\n")
+cat("  Rows:", nrow(cytokine_mean_sd_table),
+    " | Cytokines:", dplyr::n_distinct(cytokine_mean_sd_table$CYTOKINE), "\n")
 ```
 
 --------
