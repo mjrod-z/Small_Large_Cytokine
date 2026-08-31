@@ -64,9 +64,13 @@ make_dotplot <- function(df, x_var, title_str,
     name   = "Direction\n(vs matched PBS)",
     values = c("Up" = up_color, "Down" = down_color, "Zero" = "grey70"),
     na.value = "grey70")
+  # Cap dot diameter so dots never overlap when many cytokines are present.
+  # max_dot shrinks proportionally with row count; stays between 2 and 8.
+  n_cyt    <- max(1L, length(cyt_levels))
+  max_dot  <- max(2, min(8, 30 / n_cyt))
   size_scale  <- ggplot2::scale_size_continuous(
     name  = "Effect size\n(sqrt|mean log2FC|)",
-    range = c(1, 8), limits = c(0, NA))
+    range = c(1, max_dot), limits = c(0, NA))
   
   ref_theme <- ggplot2::theme_minimal(base_size = 11) +
     ggplot2::theme(
@@ -108,7 +112,9 @@ make_dotplot <- function(df, x_var, title_str,
                         cols = ggplot2::vars(HORMONE), drop = FALSE) +
     ggplot2::scale_x_discrete(expand = ggplot2::expansion(mult = c(0.8, 0.8)),
                               drop = TRUE) +
-    ggplot2::scale_y_discrete(drop = FALSE) +
+    # Half-unit padding keeps the outermost dots from being clipped at panel edges
+    ggplot2::scale_y_discrete(drop = FALSE,
+                              expand = ggplot2::expansion(add = 0.5)) +
     ref_theme +
     ggplot2::labs(title = title_str, y = "Cytokine")
   
