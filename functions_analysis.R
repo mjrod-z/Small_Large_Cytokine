@@ -447,7 +447,7 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
   
   # Step 7: apply FDR correction per group, then assign direction-aware stars
   # Stars are based on the FDR-adjusted q-value, not the raw p.value.
-    stars_df <- combined %>%
+  stars_df <- combined %>%
     dplyr::group_by(response) %>%
     dplyr::mutate(q = p.adjust(p.value, method = "fdr")) %>%
     dplyr::ungroup() %>%
@@ -520,7 +520,7 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
     )) %>%
     dplyr::select(Measurement, `PBS_Control`, dplyr::everything(),
                   -Analyte_Base, -LLOD)
-
+  
   # Append placeholder rows for raw-panel cytokines not reached by the model
   # (absent from cytokine_llod or dropped by zero-cutoff filter). These rows
   # will have NA for all exposure columns and PBS_Control so they are clearly
@@ -537,7 +537,7 @@ build_lmer_sig_table <- function(lmer_All, lmer_F, lmer_M,
       sig_table <- dplyr::bind_rows(sig_table, stub_rows)
     }
   }
-
+  
   save_table(sig_table, out_filename)
   invisible(sig_table)
 }
