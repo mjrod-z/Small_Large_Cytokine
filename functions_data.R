@@ -22,6 +22,112 @@ ensure_dir <- function(path) {
   invisible(path)
 }
 
+# Add these helpers to functions_data.R (below standardize_exposure is fine)
+
+parse_race_age <- function(df) {
+  # Handles a single combined column like "RACE, AGE" containing "Hispanic, 20"
+  race_age_col <- names(df)[tolower(gsub("\\s+", "", names(df))) %in% c("race,age", "raceage")]
+  if (length(race_age_col) == 0) return(df)
+  
+  col <- race_age_col[1]
+  parts <- stringr::str_split_fixed(as.character(df[[col]]), ",\\s*", 2)
+  
+  # Only fill missing RACE/AGE if not already present/populated
+  if (!"RACE" %in% names(df)) df$RACE <- NA_character_
+  if (!"AGE"  %in% names(df)) df$AGE  <- NA_real_
+  
+  race_new <- trimws(parts[, 1])
+  age_new  <- suppressWarnings(as.numeric(trimws(parts[, 2])))
+  
+  df$RACE <- dplyr::if_else(is.na(df$RACE) | df$RACE == "", race_new, as.character(df$RACE))
+  df$AGE  <- dplyr::if_else(is.na(df$AGE), age_new, as.numeric(df$AGE))
+  
+  df
+}
+
+derive_hormone_from_exposure <- function(exposure_chr, default_hormone = "NONE") {
+  x <- as.character(exposure_chr)
+  has_e2 <- grepl("1\\s*nM\\s*(B-)?Estradiol|\\+\\s*E2", x, ignore.case = TRUE)
+  ifelse(has_e2, "Estradiol", default_hormone)
+}
+
+standardize_exposure <- function(x) {
+  x <- trimws(as.character(x))
+  
+  # Remove dose units text and "Smoldering" prefix
+  x <- gsub("µg/cm2|ug/cm2", "", x, ignore.case = TRUE)
+  x <- gsub("^Smoldering\\s+", "", x, ignore.case = TRUE)
+  
+  # Remove hormone/paraffin suffixes
+  x <- gsub(",?\\s*1\\s*nM\\s*B-Estradiol\\s*$", "", x, ignore.case = TRUE)
+  x <- gsub(",?\\s*1\\s*nM\\s*Estradiol\\s*$",   "", x, ignore.case = TRUE)
+  x <- gsub(",?\\s*\\+\\s*E2\\s*$",              "", x, ignore.case = TRUE)
+  x <- gsub(",?\\s*\\+\\s*Parafin\\s*$",         "", x, ignore.case = TRUE)
+  x <- trimws(x)
+  
+  # Collapse spaces
+  x <- gsub("\\s+", " ", x)
+  
+  # Canonical mappings
+  x <- gsub("^Red Oak (5|25)$",    "RedOak_\\1",      x, ignore.case = TRUE)
+  x <- gsub("^Eucalyptus (5|25)$", "Eucalyptus_\\1",  x, ignore.case = TRUE)
+  x <- gsub("^Pine (5|25)$",       "Pine_\\1",        x, ignore.case = TRUE)
+  x <- gsub("^Peat (5|25)$",       "Peat_\\1",        x, ignore.case = TRUE)
+  
+  x <- gsub("^PBS Control$",       "PBS_Control",      x, ignore.case = TRUE)
+  x <- gsub("^PBS$",               "PBS_Control",      x, ignore.case = TRUE)
+  x <- gsub("^Untreated Control$", "Untreated_Control",x, ignore.case = TRUE)
+  x <- gsub("^Untreated$",         "Untreated_Control",x, ignore.case = TRUE)
+  x <- gsub("^Unexposed$",         "Untreated_Control",x, ignore.case = TRUE)
+  
+  # Final cleanup
+  x <- gsub(" ", "_", x)
+  x <- gsub("^Red_Oak_(5|25)$", "RedOak_\\1", x)
+  x <- gsub("_+", "_", x)
+  x <- gsub("^_|_$", "", x)
+  x
+}
+
+clean_sala_metadata <- function(metadata) {
+  md <- metadata
+  
+  # Normalize sample IDs if present
+  if ("SAMPLEID" %in% names(md)) {
+    md$SAMPLEID <- standardize_sample_id(md$SAMPLEID)
+  }
+  
+  # Split combined race/age field if present
+  md <- parse_race_age(md)
+  
+  # Derive HORMONE from exposure text if HORMONE missing/blank
+  if (!"HORMONE" %in% names(md)) md$HORMONE <- NA_character_
+  if ("EXPOSURE" %in% names(md)) {
+    inferred_hormone <- derive_hormone_from_exposure(md$EXPOSURE)
+    md$HORMONE <- dplyr::if_else(
+      is.na(md$HORMONE) | trimws(md$HORMONE) == "",
+      inferred_hormone,
+      as.character(md$HORMONE)
+    )
+    md$EXPOSURE <- standardize_exposure(md$EXPOSURE)
+  }
+  
+  # Standardize key factors
+  if ("SEX" %in% names(md)) {
+    md$SEX <- toupper(trimws(as.character(md$SEX)))
+  }
+  if ("CELLTYPE" %in% names(md)) {
+    md$CELLTYPE <- toupper(trimws(as.character(md$CELLTYPE)))
+  }
+  if ("HORMONE" %in% names(md)) {
+    md$HORMONE <- dplyr::case_when(
+      grepl("^E2$|Estradiol", md$HORMONE, ignore.case = TRUE) ~ "Estradiol",
+      TRUE ~ "NONE"
+    )
+  }
+  
+  md
+}
+
 # ============================================================================
 # SALA-SPECIFIC DATA FUNCTIONS
 # ============================================================================
@@ -90,53 +196,53 @@ apply_factor_spec <- function(data,
 
 #' Standardize sample IDs (remove hyphens, fix prefixes)
 standardize_sample_id <- function(x) {
-  x <- trimws(as.character(x))
+  x <- as.character(x)
+  x <- trimws(x)
   x <- gsub("\\.fastq.*$", "", x, ignore.case = TRUE)
   x <- gsub("\\.bam$", "", x, ignore.case = TRUE)
-  x <- gsub("^X", "", x)
-  x <- gsub("^SALA-", "SALA", x)
-  x <- gsub("^SALA_", "SALA", x)
   x <- gsub("[[:space:]]+", "", x)
+  # preserve SALA_1 exactly; do not drop underscores or leading letters
   x
 }
-
 #' Standardize exposure names (remove E2 suffix, clean formatting)
 standardize_exposure <- function(x) {
-  x <- trimws(as.character(x))
-  
-  # **CRITICAL: Remove E2/Estradiol suffixes FIRST**
-  x <- gsub(",?\\s*1\\s*nM\\s*B-Estradiol", "", x, ignore.case = TRUE)
-  x <- gsub(",?\\s*1\\s*nM\\s*Estradiol", "", x, ignore.case = TRUE)
-  x <- gsub(",?\\s*\\+\\s*E2$", "", x, ignore.case = TRUE)
-  x <- gsub("\\+\\s*Parafin", "", x, ignore.case = TRUE)
+  x <- as.character(x)
   x <- trimws(x)
   
-  # Collapse multiple spaces
+  # unify separators first
+  x <- gsub("_+", " ", x)
   x <- gsub("\\s+", " ", x)
   
-  # Handle specific exposures BEFORE converting spaces to underscores
+  # remove hormone/paraffin suffixes
+  x <- gsub(",?\\s*1\\s*nM\\s*(B-)?Estradiol\\s*$", "", x, ignore.case = TRUE)
+  x <- gsub("\\+\\s*E2\\s*$", "", x, ignore.case = TRUE)
+  x <- gsub("\\+\\s*Parafin\\s*$", "", x, ignore.case = TRUE)
+  
+  # remove 'Smoldering' prefix and dose units robustly
+  x <- gsub("^Smoldering\\s+", "", x, ignore.case = TRUE)
+  x <- gsub("\\s*[µu]g\\s*/\\s*cm2\\s*$", "", x, ignore.case = TRUE)
+  
+  x <- trimws(gsub("\\s+", " ", x))
+  
+  # canonical mappings
   x <- gsub("^Red Oak (5|25)$", "RedOak_\\1", x, ignore.case = TRUE)
   x <- gsub("^Eucalyptus (5|25)$", "Eucalyptus_\\1", x, ignore.case = TRUE)
   x <- gsub("^Pine (5|25)$", "Pine_\\1", x, ignore.case = TRUE)
   x <- gsub("^Peat (5|25)$", "Peat_\\1", x, ignore.case = TRUE)
   
-  # Handle PBS variants
   x <- gsub("^PBS Control$", "PBS_Control", x, ignore.case = TRUE)
   x <- gsub("^PBS$", "PBS_Control", x, ignore.case = TRUE)
   
-  # Handle Untreated variants
   x <- gsub("^Untreated Control$", "Untreated_Control", x, ignore.case = TRUE)
   x <- gsub("^Untreated$", "Untreated_Control", x, ignore.case = TRUE)
+  x <- gsub("^Unexposed$", "Untreated_Control", x, ignore.case = TRUE)
   
-  # NOW convert any remaining spaces to underscores
+  x <- gsub("^10X Lysis Buffer$", "LYSIS_Buffer", x, ignore.case = TRUE)
+  
+  # fallback underscore format
   x <- gsub(" ", "_", x)
-  
-  # Also catch already-underscored Red_Oak variants
-  x <- gsub("^Red_Oak_(5|25)$", "RedOak_\\1", x)
-  
-  # Clean up
   x <- gsub("_+", "_", x)
-  x <- gsub("_$", "", x)
+  x <- gsub("^_|_$", "", x)
   
   x
 }
