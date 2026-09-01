@@ -6,10 +6,10 @@ PATH_DATA_DERIVED   <- file.path("data", "derived")
 PATH_DATA_PROCESSED <- PATH_DATA_DERIVED        # RNA-seq alias
 
 PATH_OUTPUT         <- "output"
-PATH_OUTPUT_TABLES  <- file.path(PATH_OUTPUT, "tables")
-PATH_OUTPUT_FIGS    <- file.path(PATH_OUTPUT, "figures")
-PATH_OUTPUT_FIGURES <- PATH_OUTPUT_FIGS         # RNA-seq alias
-PATH_OUTPUT_REPORT  <- file.path(PATH_OUTPUT, "reports")
+PATH_OUTPUT_TABLES  <- PATH_OUTPUT
+PATH_OUTPUT_FIGS    <- PATH_OUTPUT
+PATH_OUTPUT_FIGURES <- PATH_OUTPUT
+PATH_OUTPUT_REPORT  <- PATH_OUTPUT
 
 # ── Analysis constants ────────────────────────────────────────────────────────
 ZERO_CUTOFF       <- 0.30
