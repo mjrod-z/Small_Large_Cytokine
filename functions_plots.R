@@ -56,31 +56,47 @@ make_dotplot <- function(df, x_var, title_str,
                          down_color = DOWN_COLOR_DEFAULT,
                          show_y = TRUE) {
   
+  # Build per-row alpha from significance columns if present.
+  # This lets us pass full data (for panel backgrounds) while only showing
+  # significant dots.
+  # Replace the dot_alpha block with vectorized logic
+  if ("sig" %in% names(df)) {
+    df <- df %>%
+      dplyr::mutate(dot_alpha = dplyr::if_else(dplyr::coalesce(sig, FALSE), 0.9, 0))
+  } else if ("sig_pooled" %in% names(df)) {
+    df <- df %>%
+      dplyr::mutate(dot_alpha = dplyr::if_else(dplyr::coalesce(sig_pooled, FALSE), 0.9, 0))
+  } else {
+    df <- df %>% dplyr::mutate(dot_alpha = 0.9)
+  }
+  
   fill_scale  <- ggplot2::scale_fill_manual(
     name   = "Direction\n(vs matched PBS)",
     values = c("Up" = up_color, "Down" = down_color, "Zero" = "grey70"),
-    na.value = "grey70")
+    na.value = "grey70"
+  )
   color_scale <- ggplot2::scale_color_manual(
     name   = "Direction\n(vs matched PBS)",
     values = c("Up" = up_color, "Down" = down_color, "Zero" = "grey70"),
-    na.value = "grey70")
+    na.value = "grey70"
+  )
+  
   # Cap dot diameter so dots never overlap when many cytokines are present.
   # max_dot shrinks proportionally with row count; stays between 2 and 8.
   n_cyt    <- max(1L, length(cyt_levels))
   max_dot  <- max(2, min(8, 30 / n_cyt))
-  size_scale  <- ggplot2::scale_size_continuous(
+  size_scale <- ggplot2::scale_size_continuous(
     name  = "Effect size\n(sqrt|mean log2FC|)",
-    range = c(1, max_dot), limits = c(0, NA))
+    range = c(1, max_dot), limits = c(0, NA)
+  )
   
   ref_theme <- ggplot2::theme_minimal(base_size = 11) +
     ggplot2::theme(
-      panel.background = ggplot2::element_rect(fill = NA, colour = border_color,
-                                               linewidth = 1.2),
+      panel.background = ggplot2::element_rect(fill = NA, colour = border_color, linewidth = 1.2),
       panel.ontop      = TRUE,
       panel.grid.major = ggplot2::element_blank(),
       panel.grid.minor = ggplot2::element_blank(),
-      strip.background = ggplot2::element_rect(fill = border_color,
-                                               colour = border_color, linewidth = 1.2),
+      strip.background = ggplot2::element_rect(fill = border_color, colour = border_color, linewidth = 1.2),
       strip.text       = ggplot2::element_text(color = "white", face = "bold", size = 11),
       axis.title.x     = ggplot2::element_blank(),
       axis.text.x      = ggplot2::element_text(face = "bold", size = 11),
@@ -92,37 +108,40 @@ make_dotplot <- function(df, x_var, title_str,
     )
   
   p <- ggplot2::ggplot(df, ggplot2::aes(x = .data[[x_var]], y = CYTOKINE)) +
-    ggplot2::geom_tile(ggplot2::aes(fill = panel_fill), width = Inf, height = 1,
-                       alpha = 1, show.legend = FALSE) +
+    ggplot2::geom_tile(
+      ggplot2::aes(fill = panel_fill),
+      width = Inf, height = 1, alpha = 1, show.legend = FALSE
+    ) +
     ggplot2::scale_fill_identity() +
     ggnewscale::new_scale_fill() +
-    ggplot2::geom_hline(yintercept = seq_along(cyt_levels),
-                        color = "white", linewidth = 0.5) +
-    ggplot2::geom_vline(xintercept = seq_along(unique(df[[x_var]])),
-                        color = "white", linewidth = 0.5) +
-    ggplot2::geom_point(ggplot2::aes(fill = direction, color = direction,
-                                     size = size_val),
-                        shape = 21, stroke = 1.5, alpha = 0.9) +
+    ggplot2::geom_hline(yintercept = seq_along(cyt_levels), color = "white", linewidth = 0.5) +
+    ggplot2::geom_vline(xintercept = seq_along(unique(df[[x_var]])), color = "white", linewidth = 0.5) +
+    ggplot2::geom_point(
+      ggplot2::aes(fill = direction, color = direction, size = size_val, alpha = dot_alpha),
+      shape = 21, stroke = 1.5
+    ) +
+    ggplot2::scale_alpha_identity() +
     fill_scale + color_scale + size_scale +
     ggplot2::guides(
       color = "none",
+      alpha = "none",
       fill  = ggplot2::guide_legend(title = "Direction\n(vs matched PBS)"),
-      size  = ggplot2::guide_legend(title = "Effect size\n(sqrt|mean log2FC|)")) +
-    ggplot2::facet_grid(rows = ggplot2::vars(CELLTYPE),
-                        cols = ggplot2::vars(HORMONE), drop = FALSE) +
-    ggplot2::scale_x_discrete(expand = ggplot2::expansion(mult = c(0.8, 0.8)),
-                              drop = TRUE) +
-    # Half-unit padding keeps the outermost dots from being clipped at panel edges
-    ggplot2::scale_y_discrete(drop = FALSE,
-                              expand = ggplot2::expansion(add = 0.5)) +
+      size  = ggplot2::guide_legend(title = "Effect size\n(sqrt|mean log2FC|)")
+    ) +
+    ggplot2::facet_grid(rows = ggplot2::vars(CELLTYPE), cols = ggplot2::vars(HORMONE), drop = FALSE) +
+    ggplot2::scale_x_discrete(expand = ggplot2::expansion(mult = c(0.8, 0.8)), drop = TRUE) +
+    ggplot2::scale_y_discrete(drop = FALSE, expand = ggplot2::expansion(add = 0.5)) +
     ref_theme +
     ggplot2::labs(title = title_str, y = "Cytokine")
   
-  if (!show_y)
+  if (!show_y) {
     p <- p + ggplot2::theme(
       axis.text.y  = ggplot2::element_blank(),
       axis.title.y = ggplot2::element_blank(),
-      axis.ticks.y = ggplot2::element_blank())
+      axis.ticks.y = ggplot2::element_blank()
+    )
+  }
+  
   p
 }
 
@@ -248,13 +267,13 @@ make_cytokine_barplot_single_combo <- function(
     sig_data       = NULL
 ) {
   stopifnot(cytokine %in% names(df))
-
+  
   exp_short       <- short_exposure_label(target_exposure)
   e2_label        <- paste(exp_short, "+ E2")
   hormone_levels  <- c(exp_short, e2_label)
   border_color    <- EXPOSURE_COLORS_DEEP[[target_exposure]]
   panel_fill_none <- EXPOSURE_COLORS_LIGHT[[target_exposure]]
-
+  
   d_raw <- dplyr::bind_rows(
     df %>%
       dplyr::filter(SEX == sex, CELLTYPE == airway,
@@ -274,12 +293,12 @@ make_cytokine_barplot_single_combo <- function(
       VALUE    = as.numeric(.data[[cytokine]]),
       EXPOSURE = factor(as.character(EXPOSURE),  levels = c(pbs_level, target_exposure))
     )
-
+  
   if (nrow(d_raw) == 0) return(NULL)
-
+  
   male_pt_fill <- grDevices::adjustcolor(border_color, alpha.f = 1,
                                          red.f = 1.3, green.f = 1.3, blue.f = 1.3)
-
+  
   d_raw <- d_raw %>%
     dplyr::mutate(
       x_label = factor(
@@ -301,7 +320,7 @@ make_cytokine_barplot_single_combo <- function(
         TRUE                        ~ "grey40"
       )
     )
-
+  
   summary_raw <- d_raw %>%
     dplyr::group_by(SEX, EXPOSURE, HORMONE, CELLTYPE) %>%
     dplyr::summarise(
@@ -335,14 +354,14 @@ make_cytokine_barplot_single_combo <- function(
       sig = FALSE,
       sig_label = ""
     )
-
+  
   if (!is.null(sig_data)) {
     required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
     missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
     if (length(missing_sig_cols) > 0) {
       stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
     }
-
+    
     sig_data <- sig_data %>%
       dplyr::mutate(
         SEX = factor(as.character(SEX), levels = c("M", "F")),
@@ -373,7 +392,7 @@ make_cytokine_barplot_single_combo <- function(
         sig = dplyr::if_else(is.na(q), FALSE, q < alpha_q),
         sig_label = sig_label_from_q(q, alpha_q = alpha_q)
       )
-
+    
     summary_raw <- summary_raw %>%
       dplyr::left_join(
         sig_data %>%
@@ -388,7 +407,7 @@ make_cytokine_barplot_single_combo <- function(
       ) %>%
       dplyr::select(-q_sig, -sig_sig, -sig_label_sig)
   }
-
+  
   make_cytokine_barplot(
     summary_raw     = summary_raw,
     d_raw           = d_raw,
@@ -417,7 +436,7 @@ plot_all_cytokine_single_combo_bars <- function(
     dpi        = 150
 ) {
   out <- list()
-
+  
   if (!is.null(sig_data)) {
     required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
     missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
@@ -425,11 +444,11 @@ plot_all_cytokine_single_combo_bars <- function(
       stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
     }
   }
-
+  
   if (save) {
     ensure_dir(here::here(PATH_OUTPUT_FIGS, out_subdir))
   }
-
+  
   for (cyt in cytokines) {
     for (exp in exposures) {
       for (sx in sexes) {
@@ -439,7 +458,7 @@ plot_all_cytokine_single_combo_bars <- function(
             sig_subset <- sig_data %>%
               dplyr::filter(CYTOKINE == cyt, EXPOSURE == exp, SEX == sx, CELLTYPE == aw)
           }
-
+          
           p <- make_cytokine_barplot_single_combo(
             df              = df,
             cytokine        = cyt,
@@ -448,10 +467,10 @@ plot_all_cytokine_single_combo_bars <- function(
             airway          = aw,
             sig_data        = sig_subset
           )
-
+          
           key      <- paste(cyt, exp, sx, aw, sep = "__")
           out[[key]] <- p
-
+          
           if (!is.null(p)) {
             print(p)
             if (save) {
@@ -473,7 +492,7 @@ plot_all_cytokine_single_combo_bars <- function(
       }
     }
   }
-
+  
   invisible(out)
 }
 
@@ -482,10 +501,12 @@ plot_all_cytokine_single_combo_bars <- function(
 save_plot <- function(filename, plot = ggplot2::last_plot(),
                       width = 10, height = 8, dpi = 300,
                       path = PATH_OUTPUT_FIGURES, bg = "white") {
-  dir.create(path, showWarnings = FALSE, recursive = TRUE)
-
+  out_file <- file.path(path, filename)
+  out_dir  <- dirname(out_file)
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  
   ggplot2::ggsave(
-    filename = file.path(path, filename),
+    filename = out_file,
     plot = plot,
     width = width,
     height = height,
@@ -493,17 +514,18 @@ save_plot <- function(filename, plot = ggplot2::last_plot(),
     units = "in",
     bg = bg
   )
-
-  cat("✓ Saved plot:", file.path(path, filename), "\n")
+  
+  cat("✓ Saved plot:", out_file, "\n")
   invisible(TRUE)
 }
 
 save_table <- function(data, filename, path = PATH_OUTPUT_TABLES) {
-  dir.create(path, showWarnings = FALSE, recursive = TRUE)
-
-  readr::write_csv(data, file = file.path(path, filename))
-
-  cat("✓ Saved table:", file.path(path, filename), "\n")
+  out_file <- file.path(path, filename)
+  out_dir  <- dirname(out_file)
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  readr::write_csv(data, file = out_file)
+  cat("✓ Saved table:", out_file, "\n")
   invisible(TRUE)
 }
 
