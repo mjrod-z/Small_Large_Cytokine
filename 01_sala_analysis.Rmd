@@ -542,10 +542,11 @@ plot_df_sex_sig <- plot_df_sex %>%
   dplyr::filter(sig)
 
 # ── 9) Build dotplots ──────────────────────────────────────────────────────
+# was: plot_df_pooled_sig / plot_df_sex_sig
 p_pooled <- make_dotplot(
-  df           = plot_df_pooled_sig,
+  df           = plot_df_pooled,   # full data
   x_var        = "All",
-  title_str    = paste(target_exposure, "\u2014 Pooled (All Samples)"),
+  title_str    = paste(target_exposure, "— Pooled (All Samples)"),
   cyt_levels   = cyt_levels,
   border_color = border_color,
   up_color     = UP_COLOR,
@@ -554,14 +555,14 @@ p_pooled <- make_dotplot(
 )
 
 p_sex <- make_dotplot(
-  df           = plot_df_sex_sig,
+  df           = plot_df_sex,      # full data
   x_var        = "SEX",
-  title_str    = paste(target_exposure, "\u2014 By Sex"),
+  title_str    = paste(target_exposure, "— By Sex"),
   cyt_levels   = cyt_levels,
   border_color = border_color,
   up_color     = UP_COLOR,
   down_color   = DOWN_COLOR,
-  show_y       = FALSE
+  show_y       = TRUE              # <- show cytokine names
 )
 
 # ── 10) Combine with cowplot ──────────────────────────────────────────────
