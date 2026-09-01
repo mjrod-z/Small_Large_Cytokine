@@ -1,393 +1,692 @@
-# R/functions_data.R
+# =============================================================================
+# functions_plots.R
+# All ggplot2 helpers: dotplots, bar plots, histograms, boxplots,
+# gene expression bars, GSEA barplots
+# =============================================================================
 
-suppressPackageStartupMessages({
-  library(dplyr)
-  library(tidyr)
-  library(readr)
-})
+UP_COLOR_DEFAULT   <- "#D7191C"
+DOWN_COLOR_DEFAULT <- "#2C7BB6"
+ESTRADIOL_FILL_DEFAULT <- "#E8F5E9"
 
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
+# ── Label helpers ───────────────────────────────────────────────────────────────
 
-safe_name <- function(x) {
-  x <- as.character(x)
-  x <- gsub("[^A-Za-z0-9_-]", "_", x)
-  x <- gsub("_+", "_", x)
-  gsub("^_|_$", "", x)
+short_exposure_label <- function(exposure) {
+  exposure %>%
+    gsub("_", " ", ., fixed = TRUE) %>%
+    sub(" \\d+$", "", .)
 }
 
-ensure_dir <- function(path) {
-  dir.create(path, showWarnings = FALSE, recursive = TRUE)
-  invisible(path)
+sig_label_from_q <- function(q, alpha_q = ALPHA_Q) {
+  dplyr::case_when(
+    is.na(q)   ~ "",
+    q < 0.001  ~ "***",
+    q < 0.01   ~ "**",
+    q < alpha_q ~ "*",
+    TRUE       ~ ""
+  )
 }
 
-# Add these helpers to functions_data.R (below standardize_exposure is fine)
+# ── Size rescaling helper ─────────────────────────────────────────────────────
 
-parse_race_age <- function(df) {
-  # Handles a single combined column like "RACE, AGE" containing "Hispanic, 20"
-  race_age_col <- names(df)[tolower(gsub("\\s+", "", names(df))) %in% c("race,age", "raceage")]
-  if (length(race_age_col) == 0) return(df)
-  
-  col <- race_age_col[1]
-  parts <- stringr::str_split_fixed(as.character(df[[col]]), ",\\s*", 2)
-  
-  # Only fill missing RACE/AGE if not already present/populated
-  if (!"RACE" %in% names(df)) df$RACE <- NA_character_
-  if (!"AGE"  %in% names(df)) df$AGE  <- NA_real_
-  
-  race_new <- trimws(parts[, 1])
-  age_new  <- suppressWarnings(as.numeric(trimws(parts[, 2])))
-  
-  df$RACE <- dplyr::if_else(is.na(df$RACE) | df$RACE == "", race_new, as.character(df$RACE))
-  df$AGE  <- dplyr::if_else(is.na(df$AGE), age_new, as.numeric(df$AGE))
-  
+add_rescaled_size <- function(df, value_col,
+                              clamp_quantile = 0.95,
+                              transform = c("sqrt","log1p","none"),
+                              out_col = "size_val") {
+  transform <- match.arg(transform)
+  mag  <- abs(df[[value_col]])
+  cap  <- stats::quantile(mag, probs = clamp_quantile, na.rm = TRUE, names = FALSE)
+  if (!is.finite(cap) || cap <= 0) cap <- max(mag, na.rm = TRUE)
+  mag2 <- pmin(mag, cap)
+  df[[out_col]] <- switch(transform,
+                          sqrt  = sqrt(mag2),
+                          log1p = log1p(mag2),
+                          none  = mag2)
   df
 }
 
-derive_hormone_from_exposure <- function(exposure_chr, default_hormone = "NONE") {
-  x <- as.character(exposure_chr)
-  has_e2 <- grepl("1\\s*nM\\s*(B-)?Estradiol|\\+\\s*E2", x, ignore.case = TRUE)
-  ifelse(has_e2, "Estradiol", default_hormone)
-}
+# ── Cytokine dotplot (pooled or sex-stratified) ───────────────────────────────
+# Call once per exposure inside a loop; returns a combined cowplot grid.
+# Requires: plot_df_pooled, plot_df_sex, cyt_order, cyt_levels,
+#           border_color, panel_fill_none, e2_label, hormone_levels
+#           (all set in the calling chunk)
 
-standardize_exposure <- function(x) {
-  x <- trimws(as.character(x))
+make_dotplot <- function(df, x_var, title_str,
+                         cyt_levels, border_color,
+                         up_color   = UP_COLOR_DEFAULT,
+                         down_color = DOWN_COLOR_DEFAULT,
+                         show_y = TRUE) {
   
-  # Remove dose units text and "Smoldering" prefix
-  x <- gsub("µg/cm2|ug/cm2", "", x, ignore.case = TRUE)
-  x <- gsub("^Smoldering\\s+", "", x, ignore.case = TRUE)
-  
-  # Remove hormone/paraffin suffixes
-  x <- gsub(",?\\s*1\\s*nM\\s*B-Estradiol\\s*$", "", x, ignore.case = TRUE)
-  x <- gsub(",?\\s*1\\s*nM\\s*Estradiol\\s*$",   "", x, ignore.case = TRUE)
-  x <- gsub(",?\\s*\\+\\s*E2\\s*$",              "", x, ignore.case = TRUE)
-  x <- gsub(",?\\s*\\+\\s*Parafin\\s*$",         "", x, ignore.case = TRUE)
-  x <- trimws(x)
-  
-  # Collapse spaces
-  x <- gsub("\\s+", " ", x)
-  
-  # Canonical mappings
-  x <- gsub("^Red Oak (5|25)$",    "RedOak_\\1",      x, ignore.case = TRUE)
-  x <- gsub("^Eucalyptus (5|25)$", "Eucalyptus_\\1",  x, ignore.case = TRUE)
-  x <- gsub("^Pine (5|25)$",       "Pine_\\1",        x, ignore.case = TRUE)
-  x <- gsub("^Peat (5|25)$",       "Peat_\\1",        x, ignore.case = TRUE)
-  
-  x <- gsub("^PBS Control$",       "PBS_Control",      x, ignore.case = TRUE)
-  x <- gsub("^PBS$",               "PBS_Control",      x, ignore.case = TRUE)
-  x <- gsub("^Untreated Control$", "Untreated_Control",x, ignore.case = TRUE)
-  x <- gsub("^Untreated$",         "Untreated_Control",x, ignore.case = TRUE)
-  x <- gsub("^Unexposed$",         "Untreated_Control",x, ignore.case = TRUE)
-  
-  # Final cleanup
-  x <- gsub(" ", "_", x)
-  x <- gsub("^Red_Oak_(5|25)$", "RedOak_\\1", x)
-  x <- gsub("_+", "_", x)
-  x <- gsub("^_|_$", "", x)
-  x
-}
-
-clean_sala_metadata <- function(metadata) {
-  md <- metadata
-  
-  # Normalize sample IDs if present
-  if ("SAMPLEID" %in% names(md)) {
-    md$SAMPLEID <- standardize_sample_id(md$SAMPLEID)
+  # Build per-row alpha from significance columns if present.
+  # This lets us pass full data (for panel backgrounds) while only showing
+  # significant dots.
+  # Replace the dot_alpha block with vectorized logic
+  if ("sig" %in% names(df)) {
+    df <- df %>%
+      dplyr::mutate(dot_alpha = dplyr::if_else(dplyr::coalesce(sig, FALSE), 0.9, 0))
+  } else if ("sig_pooled" %in% names(df)) {
+    df <- df %>%
+      dplyr::mutate(dot_alpha = dplyr::if_else(dplyr::coalesce(sig_pooled, FALSE), 0.9, 0))
+  } else {
+    df <- df %>% dplyr::mutate(dot_alpha = 0.9)
   }
   
-  # Split combined race/age field if present
-  md <- parse_race_age(md)
+  fill_scale  <- ggplot2::scale_fill_manual(
+    name   = "Direction\n(vs matched PBS)",
+    values = c("Up" = up_color, "Down" = down_color, "Zero" = "grey70"),
+    na.value = "grey70"
+  )
+  color_scale <- ggplot2::scale_color_manual(
+    name   = "Direction\n(vs matched PBS)",
+    values = c("Up" = up_color, "Down" = down_color, "Zero" = "grey70"),
+    na.value = "grey70"
+  )
   
-  # Derive HORMONE from exposure text if HORMONE missing/blank
-  if (!"HORMONE" %in% names(md)) md$HORMONE <- NA_character_
-  if ("EXPOSURE" %in% names(md)) {
-    inferred_hormone <- derive_hormone_from_exposure(md$EXPOSURE)
-    md$HORMONE <- dplyr::if_else(
-      is.na(md$HORMONE) | trimws(md$HORMONE) == "",
-      inferred_hormone,
-      as.character(md$HORMONE)
+  # Cap dot diameter so dots never overlap when many cytokines are present.
+  # max_dot shrinks proportionally with row count; stays between 2 and 8.
+  n_cyt    <- max(1L, length(cyt_levels))
+  max_dot  <- max(2, min(8, 30 / n_cyt))
+  size_scale <- ggplot2::scale_size_continuous(
+    name  = "Effect size\n(sqrt|mean log2FC|)",
+    range = c(1, max_dot), limits = c(0, NA)
+  )
+  
+  ref_theme <- ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.background = ggplot2::element_rect(fill = NA, colour = border_color, linewidth = 1.2),
+      panel.ontop      = TRUE,
+      panel.grid.major = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      strip.background = ggplot2::element_rect(fill = border_color, colour = border_color, linewidth = 1.2),
+      strip.text       = ggplot2::element_text(color = "white", face = "bold", size = 11),
+      axis.title.x     = ggplot2::element_blank(),
+      axis.text.x      = ggplot2::element_text(face = "bold", size = 11),
+      axis.text.y      = ggplot2::element_text(face = "bold", size = 10),
+      axis.title.y     = ggplot2::element_text(size = 11),
+      legend.position  = "right",
+      plot.background  = ggplot2::element_rect(fill = "transparent", colour = NA),
+      plot.title       = ggplot2::element_text(face = "bold", size = 13, hjust = 0.5)
     )
-    md$EXPOSURE <- standardize_exposure(md$EXPOSURE)
-  }
   
-  # Standardize key factors
-  if ("SEX" %in% names(md)) {
-    md$SEX <- toupper(trimws(as.character(md$SEX)))
-  }
-  if ("CELLTYPE" %in% names(md)) {
-    md$CELLTYPE <- toupper(trimws(as.character(md$CELLTYPE)))
-  }
-  if ("HORMONE" %in% names(md)) {
-    md$HORMONE <- dplyr::case_when(
-      grepl("^E2$|Estradiol", md$HORMONE, ignore.case = TRUE) ~ "Estradiol",
-      TRUE ~ "NONE"
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = .data[[x_var]], y = CYTOKINE)) +
+    ggplot2::geom_tile(
+      ggplot2::aes(fill = panel_fill),
+      width = Inf, height = 1, alpha = 1, show.legend = FALSE
+    ) +
+    ggplot2::scale_fill_identity() +
+    ggnewscale::new_scale_fill() +
+    ggplot2::geom_hline(yintercept = seq_along(cyt_levels), color = "white", linewidth = 0.5) +
+    ggplot2::geom_vline(xintercept = seq_along(unique(df[[x_var]])), color = "white", linewidth = 0.5) +
+    ggplot2::geom_point(
+      ggplot2::aes(fill = direction, color = direction, size = size_val, alpha = dot_alpha),
+      shape = 21, stroke = 1.5
+    ) +
+    ggplot2::scale_alpha_identity() +
+    fill_scale + color_scale + size_scale +
+    ggplot2::guides(
+      color = "none",
+      alpha = "none",
+      fill  = ggplot2::guide_legend(title = "Direction\n(vs matched PBS)"),
+      size  = ggplot2::guide_legend(title = "Effect size\n(sqrt|mean log2FC|)")
+    ) +
+    ggplot2::facet_grid(rows = ggplot2::vars(CELLTYPE), cols = ggplot2::vars(HORMONE), drop = FALSE) +
+    ggplot2::scale_x_discrete(expand = ggplot2::expansion(mult = c(0.8, 0.8)), drop = TRUE) +
+    ggplot2::scale_y_discrete(drop = FALSE, expand = ggplot2::expansion(add = 0.5)) +
+    ref_theme +
+    ggplot2::labs(title = title_str, y = "Cytokine")
+  
+  if (!show_y) {
+    p <- p + ggplot2::theme(
+      axis.text.y  = ggplot2::element_blank(),
+      axis.title.y = ggplot2::element_blank(),
+      axis.ticks.y = ggplot2::element_blank()
     )
   }
   
-  md
+  p
 }
 
-# ============================================================================
-# SALA-SPECIFIC DATA FUNCTIONS
-# ============================================================================
+make_cytokine_barplot <- function(summary_raw, d_raw, cyt,
+                                  target_exposure, exp_short,
+                                  border_color) {
+  
+  y_max     <- max(summary_raw$mu + summary_raw$sd, na.rm = TRUE)
+  y_bracket <- y_max * 1.10
+  bg_df     <- summary_raw %>% dplyr::distinct(CELLTYPE, HORMONE, panel_fill)
+  
+  bracket_df <- summary_raw %>%
+    dplyr::filter(EXPOSURE == target_exposure, sig_label != "") %>%
+    dplyr::mutate(
+      x_left   = as.numeric(x_label) - 1,
+      x_right  = as.numeric(x_label),
+      x_center = as.numeric(x_label) - 0.5,
+      y_top    = y_bracket
+    )
+  
+  bar_theme <- ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.background = ggplot2::element_rect(fill = NA, colour = border_color,
+                                               linewidth = 1),
+      panel.ontop      = TRUE,
+      panel.grid.major = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      strip.background = ggplot2::element_rect(fill = border_color,
+                                               colour = border_color, linewidth = 1),
+      strip.text       = ggplot2::element_text(color = "white", face = "bold", size = 11),
+      axis.title.x     = ggplot2::element_blank(),
+      axis.text.x      = ggplot2::element_text(face = "bold", size = 9,
+                                               angle = 30, hjust = 1),
+      axis.text.y      = ggplot2::element_text(face = "bold", size = 10),
+      axis.title.y     = ggplot2::element_text(size = 11),
+      legend.position  = "right",
+      plot.background  = ggplot2::element_rect(fill = "transparent", colour = NA),
+      plot.title       = ggplot2::element_text(face = "bold", size = 13, hjust = 0.5)
+    )
+  
+  p <- ggplot2::ggplot(summary_raw, ggplot2::aes(x = x_label, y = mu)) +
+    ggplot2::geom_rect(
+      data = bg_df, ggplot2::aes(fill = panel_fill),
+      xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+      inherit.aes = FALSE, show.legend = FALSE) +
+    ggplot2::scale_fill_identity() +
+    ggplot2::geom_hline(yintercept = pretty(c(0, y_max)),
+                        color = "white", linewidth = 0.5) +
+    ggnewscale::new_scale_fill() +
+    
+    ggplot2::geom_col(
+      data = summary_raw %>% dplyr::filter(SEX == "M"),
+      ggplot2::aes(x = x_label, y = mu, fill = bar_fill, color = bar_color),
+      width = 0.9, linewidth = 0.7, alpha = 1) +
+    
+    ggplot2::geom_col(
+      data = summary_raw %>% dplyr::filter(SEX == "F"),
+      ggplot2::aes(x = x_label, y = mu, fill = bar_fill, color = bar_color),
+      width = 0.9, linewidth = 0.7, alpha = 0) +
+    
+    ggplot2::scale_fill_identity(guide = "none") +
+    ggplot2::scale_color_identity(guide = "none") +
+    
+    ggplot2::geom_errorbar(
+      ggplot2::aes(x = x_label, ymin = mu - sd, ymax = mu + sd),
+      width = 0.2, linewidth = 0.6, color = "grey20") +
+    
+    { if (nrow(bracket_df) > 0) list(
+      ggplot2::geom_segment(
+        data = bracket_df,
+        ggplot2::aes(x = x_left, xend = x_right,
+                     y = y_top, yend = y_top, color = sig_color),
+        linewidth = 0.7, inherit.aes = FALSE, show.legend = FALSE),
+      ggplot2::geom_segment(
+        data = bracket_df,
+        ggplot2::aes(x = x_left, xend = x_left,
+                     y = y_top, yend = y_top - y_max * 0.04,
+                     color = sig_color),
+        linewidth = 0.7, inherit.aes = FALSE, show.legend = FALSE),
+      ggplot2::geom_segment(
+        data = bracket_df,
+        ggplot2::aes(x = x_right, xend = x_right,
+                     y = y_top, yend = y_top - y_max * 0.04,
+                     color = sig_color),
+        linewidth = 0.7, inherit.aes = FALSE, show.legend = FALSE),
+      ggplot2::geom_text(
+        data = bracket_df,
+        ggplot2::aes(x = x_center,
+                     y = y_top + y_max * 0.03,
+                     label = sig_label, color = sig_color),
+        size = 6, fontface = "bold", hjust = 0.5, vjust = 0,
+        inherit.aes = FALSE, show.legend = FALSE)
+    ) else list() } +
+    
+    ggplot2::geom_jitter(
+      data = d_raw,
+      ggplot2::aes(x = x_label, y = VALUE,
+                   fill = point_fill, color = point_color),
+      shape = 21, width = 0.12, size = 2.5,
+      stroke = 1.0, alpha = 0.95, inherit.aes = FALSE) +
+    ggplot2::scale_fill_identity(guide  = "none") +
+    ggplot2::scale_color_identity(guide = "none") +
+    ggplot2::scale_x_discrete(expand = ggplot2::expansion(add = 0.6)) +
+    ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0.02, 0.18))) +
+    ggplot2::facet_grid(rows = ggplot2::vars(CELLTYPE),
+                        cols = ggplot2::vars(HORMONE)) +
+    bar_theme +
+    ggplot2::labs(
+      title = paste0(cyt, " — ", exp_short,
+                     " vs Control | M = filled, F = transparent"),
+      y = paste0(cyt, " (pg/mL)"))
+  
+  p
+}
 
-average_nonzero_by_sample <- function(data) {
-  # Average replicate measurements within each sample.
-  # All numeric values (including zeros) are included in the mean so that the
-  # downstream LOD-imputation step operates on unbiased sample averages.
-  # NA values are excluded via na.rm = TRUE.
+make_cytokine_barplot_single_combo <- function(
+    df, cytokine, target_exposure, sex, airway,
+    pbs_level      = PBS_LEVEL,
+    alpha_q        = ALPHA_Q,
+    up_color       = UP_COLOR_DEFAULT,
+    down_color     = DOWN_COLOR_DEFAULT,
+    estradiol_fill = ESTRADIOL_FILL_DEFAULT,
+    sig_data       = NULL
+) {
+  stopifnot(cytokine %in% names(df))
   
-  numeric_cols <- names(data)[sapply(data, is.numeric)]
-  id_col <- names(data)[!names(data) %in% numeric_cols][1]
+  exp_short       <- short_exposure_label(target_exposure)
+  e2_label        <- paste(exp_short, "+ E2")
+  hormone_levels  <- c(exp_short, e2_label)
+  border_color    <- EXPOSURE_COLORS_DEEP[[target_exposure]]
+  panel_fill_none <- EXPOSURE_COLORS_LIGHT[[target_exposure]]
   
-  if (is.na(id_col)) {
-    stop("average_nonzero_by_sample(): no sample ID column found")
-  }
+  d_raw <- dplyr::bind_rows(
+    df %>%
+      dplyr::filter(SEX == sex, CELLTYPE == airway,
+                    EXPOSURE == target_exposure,
+                    HORMONE %in% c("NONE", "Estradiol")),
+    df %>%
+      dplyr::filter(SEX == sex, CELLTYPE == airway,
+                    EXPOSURE == pbs_level,
+                    HORMONE %in% c("NONE", "Estradiol"))
+  ) %>%
+    dplyr::mutate(
+      HORMONE  = dplyr::recode(as.character(HORMONE),
+                               "NONE" = exp_short, "Estradiol" = e2_label),
+      HORMONE  = factor(HORMONE, levels = hormone_levels),
+      SEX      = factor(as.character(SEX),      levels = c("M", "F")),
+      CELLTYPE = factor(as.character(CELLTYPE),  levels = c("LAE", "SAE")),
+      VALUE    = as.numeric(.data[[cytokine]]),
+      EXPOSURE = factor(as.character(EXPOSURE),  levels = c(pbs_level, target_exposure))
+    )
   
-  data %>%
-    dplyr::group_by(.data[[id_col]]) %>%
+  if (nrow(d_raw) == 0) return(NULL)
+  
+  male_pt_fill <- grDevices::adjustcolor(border_color, alpha.f = 1,
+                                         red.f = 1.3, green.f = 1.3, blue.f = 1.3)
+  
+  d_raw <- d_raw %>%
+    dplyr::mutate(
+      x_label = factor(
+        dplyr::case_when(
+          EXPOSURE == pbs_level       ~ "Control",
+          EXPOSURE == target_exposure ~ exp_short,
+          TRUE ~ as.character(EXPOSURE)
+        ),
+        levels = c("Control", exp_short)
+      ),
+      point_fill = dplyr::case_when(
+        SEX == "M" & EXPOSURE == pbs_level       ~ "grey80",
+        SEX == "M" & EXPOSURE == target_exposure ~ male_pt_fill,
+        TRUE                                     ~ "white"
+      ),
+      point_color = dplyr::case_when(
+        EXPOSURE == pbs_level       ~ "grey40",
+        EXPOSURE == target_exposure ~ border_color,
+        TRUE                        ~ "grey40"
+      )
+    )
+  
+  summary_raw <- d_raw %>%
+    dplyr::group_by(SEX, EXPOSURE, HORMONE, CELLTYPE) %>%
     dplyr::summarise(
-      dplyr::across(dplyr::all_of(numeric_cols),
-                    ~ mean(., na.rm = TRUE)),
+      mu = mean(VALUE, na.rm = TRUE),
+      sd = stats::sd(VALUE, na.rm = TRUE),
+      n  = dplyr::n(),
       .groups = "drop"
-    )
-}
-
-build_sala_full <- function(averaged_data, metadata) {
-  # Merge averaged MSD data with metadata and apply factor levels
-  # Remove PLATE only if it exists
-  
-  merged <- averaged_data %>%
-    dplyr::left_join(metadata, by = "SAMPLEID") %>%
-    dplyr::mutate(
-      CELLTYPE    = factor(CELLTYPE,    levels = CELLTYPE_LEVELS),
-      HORMONE     = factor(HORMONE,     levels = HORMONE_LEVELS),
-      SEX         = factor(SEX,         levels = SEX_LEVELS),
-      EXPOSURE    = standardize_exposure(EXPOSURE),
-      PATIENTCODE = factor(PATIENTCODE)
-    )
-  
-  # Only remove PLATE if it exists
-  if ("PLATE" %in% names(merged)) {
-    merged <- merged %>% dplyr::select(-PLATE)
-  }
-  
-  merged
-}
-
-apply_factor_spec <- function(data, 
-                              celltype_levels = CELLTYPE_LEVELS,
-                              hormone_levels = HORMONE_LEVELS,
-                              sex_levels = SEX_LEVELS) {
-  # NOTE: This is an alias for the factor-coercion already done inside
-  # build_sala_full(). Prefer calling build_sala_full() directly.
-  data %>%
-    dplyr::mutate(
-      CELLTYPE = factor(CELLTYPE, levels = celltype_levels),
-      HORMONE  = factor(HORMONE,  levels = hormone_levels),
-      SEX      = factor(SEX,      levels = sex_levels)
-    )
-}
-
-# ============================================================================
-# STANDARDIZATION FUNCTIONS
-# ============================================================================
-
-#' Standardize sample IDs (remove hyphens, fix prefixes)
-standardize_sample_id <- function(x) {
-  x <- as.character(x)
-  x <- trimws(x)
-  x <- gsub("\\.fastq.*$", "", x, ignore.case = TRUE)
-  x <- gsub("\\.bam$", "", x, ignore.case = TRUE)
-  x <- gsub("[[:space:]]+", "", x)
-  # preserve SALA_1 exactly; do not drop underscores or leading letters
-  x
-}
-#' Standardize exposure names (remove E2 suffix, clean formatting)
-standardize_exposure <- function(x) {
-  x <- as.character(x)
-  x <- trimws(x)
-  
-  # unify separators first
-  x <- gsub("_+", " ", x)
-  x <- gsub("\\s+", " ", x)
-  
-  # remove hormone/paraffin suffixes
-  x <- gsub(",?\\s*1\\s*nM\\s*(B-)?Estradiol\\s*$", "", x, ignore.case = TRUE)
-  x <- gsub("\\+\\s*E2\\s*$", "", x, ignore.case = TRUE)
-  x <- gsub("\\+\\s*Parafin\\s*$", "", x, ignore.case = TRUE)
-  
-  # remove 'Smoldering' prefix and dose units robustly
-  x <- gsub("^Smoldering\\s+", "", x, ignore.case = TRUE)
-  x <- gsub("\\s*[µu]g\\s*/\\s*cm2\\s*$", "", x, ignore.case = TRUE)
-  
-  x <- trimws(gsub("\\s+", " ", x))
-  
-  # canonical mappings
-  x <- gsub("^Red Oak (5|25)$", "RedOak_\\1", x, ignore.case = TRUE)
-  x <- gsub("^Eucalyptus (5|25)$", "Eucalyptus_\\1", x, ignore.case = TRUE)
-  x <- gsub("^Pine (5|25)$", "Pine_\\1", x, ignore.case = TRUE)
-  x <- gsub("^Peat (5|25)$", "Peat_\\1", x, ignore.case = TRUE)
-  
-  x <- gsub("^PBS Control$", "PBS_Control", x, ignore.case = TRUE)
-  x <- gsub("^PBS$", "PBS_Control", x, ignore.case = TRUE)
-  
-  x <- gsub("^Untreated Control$", "Untreated_Control", x, ignore.case = TRUE)
-  x <- gsub("^Untreated$", "Untreated_Control", x, ignore.case = TRUE)
-  x <- gsub("^Unexposed$", "Untreated_Control", x, ignore.case = TRUE)
-  
-  x <- gsub("^10X Lysis Buffer$", "LYSIS_Buffer", x, ignore.case = TRUE)
-  
-  # fallback underscore format
-  x <- gsub(" ", "_", x)
-  x <- gsub("_+", "_", x)
-  x <- gsub("^_|_$", "", x)
-  
-  x
-}
-
-# ============================================================================
-# 1. NORMALIZE COUNTS
-# ============================================================================
-
-normalize_counts <- function(count_matrix) {
-  count_matrix <- as.matrix(count_matrix)
-  
-  if (!is.numeric(count_matrix)) {
-    stop("normalize_counts(): count_matrix must be numeric.")
-  }
-  
-  size_factors <- colSums(count_matrix) / mean(colSums(count_matrix))
-  normalized <- sweep(count_matrix, 2, size_factors, "/")
-  
-  return(normalized)
-}
-
-# ============================================================================
-# 2. FILTER GENES
-# ============================================================================
-
-filter_genes <- function(data, background_threshold = GENE_BACKGROUND_THRESHOLD) {
-  if (!"Geneid" %in% names(data)) {
-    stop("filter_genes(): data must contain a 'Geneid' column.")
-  }
-  
-  counts <- data %>%
-    dplyr::select(-Geneid) %>%
-    as.matrix()
-  
-  if (!is.numeric(counts)) {
-    stop("filter_genes(): all columns except 'Geneid' must be numeric counts.")
-  }
-  
-  median_counts  <- apply(counts, 1, median, na.rm = TRUE)
-  overall_median <- median(median_counts, na.rm = TRUE)
-  
-  # Guard: if overall_median is 0 (sparse data), fall back to a count > 0 filter
-  # to avoid the threshold collapsing to "> 0 in ≥20% of samples" silently.
-  if (!is.finite(overall_median) || overall_median == 0) {
-    warning("filter_genes(): overall median is 0 or non-finite; ",
-            "applying a simple presence filter (count > 0 in ≥20% of samples).")
-    keep_genes <- apply(counts > 0, 1, function(x) sum(x, na.rm = TRUE) > ncol(counts) * 0.20)
-  } else {
-    keep_genes <- apply(
-      counts > (overall_median * background_threshold),
-      1,
-      function(x) sum(x, na.rm = TRUE) > ncol(counts) * 0.20
-    )
-  }
-  
-  filtered_data <- data[keep_genes, , drop = FALSE]
-  return(filtered_data)
-}
-
-# ============================================================================
-# 3. PREPARE METADATA
-# ============================================================================
-
-prepare_metadata_seq <- function(metadata_full, sample_ids) {
-  id_cols <- c("SAMPLEID", "Sample_ID", "SampleID")
-  id_col <- id_cols[id_cols %in% names(metadata_full)][1]
-  
-  if (is.na(id_col)) {
-    stop("prepare_metadata_seq(): no sample ID column found.")
-  }
-  
-  metadata_full[[id_col]] <- standardize_sample_id(metadata_full[[id_col]])
-  sample_ids <- standardize_sample_id(sample_ids)
-  
-  metadata_seq <- metadata_full %>%
-    dplyr::filter(.data[[id_col]] %in% sample_ids) %>%
-    dplyr::mutate(
-      dplyr::across(where(is.character), as.character)
-    )
-  
-  if ("EXPOSURE" %in% names(metadata_seq)) {
-    metadata_seq <- metadata_seq %>%
-      dplyr::mutate(EXPOSURE = standardize_exposure(EXPOSURE))
-  }
-  
-  metadata_seq
-}
-
-# ============================================================================
-# 4. CLASSIFY DEGS
-# ============================================================================
-
-classify_degs <- function(data, fc_cutoff = LOG2FC_CUTOFF, p_cutoff = ADJ_P_CUTOFF) {
-  data %>%
-    dplyr::mutate(DEG = dplyr::case_when(
-      adj.P.Val <= p_cutoff & log2FC >=  fc_cutoff ~ "UP",
-      adj.P.Val <= p_cutoff & log2FC <= -fc_cutoff ~ "DOWN",
-      TRUE ~ "NO"
-    ))
-}
-
-# ============================================================================
-# 5. READ GSEA HTML
-# ============================================================================
-
-read_gsea_html <- function(html_file) {
-  if (!requireNamespace("rvest", quietly = TRUE)) {
-    stop("read_gsea_html(): package 'rvest' is required.")
-  }
-  
-  page <- rvest::read_html(html_file)
-  tables <- rvest::html_table(page)
-  
-  if (length(tables) > 0) {
-    results <- tables[[1]]
-  } else {
-    results <- data.frame()
-  }
-  
-  return(results)
-}
-
-# ============================================================================
-# 6. FILTER GSEA RESULTS
-# ============================================================================
-
-filter_gsea_results <- function(gsea_results, fdr_cutoff = FDR_THRESHOLD) {
-  gsea_results %>%
-    dplyr::mutate(Significant = ifelse(FDR < fdr_cutoff, "Yes", "No")) %>%
-    dplyr::arrange(FDR)
-}
-
-# ============================================================================
-# 7. PREPARE DEG EXPORT
-# ============================================================================
-
-prepare_deg_export <- function(deg_data) {
-  deg_data %>%
-    dplyr::select(Gene = gene_name, log2FC, adj.P.Val) %>%
-    dplyr::mutate(
-      FC = 2^log2FC,
-      log10_padj = -log10(adj.P.Val)
     ) %>%
-    dplyr::filter(adj.P.Val < ADJ_P_CUTOFF) %>%
-    dplyr::arrange(dplyr::desc(abs(log2FC)))
+    dplyr::mutate(
+      panel_fill = ifelse(as.character(HORMONE) == e2_label,
+                          estradiol_fill, panel_fill_none),
+      bar_fill   = border_color,
+      bar_color  = border_color,
+      direction  = dplyr::case_when(
+        mu > 0 ~ "Up", mu < 0 ~ "Down", TRUE ~ "Zero"
+      ),
+      sig_color  = dplyr::case_when(
+        direction == "Up"   ~ up_color,
+        direction == "Down" ~ down_color,
+        TRUE                ~ "grey50"
+      ),
+      x_label = factor(
+        dplyr::case_when(
+          EXPOSURE == pbs_level       ~ "Control",
+          EXPOSURE == target_exposure ~ exp_short,
+          TRUE ~ as.character(EXPOSURE)
+        ),
+        levels = c("Control", exp_short)
+      ),
+      q = NA_real_,
+      sig = FALSE,
+      sig_label = ""
+    )
+  
+  if (!is.null(sig_data)) {
+    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
+    missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
+    if (length(missing_sig_cols) > 0) {
+      stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
+    }
+    
+    sig_data <- sig_data %>%
+      dplyr::mutate(
+        SEX = factor(as.character(SEX), levels = c("M", "F")),
+        CELLTYPE = factor(as.character(CELLTYPE), levels = c("LAE", "SAE")),
+        HORMONE = factor(
+          dplyr::recode(as.character(HORMONE),
+                        "NONE" = exp_short, "Estradiol" = e2_label),
+          levels = hormone_levels
+        ),
+        EXPOSURE = factor(as.character(EXPOSURE), levels = c(pbs_level, target_exposure)),
+        q = as.numeric(q),
+        sig = dplyr::if_else(is.na(q), FALSE, q < alpha_q)
+      ) %>%
+      dplyr::filter(
+        CYTOKINE == cytokine,
+        EXPOSURE == target_exposure,
+        SEX == sex,
+        CELLTYPE == airway
+      ) %>%
+      dplyr::group_by(CELLTYPE, HORMONE, SEX, EXPOSURE) %>%
+      dplyr::summarise(
+        q = suppressWarnings(min(q, na.rm = TRUE)),
+        sig = any(sig %in% TRUE, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        q = dplyr::if_else(is.infinite(q), NA_real_, q),
+        sig = dplyr::if_else(is.na(q), FALSE, q < alpha_q),
+        sig_label = sig_label_from_q(q, alpha_q = alpha_q)
+      )
+    
+    summary_raw <- summary_raw %>%
+      dplyr::left_join(
+        sig_data %>%
+          dplyr::select(CELLTYPE, HORMONE, SEX, EXPOSURE, q, sig, sig_label) %>%
+          dplyr::rename(q_sig = q, sig_sig = sig, sig_label_sig = sig_label),
+        by = c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE")
+      ) %>%
+      dplyr::mutate(
+        sig_label = dplyr::coalesce(sig_label_sig, sig_label),
+        sig       = dplyr::coalesce(sig_sig, sig, FALSE),
+        q         = dplyr::coalesce(q_sig, q)
+      ) %>%
+      dplyr::select(-q_sig, -sig_sig, -sig_label_sig)
+  }
+  
+  make_cytokine_barplot(
+    summary_raw     = summary_raw,
+    d_raw           = d_raw,
+    cyt             = cytokine,
+    target_exposure = target_exposure,
+    exp_short       = exp_short,
+    border_color    = border_color
+  ) +
+    ggplot2::labs(
+      title = paste0(cytokine, " — ", target_exposure,
+                     " | SEX=", sex, " | AIRWAY=", airway)
+    )
 }
 
-cat("✓ Data / RNA-seq functions loaded\n")
+plot_all_cytokine_single_combo_bars <- function(
+    df,
+    cytokines,
+    exposures  = ALL_HIGH_DOSE_EXPOSURES,
+    sexes      = c("M", "F"),
+    airways    = c("LAE", "SAE"),
+    sig_data   = NULL,
+    save       = TRUE,
+    out_subdir = "single_combo_barplots",
+    width      = 8,
+    height     = 5,
+    dpi        = 150
+) {
+  out <- list()
+  
+  if (!is.null(sig_data)) {
+    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
+    missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
+    if (length(missing_sig_cols) > 0) {
+      stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
+    }
+  }
+  
+  if (save) {
+    ensure_dir(here::here(PATH_OUTPUT_FIGS, out_subdir))
+  }
+  
+  for (cyt in cytokines) {
+    for (exp in exposures) {
+      for (sx in sexes) {
+        for (aw in airways) {
+          sig_subset <- NULL
+          if (!is.null(sig_data)) {
+            sig_subset <- sig_data %>%
+              dplyr::filter(CYTOKINE == cyt, EXPOSURE == exp, SEX == sx, CELLTYPE == aw)
+          }
+          
+          p <- make_cytokine_barplot_single_combo(
+            df              = df,
+            cytokine        = cyt,
+            target_exposure = exp,
+            sex             = sx,
+            airway          = aw,
+            sig_data        = sig_subset
+          )
+          
+          key      <- paste(cyt, exp, sx, aw, sep = "__")
+          out[[key]] <- p
+          
+          if (!is.null(p)) {
+            print(p)
+            if (save) {
+              fn <- paste0(
+                "barplot_", safe_name(cyt), "_",
+                safe_name(exp), "_SEX_", sx, "_AIRWAY_", aw, ".png"
+              )
+              save_plot(
+                filename = file.path(out_subdir, fn),
+                plot     = p,
+                width    = width,
+                height   = height,
+                dpi      = dpi,
+                bg       = "white"
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  invisible(out)
+}
+
+# ── Save helpers ──────────────────────────────────────────────────────────────
+
+save_plot <- function(filename, plot = ggplot2::last_plot(),
+                      width = 10, height = 8, dpi = 300,
+                      path = PATH_OUTPUT_FIGURES, bg = "white") {
+  out_file <- file.path(path, filename)
+  out_dir  <- dirname(out_file)
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  ggplot2::ggsave(
+    filename = out_file,
+    plot = plot,
+    width = width,
+    height = height,
+    dpi = dpi,
+    units = "in",
+    bg = bg
+  )
+  
+  cat("✓ Saved plot:", out_file, "\n")
+  invisible(TRUE)
+}
+
+save_table <- function(data, filename, path = PATH_OUTPUT_TABLES) {
+  out_file <- file.path(path, filename)
+  out_dir  <- dirname(out_file)
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  readr::write_csv(data, file = out_file)
+  cat("✓ Saved table:", out_file, "\n")
+  invisible(TRUE)
+}
+
+# ── Per-cytokine histogram ────────────────────────────────────────────────────
+
+make_cytokine_histogram <- function(d_raw, cyt, target_exposure) {
+  ggplot2::ggplot(
+    d_raw %>% dplyr::filter(EXPOSURE == target_exposure),
+    ggplot2::aes(x = VALUE, fill = SEX)
+  ) +
+    ggplot2::geom_histogram(position = "identity", alpha = 0.65,
+                            bins = 20, color = "grey40") +
+    ggplot2::facet_grid(rows = ggplot2::vars(CELLTYPE),
+                        cols = ggplot2::vars(HORMONE)) +
+    ggplot2::scale_fill_manual(values = c("M" = "lemonchiffon", "F" = "white"),
+                               name = "Sex") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::labs(
+      title = paste("Raw Values —", cyt, "|", target_exposure),
+      x = paste(cyt, "(pg/mL)"), y = "Count")
+}
+
+# ── Boxplot helpers (legacy plotting functions) ───────────────────────────────
+
+sex_exposure_plot <- function(data, y_variable) {
+  p <- data %>%
+    dplyr::filter(SEX %in% c("M","F")) %>%
+    ggplot2::ggplot(ggplot2::aes(
+      x = EXPOSURE, y = .data[[y_variable]],
+      color = EXPOSURE, fill = factor(SEX), pattern = CONCENTRATION)) +
+    ggplot2::geom_boxplot(linewidth = 1) +
+    ggpattern::geom_boxplot_pattern(
+      position           = ggplot2::position_dodge(preserve = "single"),
+      pattern_fill       = "black", pattern_angle = 45,
+      pattern_density    = 0.2, pattern_spacing = 0.025,
+      pattern_key_scale_factor = 0.6) +
+    ggplot2::guides(
+      fill  = ggplot2::guide_legend(override.aes = list(pattern = "none")),
+      color = ggplot2::guide_legend(override.aes = list(pattern = "none"))) +
+    ggpattern::scale_pattern_manual(
+      values = c(HIGH = "stripe", LOW = "none", NONE = "none")) +
+    ggplot2::geom_jitter(
+      position = ggplot2::position_jitterdodge(), size = 2, alpha = 1) +
+    ggplot2::theme(legend.position = "right") +
+    ggplot2::labs(y = y_variable, title = paste(y_variable, "and Sex")) +
+    ggplot2::scale_fill_manual(values = c("M" = "lemonchiffon", "F" = "thistle1")) +
+    ggplot2::scale_color_manual(values = color_exposure) +
+    ggplot2::theme(
+      axis.title   = ggplot2::element_text(size = 20, face = "bold"),
+      axis.text.x  = ggplot2::element_blank(),
+      axis.text.y  = ggplot2::element_text(face = "bold", color = "black", size = 20),
+      panel.grid.major = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      axis.line    = ggplot2::element_line(colour = "black", linewidth = 1),
+      panel.background = ggplot2::element_blank(),
+      axis.ticks.x = ggplot2::element_blank()) +
+    ggplot2::scale_x_discrete(limits = c(
+      "PBS_Control","Untreated_Control","Peat_5","Peat_25","Pine_5","Pine_25",
+      "Eucalyptus_5","Eucalyptus_25","RedOak_5","RedOak_25"))
+  p
+}
+
+exposure_plot <- function(data, title, y_variable) {
+  p <- data %>%
+    ggplot2::ggplot(ggplot2::aes(
+      x = EXPOSURE, y = .data[[y_variable]],
+      color = EXPOSURE, pattern = CONCENTRATION)) +
+    ggplot2::geom_boxplot(linewidth = 1) +
+    ggpattern::geom_boxplot_pattern(
+      position           = ggplot2::position_dodge(preserve = "single"),
+      pattern_fill       = "black", pattern_angle = 45,
+      pattern_density    = 0.2, pattern_spacing = 0.025,
+      pattern_key_scale_factor = 0.6) +
+    ggplot2::guides(
+      fill  = ggplot2::guide_legend(override.aes = list(pattern = "none")),
+      color = ggplot2::guide_legend(override.aes = list(pattern = "none"))) +
+    ggpattern::scale_pattern_manual(
+      values = c(HIGH = "stripe", LOW = "none", NONE = "none")) +
+    ggplot2::geom_jitter(
+      position = ggplot2::position_jitterdodge(), size = 2, alpha = 1) +
+    ggplot2::scale_fill_manual(values = c("M" = "lemonchiffon", "F" = "thistle1")) +
+    ggplot2::scale_color_manual(values = color_exposure) +
+    ggplot2::theme(
+      legend.position  = "right",
+      axis.title       = ggplot2::element_text(size = 20, face = "bold"),
+      axis.text.x      = ggplot2::element_blank(),
+      axis.text.y      = ggplot2::element_text(face = "bold", color = "black", size = 20),
+      panel.grid.major = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      axis.line        = ggplot2::element_line(colour = "black", linewidth = 1),
+      panel.background = ggplot2::element_blank(),
+      axis.ticks.x     = ggplot2::element_blank()) +
+    ggplot2::labs(y = y_variable, title = title) +
+    ggplot2::scale_x_discrete(limits = c(
+      "Untreated_Control","Peat_5","Peat_25","Pine_5","Pine_25",
+      "Eucalyptus_5","Eucalyptus_25","RedOak_5","RedOak_25")) +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "gray1")
+  p
+}
+
+# ── Gene expression bar plots (RNA-seq) ──────────────────────────────────────
+
+plot_gene_expression_bars <- function(vst_data, metadata, genes) {
+  long_dat <- vst_data %>%
+    dplyr::filter(Geneid %in% genes) %>%
+    tidyr::pivot_longer(cols = -Geneid,
+                        names_to = "SAMPLEID", values_to = "Expression") %>%
+    dplyr::left_join(metadata, by = "SAMPLEID") %>%
+    dplyr::mutate(EXPOSURE = factor(EXPOSURE))
+  
+  ggplot2::ggplot(long_dat,
+                  ggplot2::aes(x = EXPOSURE, y = Expression, fill = SEX)) +
+    ggplot2::stat_summary(fun = mean, geom = "bar",
+                          position = ggplot2::position_dodge(0.8), width = 0.7) +
+    ggplot2::stat_summary(fun.data = ggplot2::mean_se, geom = "errorbar",
+                          position = ggplot2::position_dodge(0.8), width = 0.25) +
+    ggplot2::scale_fill_manual(values = c("M" = "steelblue", "F" = "salmon")) +
+    ggplot2::facet_wrap(~ Geneid, scales = "free_y") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      axis.text.x      = ggplot2::element_text(angle = 45, hjust = 1),
+      strip.text       = ggplot2::element_text(face = "bold"),
+      panel.border     = ggplot2::element_rect(color = "black", fill = NA,
+                                               linewidth = 0.5)) +
+    ggplot2::labs(y = "VST Expression", x = NULL)
+}
+
+# ── GSEA barplot helper (RNA-seq) ─────────────────────────────────────────────
+
+plot_gsea_barplot <- function(gsea_data, n_top = 12, facet_by = "sample_name",
+                              color_low = "darkgreen", color_high = "gray",
+                              fdr_limit = 0.35) {
+  plot_dat <- gsea_data %>%
+    dplyr::mutate(
+      clean_path = gsub("^HALLMARK_", "", Pathway),
+      clean_path = gsub("_", " ", clean_path)
+    ) %>%
+    dplyr::group_by(.data[[facet_by]]) %>%
+    dplyr::arrange(FDR_qval) %>%
+    dplyr::slice_head(n = n_top) %>%
+    dplyr::ungroup()
+  
+  ggplot2::ggplot(plot_dat,
+                  ggplot2::aes(x = reorder(clean_path, NES), y = NES, fill = FDR_qval)) +
+    ggplot2::geom_col() +
+    ggplot2::scale_fill_gradient(low = color_low, high = color_high,
+                                 limits = c(0, fdr_limit)) +
+    ggplot2::geom_hline(yintercept = 0, color = "black", linewidth = 0.5) +
+    ggplot2::coord_flip() +
+    ggplot2::facet_wrap(stats::as.formula(paste("~", facet_by)),
+                        scales = "free_y") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      axis.text.x      = ggplot2::element_text(face = "bold"),
+      axis.text.y      = ggplot2::element_text(face = "bold"),
+      strip.text       = ggplot2::element_text(size = 12, face = "bold"),
+      panel.border     = ggplot2::element_rect(color = "black", fill = NA,
+                                               linewidth = 1),
+      panel.background = ggplot2::element_blank(),
+      panel.grid.major.y = ggplot2::element_blank()) +
+    ggplot2::labs(x = "Pathway",
+                  y = "Normalized Enrichment Score",
+                  fill = "FDR q-val")
+}
