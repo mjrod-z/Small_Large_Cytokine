@@ -1,0 +1,202 @@
+---
+title: "HPIV3 Protein Analysis"
+author: "MJR"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: journal
+    code_folding: hide
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "output/reports",
+      knit_root_dir = "."
+    )
+  })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 12,
+  fig.height = 9
+)
+set.seed(4454)
+```
+
+# Setup
+
+```{r load-packages}
+source(here::here("_load_all.R"))
+
+HPIV3_MISSING_THRESHOLD <- 0.30
+HPIV3_PSEUDOCOUNT <- PSEUDOCOUNT
+HPIV3_OUTPUT_SUBDIR <- "hpiv3"
+
+cat("✓ HPIV3 analysis configuration loaded\n")
+cat("  Missingness threshold:", HPIV3_MISSING_THRESHOLD, "\n")
+cat("  Modeling pseudocount :", HPIV3_PSEUDOCOUNT, "\n")
+cat("  Output subdirectory  :", file.path(PATH_OUTPUT, HPIV3_OUTPUT_SUBDIR), "\n")
+```
+
+# Data contract and QC rules
+
+This report expects two CSV inputs in `data/raw`:
+
+- `HPIV3_nomic_subset.csv` with columns `SAMPLENAME`, `PLATE`, `INFECTION`, `AIRWAY`, plus protein concentration columns in pg/mL.
+- `HPIV3_metadata.csv` with columns `SAMPLEID`, `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, `AGE`, `SEX`, `RACE`, `SMOKER`.
+
+QC and modeling rules:
+
+- `SAMPLENAME` is split at the final underscore into `SAMPLEID` and `TIMEPOINT`.
+- Text values matching `<LLOD` or `>ULOD` (case/whitespace-insensitive) are treated as missing before numeric conversion.
+- Other non-numeric protein values are also converted to missing and reported.
+- Infection labels are normalized so `NO` and `NONE` become `NONE`; `HPIV3` is retained; unexpected labels stop the run.
+- Hormone levels are kept as `NONE` and `E2`.
+- Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum.
+- Infection effects are modeled on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE`, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
+
+# Load and prepare HPIV3 data
+
+```{r load-hpiv3-data}
+hpiv3_bundle <- build_hpiv3_analysis_data(
+  protein_path = here::here(PATH_DATA_RAW, "HPIV3_nomic_subset.csv"),
+  metadata_path = here::here(PATH_DATA_RAW, "HPIV3_metadata.csv")
+)
+
+hpiv3_data <- hpiv3_bundle$data
+hpiv3_proteins <- hpiv3_bundle$protein_cols
+hpiv3_qc <- hpiv3_bundle$qc
+
+cat("✓ HPIV3 inputs loaded\n")
+cat("  Rows           :", nrow(hpiv3_data), "\n")
+cat("  Protein columns:", length(hpiv3_proteins), "\n")
+cat("  Airway levels  :", paste(levels(hpiv3_data$AIRWAY), collapse = " | "), "\n")
+cat("  Hormone levels :", paste(levels(hpiv3_data$HORMONE), collapse = " | "), "\n")
+cat("  Timepoints     :", paste(levels(hpiv3_data$TIMEPOINT), collapse = " | "), "\n")
+cat("  Infection levels:", paste(levels(factor(hpiv3_data$INFECTION)), collapse = " | "), "\n")
+```
+
+# Export analysis-ready data and join diagnostics
+
+```{r export-prep-qc}
+analysis_ready_export <- hpiv3_data %>%
+  dplyr::select(
+    SAMPLENAME, SAMPLEID, TIMEPOINT, PLATE, AIRWAY, PATIENTCODE,
+    HORMONE, INFECTION, SEX, SMOKER,
+    dplyr::all_of(hpiv3_proteins)
+  )
+
+save_table(analysis_ready_export, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_analysis_ready_data.csv"))
+save_table(hpiv3_qc$numeric_conversion, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_numeric_conversion_qc.csv"))
+save_table(hpiv3_qc$unmatched_protein_ids, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_unmatched_protein_sample_ids.csv"))
+save_table(hpiv3_qc$unmatched_metadata_ids, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_unmatched_metadata_sample_ids.csv"))
+save_table(hpiv3_qc$metadata_mismatches, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_metadata_mismatches.csv"))
+```
+
+# Missingness filtering
+
+```{r missingness-qc}
+hpiv3_missingness <- compute_hpiv3_missingness_qc(
+  hpiv3_data,
+  hpiv3_proteins,
+  threshold = HPIV3_MISSING_THRESHOLD
+)
+
+hpiv3_missingness_qc <- hpiv3_missingness$qc
+hpiv3_protein_status <- hpiv3_missingness$protein_status
+hpiv3_included_proteins <- hpiv3_protein_status %>%
+  dplyr::filter(included) %>%
+  dplyr::pull(PROTEIN)
+
+save_table(hpiv3_missingness_qc, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_missingness_qc.csv"))
+
+cat("✓ Missingness QC complete\n")
+cat("  Included proteins:", length(hpiv3_included_proteins), "\n")
+cat("  Excluded proteins:", sum(!hpiv3_protein_status$included), "\n")
+```
+
+```{r missingness-preview}
+knitr::kable(
+  hpiv3_protein_status %>% dplyr::arrange(PROTEIN),
+  caption = "Protein inclusion summary after HPIV3 missingness filtering"
+)
+```
+
+# Stratum summaries
+
+```{r stratum-summaries}
+hpiv3_summary_table <- summarize_hpiv3_strata(hpiv3_data, hpiv3_proteins) %>%
+  dplyr::left_join(
+    hpiv3_protein_status %>% dplyr::select(PROTEIN, included, exclusion_reason),
+    by = "PROTEIN"
+  )
+
+save_table(hpiv3_summary_table, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_stratum_summary_pg_ml.csv"))
+```
+
+# HPIV3 mixed-effects modeling
+
+```{r hpiv3-models}
+hpiv3_model_results <- fit_hpiv3_infection_models(
+  hpiv3_data,
+  hpiv3_proteins,
+  protein_status = hpiv3_protein_status,
+  pseudocount = HPIV3_PSEUDOCOUNT,
+  alpha_q = ALPHA_Q
+)
+
+save_table(hpiv3_model_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_all_protein_model_results.csv"))
+
+cat("✓ Modeling complete\n")
+cat("  Modeled rows :", sum(!is.na(hpiv3_model_results$p.value)), "\n")
+cat("  Significant q<", ALPHA_Q, ":", sum(hpiv3_model_results$significant, na.rm = TRUE), "\n")
+```
+
+```{r results-preview}
+knitr::kable(
+  hpiv3_model_results %>%
+    dplyr::filter(SEX == "All") %>%
+    dplyr::arrange(AIRWAY, HORMONE, TIMEPOINT, q.value, PROTEIN) %>%
+    dplyr::select(AIRWAY, HORMONE, TIMEPOINT, PROTEIN, estimate, p.value, q.value, significant, model_type, failure_reason) %>%
+    utils::head(20),
+  digits = 3,
+  caption = "Top pooled HPIV3 protein-comparison results"
+)
+```
+
+# Visualization
+
+```{r hpiv3-plots}
+p_hpiv3_all <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "All")
+print(p_hpiv3_all)
+save_plot(file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_infection_dotplot_all.png"), p_hpiv3_all, width = 14, height = 10)
+
+if ("F" %in% unique(hpiv3_model_results$SEX)) {
+  p_hpiv3_f <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "F")
+  save_plot(file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_infection_dotplot_female.png"), p_hpiv3_f, width = 14, height = 10)
+}
+
+if ("M" %in% unique(hpiv3_model_results$SEX)) {
+  p_hpiv3_m <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "M")
+  save_plot(file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_infection_dotplot_male.png"), p_hpiv3_m, width = 14, height = 10)
+}
+```
+
+# Session summary
+
+```{r session-summary}
+cat("Outputs written under:", file.path(PATH_OUTPUT, HPIV3_OUTPUT_SUBDIR), "\n")
+cat("Generated files include:\n")
+cat("  - hpiv3_analysis_ready_data.csv\n")
+cat("  - hpiv3_numeric_conversion_qc.csv\n")
+cat("  - hpiv3_missingness_qc.csv\n")
+cat("  - hpiv3_all_protein_model_results.csv\n")
+cat("  - hpiv3_stratum_summary_pg_ml.csv\n")
+cat("  - hpiv3_infection_dotplot_*.png\n")
+```

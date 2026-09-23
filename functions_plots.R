@@ -690,3 +690,58 @@ plot_gsea_barplot <- function(gsea_data, n_top = 12, facet_by = "sample_name",
                   y = "Normalized Enrichment Score",
                   fill = "FDR q-val")
 }
+
+
+plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All") {
+  plot_df <- model_results %>%
+    dplyr::filter(SEX == sex_group, !is.na(estimate)) %>%
+    dplyr::mutate(
+      direction = dplyr::case_when(
+        significant & estimate > 0 ~ "Higher in HPIV3",
+        significant & estimate < 0 ~ "Lower in HPIV3",
+        TRUE ~ "Not significant"
+      ),
+      point_alpha = dplyr::if_else(significant, 0.95, 0.30),
+      point_size = dplyr::if_else(significant, pmax(abs(estimate), 0.6), 0.7),
+      facet_timepoint = paste0("Timepoint ", TIMEPOINT),
+      PROTEIN = factor(PROTEIN, levels = rev(sort(unique(PROTEIN))))
+    )
+
+  if (nrow(plot_df) == 0) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(title = paste("HPIV3 vs NONE:", sex_group),
+                      subtitle = "No model results available")
+    )
+  }
+
+  ggplot2::ggplot(plot_df, ggplot2::aes(x = estimate, y = PROTEIN)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "grey60") +
+    ggplot2::geom_point(
+      ggplot2::aes(color = direction, alpha = point_alpha, size = point_size)
+    ) +
+    ggplot2::scale_color_manual(
+      values = c(
+        "Higher in HPIV3" = "#B2182B",
+        "Lower in HPIV3" = "#2166AC",
+        "Not significant" = "grey70"
+      )
+    ) +
+    ggplot2::scale_alpha_identity() +
+    ggplot2::scale_size_identity() +
+    ggplot2::facet_grid(AIRWAY ~ HORMONE + facet_timepoint, scales = "free_y", space = "free_y") +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.grid.major.y = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      strip.text = ggplot2::element_text(face = "bold"),
+      axis.text.y = ggplot2::element_text(size = 8),
+      legend.title = ggplot2::element_blank()
+    ) +
+    ggplot2::labs(
+      title = paste("HPIV3 vs NONE protein effects —", sex_group),
+      x = "Estimated log2(HPIV3 - NONE)",
+      y = "Protein"
+    )
+}

@@ -3,7 +3,7 @@
 required_pkgs <- c(
   "here", "dplyr", "tidyr", "readr", "stringr",
   "purrr", "tibble", "ggplot2", "ggnewscale", "ggpattern",
-  "rvest"
+  "rvest", "lme4", "emmeans", "ARTool"
 )
 
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
@@ -57,8 +57,14 @@ for (f in function_files) {
 
 # 3) Verify critical functions/constants exist
 required_objects <- c(
-  "filter_genes",
-  "normalize_counts",
+  "apply_factor_spec",
+  "average_nonzero_by_sample",
+  "build_sala_full",
+  "build_hpiv3_analysis_data",
+  "compute_hpiv3_missingness_qc",
+  "fit_hpiv3_infection_models",
+  "summarize_hpiv3_strata",
+  "plot_hpiv3_infection_dotplot",
   "save_plot",
   "save_table",
   "GENE_BACKGROUND_THRESHOLD",
