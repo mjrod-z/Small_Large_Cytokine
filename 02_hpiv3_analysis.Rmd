@@ -59,7 +59,9 @@ QC and modeling rules:
 - Infection labels are normalized so `NO` and `NONE` become `NONE`; `HPIV3` is retained; unexpected labels stop the run.
 - Hormone levels are kept as `NONE` and `E2`.
 - Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum.
-- Infection effects are modeled on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE`, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
+- Infection effects are modeled on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE` within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × SEX` strata, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
+- Sex effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × INFECTION` strata.
+- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata.
 
 # Load and prepare HPIV3 data
 
@@ -88,7 +90,7 @@ cat("  Infection levels:", paste(levels(factor(hpiv3_data$INFECTION)), collapse 
 analysis_ready_export <- hpiv3_data %>%
   dplyr::select(
     SAMPLENAME, SAMPLEID, TIMEPOINT, PLATE, AIRWAY, PATIENTCODE,
-    HORMONE, INFECTION, SEX, SMOKER,
+    HORMONE, EXPOSURE, INFECTION, SEX, SMOKER,
     dplyr::all_of(hpiv3_proteins)
   )
 
@@ -162,11 +164,57 @@ cat("  Significant q<", ALPHA_Q, ":", sum(hpiv3_model_results$significant, na.rm
 knitr::kable(
   hpiv3_model_results %>%
     dplyr::filter(SEX == "All") %>%
-    dplyr::arrange(AIRWAY, HORMONE, TIMEPOINT, q.value, PROTEIN) %>%
-    dplyr::select(AIRWAY, HORMONE, TIMEPOINT, PROTEIN, estimate, p.value, q.value, significant, model_type, failure_reason) %>%
+    dplyr::arrange(AIRWAY, EXPOSURE, HORMONE, TIMEPOINT, q.value, PROTEIN) %>%
+    dplyr::select(AIRWAY, EXPOSURE, HORMONE, TIMEPOINT, PROTEIN, estimate, p.value, q.value, significant, model_type, failure_reason) %>%
     utils::head(20),
   digits = 3,
-  caption = "Top pooled HPIV3 protein-comparison results"
+  caption = "Top pooled-sex HPIV3 protein-comparison results by airway and exposure"
+)
+```
+
+# HPIV3 sex and exposure stratified mixed-effects modeling
+
+```{r hpiv3-noninfection-models}
+hpiv3_sex_results <- fit_hpiv3_sex_models(
+  hpiv3_data,
+  hpiv3_proteins,
+  protein_status = hpiv3_protein_status,
+  pseudocount = HPIV3_PSEUDOCOUNT,
+  alpha_q = ALPHA_Q
+)
+save_table(hpiv3_sex_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_sex_model_results.csv"))
+
+hpiv3_exposure_results <- fit_hpiv3_exposure_models(
+  hpiv3_data,
+  hpiv3_proteins,
+  protein_status = hpiv3_protein_status,
+  pseudocount = HPIV3_PSEUDOCOUNT,
+  alpha_q = ALPHA_Q
+)
+save_table(hpiv3_exposure_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_model_results.csv"))
+
+cat("✓ Non-infection modeling complete\n")
+cat("  Sex modeled rows     :", sum(!is.na(hpiv3_sex_results$p.value)), "\n")
+cat("  Exposure modeled rows:", sum(!is.na(hpiv3_exposure_results$p.value)), "\n")
+```
+
+```{r noninfection-previews}
+knitr::kable(
+  hpiv3_sex_results %>%
+    dplyr::arrange(AIRWAY, EXPOSURE, HORMONE, TIMEPOINT, INFECTION, q.value, PROTEIN, contrast) %>%
+    dplyr::select(AIRWAY, EXPOSURE, HORMONE, TIMEPOINT, INFECTION, PROTEIN, contrast, estimate, p.value, q.value, significant, model_type, failure_reason) %>%
+    utils::head(20),
+  digits = 3,
+  caption = "Sex contrasts within airway/exposure/infection strata"
+)
+
+knitr::kable(
+  hpiv3_exposure_results %>%
+    dplyr::arrange(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION, q.value, PROTEIN, contrast) %>%
+    dplyr::select(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION, PROTEIN, contrast, estimate, p.value, q.value, significant, model_type, failure_reason) %>%
+    utils::head(20),
+  digits = 3,
+  caption = "Exposure contrasts within airway/sex/infection strata"
 )
 ```
 
@@ -186,6 +234,24 @@ if ("M" %in% unique(hpiv3_model_results$SEX)) {
   p_hpiv3_m <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "M")
   save_plot(file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_infection_dotplot_male.png"), p_hpiv3_m, width = 14, height = 10)
 }
+
+p_hpiv3_sex <- plot_hpiv3_sex_dotplot(hpiv3_sex_results)
+print(p_hpiv3_sex)
+save_plot(file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_sex_dotplot.png"), p_hpiv3_sex, width = 16, height = 12)
+
+p_hpiv3_exposure_all <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "All")
+print(p_hpiv3_exposure_all)
+save_plot(file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_dotplot_all.png"), p_hpiv3_exposure_all, width = 16, height = 12)
+
+if ("F" %in% unique(hpiv3_exposure_results$SEX)) {
+  p_hpiv3_exposure_f <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "F")
+  save_plot(file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_dotplot_female.png"), p_hpiv3_exposure_f, width = 16, height = 12)
+}
+
+if ("M" %in% unique(hpiv3_exposure_results$SEX)) {
+  p_hpiv3_exposure_m <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "M")
+  save_plot(file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_dotplot_male.png"), p_hpiv3_exposure_m, width = 16, height = 12)
+}
 ```
 
 # Session summary
@@ -197,6 +263,10 @@ cat("  - hpiv3_analysis_ready_data.csv\n")
 cat("  - hpiv3_numeric_conversion_qc.csv\n")
 cat("  - hpiv3_missingness_qc.csv\n")
 cat("  - hpiv3_all_protein_model_results.csv\n")
+cat("  - hpiv3_sex_model_results.csv\n")
+cat("  - hpiv3_exposure_model_results.csv\n")
 cat("  - hpiv3_stratum_summary_pg_ml.csv\n")
 cat("  - hpiv3_infection_dotplot_*.png\n")
+cat("  - hpiv3_sex_dotplot.png\n")
+cat("  - hpiv3_exposure_dotplot_*.png\n")
 ```
