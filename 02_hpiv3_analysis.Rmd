@@ -414,74 +414,219 @@ for (row_i in seq_len(nrow(exposure_airway_table))) {
 }
 ```
 
-# Unique and shared significant proteins
+# Unique/shared significant proteins across all tested strata
 
-This section compares **HPIV3 vs NONE significance outcomes** across exposure levels within a fixed stratum.  
-Concrete example shown here: `SEX = F`, `AIRWAY = SAE`, `TIMEPOINT = 72`, and `EXPOSURE ∈ {PBS_Control, Peat_25, Pine_25}`, split by `HORMONE`.
+This section exports **three complete all-strata analyses** from existing model-result tables (no model re-fitting):
+
+- **Infection results (`hpiv3_model_results`)**: for each `SEX × AIRWAY × TIMEPOINT × HORMONE`, compare significance membership across tested `EXPOSURE` levels.
+- **Sex-comparison results (`hpiv3_sex_results`)**: for each `AIRWAY × TIMEPOINT × HORMONE × EXPOSURE × INFECTION`, summarize membership across tested `SEX` levels using significant pairwise contrast directionality.
+- **Exposure-comparison results (`hpiv3_exposure_results`)**: for each `AIRWAY × TIMEPOINT × SEX × HORMONE × INFECTION`, summarize membership across tested `EXPOSURE` levels using significant pairwise contrast directionality.
+
+Each stratum exports:
+
+- `*_membership_long.csv` (protein-level memberships; non-significant proteins retained with `sig_group = NA`)
+- `*_summary.csv` (counts by membership class)
+- `*_upset.png` (UpSet intersections)
+- `*_euler.png` (Euler-style set map for up to 3 sets; placeholder otherwise)
+
+Empty/sparse strata are handled safely and do not abort report generation.
 
 ```{r hpiv3-unique-shared}
-run_unique_membership_report <- function(
-    model_results,
-    output_subdir,
-    group_var,
-    group_levels,
-    base_filters,
-    split_var
-) {
-  split_levels <- sort(unique(as.character(model_results[[split_var]])))
-  split_levels <- split_levels[!is.na(split_levels)]
-
-  for (split_level in split_levels) {
-    filters_i <- c(base_filters, stats::setNames(list(split_level), split_var))
-    unique_result <- summarize_unique_significant_proteins(
-      model_results = model_results,
-      group_var = group_var,
-      group_levels = group_levels,
-      filters = filters_i,
-      alpha_q = ALPHA_Q
-    )
-
-    base_stem <- paste(
-      c("hpiv3_unique_significant", names(filters_i), as.character(unlist(filters_i, use.names = FALSE))),
-      collapse = "_"
-    )
-    file_stem <- safe_name(base_stem)
-
-    save_table(
-      unique_result$membership_long,
-      file.path(output_subdir, paste0(file_stem, "_membership_long.csv"))
-    )
-    save_table(
-      unique_result$summary,
-      file.path(output_subdir, paste0(file_stem, "_summary.csv"))
-    )
-
-    title_i <- paste0(
-      "Unique/shared significant proteins by ", group_var,
-      " | ", paste(names(filters_i), as.character(unlist(filters_i, use.names = FALSE)), sep = "=", collapse = ", ")
-    )
-    upset_plot <- plot_unique_protein_upset(unique_result, title_str = title_i)
-    print(upset_plot)
-    save_plot(
-      file.path(output_subdir, paste0(file_stem, "_upset.png")),
-      upset_plot,
-      width = 12,
-      height = 8
+assert_unique_membership_inputs <- function(model_results, required_cols, label) {
+  missing_cols <- setdiff(required_cols, names(model_results))
+  if (length(missing_cols) > 0) {
+    stop(
+      label, " is missing required columns: ",
+      paste(missing_cols, collapse = ", ")
     )
   }
 }
 
-run_unique_membership_report(
+make_membership_stem <- function(prefix, metadata_cols, metadata_values) {
+  values_chr <- as.character(metadata_values)
+  safe_name(paste(c(prefix, metadata_cols, values_chr), collapse = "_"))
+}
+
+run_unique_membership_family <- function(
+    model_results,
+    analysis_type,
+    output_subdir,
+    group_var,
+    strata_vars,
+    metadata_vars,
+    membership_source = c("column", "contrast")
+) {
+  membership_source <- match.arg(membership_source)
+  required_cols <- unique(c("PROTEIN", "significant", "q.value", strata_vars, metadata_vars))
+  if (membership_source == "column") {
+    required_cols <- unique(c(required_cols, group_var))
+  } else {
+    required_cols <- unique(c(required_cols, "contrast", "estimate"))
+  }
+  assert_unique_membership_inputs(model_results, required_cols, analysis_type)
+
+  out_dir <- output_subdir
+  strata_tbl <- model_results %>%
+    dplyr::distinct(dplyr::across(dplyr::all_of(strata_vars))) %>%
+    dplyr::arrange(dplyr::across(dplyr::all_of(strata_vars)))
+
+  if (nrow(strata_tbl) == 0) {
+    return(invisible(list(strata = 0L, outputs = 0L)))
+  }
+
+  n_outputs <- 0L
+
+  for (i in seq_len(nrow(strata_tbl))) {
+    filter_vals <- as.list(strata_tbl[i, , drop = FALSE])
+    names(filter_vals) <- strata_vars
+    filter_vals <- lapply(filter_vals, as.character)
+
+    stratum_rows <- model_results
+    for (nm in names(filter_vals)) {
+      stratum_rows <- stratum_rows %>%
+        dplyr::filter(as.character(.data[[nm]]) %in% filter_vals[[nm]])
+    }
+    if (nrow(stratum_rows) == 0) next
+
+    group_levels <- if (membership_source == "column") {
+      sort(unique(as.character(stratum_rows[[group_var]])))
+    } else {
+      contrast_sides <- stratum_rows %>%
+        dplyr::transmute(.split = stringr::str_split(as.character(contrast), " - ", n = 2)) %>%
+        dplyr::mutate(
+          left = purrr::map_chr(.split, ~ if (length(.x) == 2) .x[[1]] else NA_character_),
+          right = purrr::map_chr(.split, ~ if (length(.x) == 2) .x[[2]] else NA_character_)
+        )
+      sort(unique(c(contrast_sides$left, contrast_sides$right)))
+    }
+    group_levels <- group_levels[!is.na(group_levels)]
+
+    unique_result <- summarize_unique_significant_proteins(
+      model_results = model_results,
+      group_var = group_var,
+      group_levels = group_levels,
+      filters = filter_vals,
+      alpha_q = ALPHA_Q,
+      membership_source = membership_source
+    )
+
+    meta_names <- unique(c("analysis_type", strata_vars, "group_var"))
+    meta_values <- c(analysis_type, vapply(strata_vars, function(v) filter_vals[[v]][[1]], character(1)), group_var)
+    file_stem <- make_membership_stem(
+      prefix = "hpiv3_unique_significant",
+      metadata_cols = meta_names,
+      metadata_values = meta_values
+    )
+
+    membership_export <- unique_result$membership_long %>%
+      dplyr::mutate(
+        analysis_type = analysis_type,
+        group_var = group_var,
+        group_levels = paste(group_levels, collapse = "|")
+      )
+    for (mv in metadata_vars) {
+      value_i <- if (mv %in% names(filter_vals)) filter_vals[[mv]][[1]] else NA_character_
+      membership_export[[mv]] <- value_i
+    }
+    membership_export <- membership_export %>%
+      dplyr::select(
+        analysis_type, dplyr::all_of(metadata_vars), group_var, group_levels,
+        PROTEIN, sig_group, n_sig_groups, membership_class
+      )
+
+    summary_export <- unique_result$summary %>%
+      dplyr::mutate(
+        analysis_type = analysis_type,
+        group_var = group_var,
+        group_levels = paste(group_levels, collapse = "|")
+      )
+    for (mv in metadata_vars) {
+      value_i <- if (mv %in% names(filter_vals)) filter_vals[[mv]][[1]] else NA_character_
+      summary_export[[mv]] <- value_i
+    }
+    summary_export <- summary_export %>%
+      dplyr::select(
+        analysis_type, dplyr::all_of(metadata_vars), group_var, group_levels,
+        membership_class, n_proteins
+      )
+
+    dedup_key <- paste(
+      membership_export$PROTEIN,
+      dplyr::coalesce(membership_export$sig_group, "<NA>"),
+      sep = "\r"
+    )
+    stopifnot(!anyDuplicated(dedup_key))
+
+    save_table(
+      membership_export,
+      file.path(HPIV3_OUTPUT_SUBDIR, "unique_proteins", out_dir, paste0(file_stem, "_membership_long.csv"))
+    )
+    save_table(
+      summary_export,
+      file.path(HPIV3_OUTPUT_SUBDIR, "unique_proteins", out_dir, paste0(file_stem, "_summary.csv"))
+    )
+
+    title_i <- paste0(
+      "Unique/shared significant proteins by ", group_var,
+      " (", analysis_type, ")"
+    )
+    subtitle_i <- paste(
+      paste0(names(filter_vals), "=", vapply(filter_vals, `[[`, character(1), 1L)),
+      paste0(group_var, "_levels=", paste(group_levels, collapse = "|")),
+      collapse = ", "
+    )
+    upset_plot <- plot_unique_protein_upset(unique_result, title_str = title_i)
+    euler_plot <- plot_unique_protein_euler(unique_result, title_str = paste0(title_i, " — Euler"))
+    upset_plot <- upset_plot + ggplot2::labs(subtitle = subtitle_i)
+    euler_plot <- euler_plot + ggplot2::labs(subtitle = subtitle_i)
+
+    save_plot(
+      file.path(HPIV3_OUTPUT_SUBDIR, "unique_proteins", out_dir, paste0(file_stem, "_upset.png")),
+      upset_plot,
+      width = 12,
+      height = 8
+    )
+    save_plot(
+      file.path(HPIV3_OUTPUT_SUBDIR, "unique_proteins", out_dir, paste0(file_stem, "_euler.png")),
+      euler_plot,
+      width = 12,
+      height = 8
+    )
+
+    n_outputs <- n_outputs + 1L
+  }
+
+  invisible(list(strata = nrow(strata_tbl), outputs = n_outputs))
+}
+
+infection_unique_status <- run_unique_membership_family(
   model_results = hpiv3_model_results,
-  output_subdir = HPIV3_OUTPUT_SUBDIR,
+  analysis_type = "infection",
+  output_subdir = "infection",
   group_var = "EXPOSURE",
-  group_levels = c("PBS_Control", "Peat_25", "Pine_25"),
-  base_filters = list(
-    SEX = "F",
-    AIRWAY = "SAE",
-    TIMEPOINT = "72"
-  ),
-  split_var = "HORMONE"
+  strata_vars = c("SEX", "AIRWAY", "TIMEPOINT", "HORMONE"),
+  metadata_vars = c("AIRWAY", "TIMEPOINT", "HORMONE", "SEX"),
+  membership_source = "column"
+)
+
+sex_unique_status <- run_unique_membership_family(
+  model_results = hpiv3_sex_results,
+  analysis_type = "sex",
+  output_subdir = "sex",
+  group_var = "SEX",
+  strata_vars = c("AIRWAY", "TIMEPOINT", "HORMONE", "EXPOSURE", "INFECTION"),
+  metadata_vars = c("AIRWAY", "TIMEPOINT", "HORMONE", "EXPOSURE", "INFECTION"),
+  membership_source = "contrast"
+)
+
+exposure_unique_status <- run_unique_membership_family(
+  model_results = hpiv3_exposure_results,
+  analysis_type = "exposure",
+  output_subdir = "exposure",
+  group_var = "EXPOSURE",
+  strata_vars = c("AIRWAY", "TIMEPOINT", "SEX", "HORMONE", "INFECTION"),
+  metadata_vars = c("AIRWAY", "TIMEPOINT", "SEX", "HORMONE", "INFECTION"),
+  membership_source = "contrast"
 )
 ```
 
@@ -500,7 +645,20 @@ cat("  - hpiv3_stratum_summary_pg_ml.csv\n")
 cat("  - hpiv3_infection_dotplot_*.png (aggregate + split by airway: hpiv3_infection_dotplot_*_<AIRWAY>.png)\n")
 cat("  - hpiv3_sex_dotplot*.png (aggregate + split by airway: hpiv3_sex_dotplot_<AIRWAY>.png)\n")
 cat("  - hpiv3_exposure_dotplot_*.png (aggregate + split by airway: hpiv3_exposure_dotplot_*_<AIRWAY>.png)\n")
-cat("  - hpiv3_unique_significant_*_membership_long.csv (unique/shared membership exports)\n")
-cat("  - hpiv3_unique_significant_*_summary.csv (counts by membership class)\n")
-cat("  - hpiv3_unique_significant_*_upset.png (UpSet intersection plots)\n")
+cat("  - unique_proteins/infection/hpiv3_unique_significant_*_membership_long.csv\n")
+cat("  - unique_proteins/infection/hpiv3_unique_significant_*_summary.csv\n")
+cat("  - unique_proteins/infection/hpiv3_unique_significant_*_upset.png\n")
+cat("  - unique_proteins/infection/hpiv3_unique_significant_*_euler.png\n")
+cat("  - unique_proteins/sex/hpiv3_unique_significant_*_membership_long.csv\n")
+cat("  - unique_proteins/sex/hpiv3_unique_significant_*_summary.csv\n")
+cat("  - unique_proteins/sex/hpiv3_unique_significant_*_upset.png\n")
+cat("  - unique_proteins/sex/hpiv3_unique_significant_*_euler.png\n")
+cat("  - unique_proteins/exposure/hpiv3_unique_significant_*_membership_long.csv\n")
+cat("  - unique_proteins/exposure/hpiv3_unique_significant_*_summary.csv\n")
+cat("  - unique_proteins/exposure/hpiv3_unique_significant_*_upset.png\n")
+cat("  - unique_proteins/exposure/hpiv3_unique_significant_*_euler.png\n")
+cat("Unique/shared strata processed:\n")
+cat("  - infection:", infection_unique_status$outputs, "of", infection_unique_status$strata, "strata exported\n")
+cat("  - sex:", sex_unique_status$outputs, "of", sex_unique_status$strata, "strata exported\n")
+cat("  - exposure:", exposure_unique_status$outputs, "of", exposure_unique_status$strata, "strata exported\n")
 ```

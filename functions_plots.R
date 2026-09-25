@@ -1077,3 +1077,171 @@ plot_unique_protein_upset <- function(unique_result, title_str = NULL) {
       y = "Number of proteins"
     )
 }
+
+plot_unique_protein_euler <- function(unique_result, title_str = NULL) {
+  `%||%` <- function(x, y) if (is.null(x)) y else x
+
+  membership <- unique_result$membership %>%
+    dplyr::filter(n_sig_groups > 0)
+
+  default_title <- paste("Euler-style significant proteins by", unique_result$group_var %||% "group")
+  filter_text <- "None"
+  if (length(unique_result$filters %||% list()) > 0) {
+    filter_text <- paste(
+      names(unique_result$filters),
+      vapply(unique_result$filters, function(v) paste(as.character(v), collapse = "|"), character(1)),
+      sep = "=",
+      collapse = ", "
+    )
+  }
+
+  if (nrow(membership) == 0) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = title_str %||% default_title,
+          subtitle = "No significant proteins in any group"
+        )
+    )
+  }
+
+  set_levels <- sort(unique(unlist(membership$sig_sets)))
+  n_sets <- length(set_levels)
+  if (n_sets == 0) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = title_str %||% default_title,
+          subtitle = "No significant proteins in any group"
+        )
+    )
+  }
+
+  combo_key <- function(x) paste(sort(x), collapse = "&&")
+  combo_counts <- membership %>%
+    dplyr::mutate(combo = vapply(sig_sets, combo_key, character(1))) %>%
+    dplyr::count(combo, name = "n")
+
+  get_combo_count <- function(groups) {
+    key <- combo_key(groups)
+    hit <- combo_counts$n[combo_counts$combo == key]
+    if (length(hit) == 0) 0L else as.integer(hit[[1]])
+  }
+
+  circle_path <- function(x0, y0, r, n = 200) {
+    theta <- seq(0, 2 * pi, length.out = n)
+    tibble::tibble(
+      x = x0 + r * cos(theta),
+      y = y0 + r * sin(theta)
+    )
+  }
+
+  if (n_sets > 3) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = title_str %||% default_title,
+          subtitle = paste0(
+            "Filters: ", filter_text,
+            " | Euler plot shown for up to 3 sets; this stratum has ",
+            n_sets, " sets: ", paste(set_levels, collapse = ", ")
+          )
+        )
+    )
+  }
+
+  if (n_sets == 1) {
+    one_label <- set_levels[[1]]
+    one_n <- get_combo_count(one_label)
+    circle_df <- circle_path(0, 0, 1)
+    return(
+      ggplot2::ggplot() +
+        ggplot2::geom_path(data = circle_df, ggplot2::aes(x = x, y = y), linewidth = 0.8, color = "#2C7BB6") +
+        ggplot2::annotate("text", x = 0, y = 0, label = one_n, size = 6, fontface = "bold") +
+        ggplot2::annotate("text", x = 0, y = 1.25, label = one_label, size = 4.2, fontface = "bold") +
+        ggplot2::coord_equal(xlim = c(-1.4, 1.4), ylim = c(-1.4, 1.5), clip = "off") +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = title_str %||% default_title,
+          subtitle = paste("Filters:", filter_text)
+        )
+    )
+  }
+
+  if (n_sets == 2) {
+    a <- set_levels[[1]]
+    b <- set_levels[[2]]
+    counts_df <- tibble::tibble(
+      x = c(-0.95, 0.95, 0),
+      y = c(0, 0, 0),
+      label = c(
+        as.character(get_combo_count(a)),
+        as.character(get_combo_count(b)),
+        as.character(get_combo_count(c(a, b)))
+      )
+    )
+
+    circle_df <- dplyr::bind_rows(
+      circle_path(-0.6, 0, 1) %>% dplyr::mutate(set = a),
+      circle_path(0.6, 0, 1) %>% dplyr::mutate(set = b)
+    )
+
+    return(
+      ggplot2::ggplot() +
+        ggplot2::geom_path(data = circle_df, ggplot2::aes(x = x, y = y, color = set), linewidth = 0.8) +
+        ggplot2::geom_text(data = counts_df, ggplot2::aes(x = x, y = y, label = label), size = 5, fontface = "bold") +
+        ggplot2::annotate("text", x = -1.35, y = 1.2, label = a, size = 4.2, fontface = "bold", hjust = 0.5) +
+        ggplot2::annotate("text", x = 1.35, y = 1.2, label = b, size = 4.2, fontface = "bold", hjust = 0.5) +
+        ggplot2::scale_color_manual(values = c("#2C7BB6", "#D7191C")) +
+        ggplot2::coord_equal(xlim = c(-2.1, 2.1), ylim = c(-1.5, 1.6), clip = "off") +
+        ggplot2::theme_void() +
+        ggplot2::theme(legend.position = "none") +
+        ggplot2::labs(
+          title = title_str %||% default_title,
+          subtitle = paste("Filters:", filter_text)
+        )
+    )
+  }
+
+  a <- set_levels[[1]]
+  b <- set_levels[[2]]
+  c <- set_levels[[3]]
+  counts_df <- tibble::tibble(
+    x = c(0, -1.15, 1.15, -0.45, 0.45, 0),
+    y = c(1.05, -0.2, -0.2, 0.35, 0.35, 0.05),
+    label = c(
+      as.character(get_combo_count(a)),
+      as.character(get_combo_count(b)),
+      as.character(get_combo_count(c)),
+      as.character(get_combo_count(c(a, b))),
+      as.character(get_combo_count(c(a, c))),
+      as.character(get_combo_count(c(a, b, c)))
+    )
+  )
+  bc_count <- get_combo_count(c(b, c))
+
+  circle_df <- dplyr::bind_rows(
+    circle_path(0, 0.35, 1) %>% dplyr::mutate(set = a),
+    circle_path(-0.75, -0.45, 1) %>% dplyr::mutate(set = b),
+    circle_path(0.75, -0.45, 1) %>% dplyr::mutate(set = c)
+  )
+
+  ggplot2::ggplot() +
+    ggplot2::geom_path(data = circle_df, ggplot2::aes(x = x, y = y, color = set), linewidth = 0.8) +
+    ggplot2::geom_text(data = counts_df, ggplot2::aes(x = x, y = y, label = label), size = 4.8, fontface = "bold") +
+    ggplot2::annotate("text", x = 0, y = 1.8, label = a, size = 4.1, fontface = "bold") +
+    ggplot2::annotate("text", x = -1.7, y = -1.15, label = b, size = 4.1, fontface = "bold") +
+    ggplot2::annotate("text", x = 1.7, y = -1.15, label = c, size = 4.1, fontface = "bold") +
+    ggplot2::annotate("text", x = 0, y = -0.75, label = as.character(bc_count), size = 4.8, fontface = "bold") +
+    ggplot2::scale_color_manual(values = c("#2C7BB6", "#D7191C", "#1A9641")) +
+    ggplot2::coord_equal(xlim = c(-2.2, 2.2), ylim = c(-1.6, 2.0), clip = "off") +
+    ggplot2::theme_void() +
+    ggplot2::theme(legend.position = "none") +
+    ggplot2::labs(
+      title = title_str %||% default_title,
+      subtitle = paste("Filters:", filter_text)
+    )
+}
