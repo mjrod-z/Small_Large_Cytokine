@@ -796,7 +796,7 @@ plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
   }
   plot_df <- plot_df %>%
     dplyr::mutate(
-      comparison = paste0("Sex: ", contrast),
+      comparison = paste0("Sex: ", as.character(contrast)),
       direction = dplyr::case_when(
         significant & estimate > 0 ~ "Higher in first sex",
         significant & estimate < 0 ~ "Higher in second sex",
@@ -894,7 +894,7 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
   }
   plot_df <- plot_df %>%
     dplyr::mutate(
-      comparison = paste0("Exposure: ", contrast),
+      comparison = paste0("Exposure: ", as.character(contrast)),
       direction = dplyr::case_when(
         significant & estimate > 0 ~ "Higher in first exposure",
         significant & estimate < 0 ~ "Higher in second exposure",
