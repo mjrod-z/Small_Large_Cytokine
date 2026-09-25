@@ -702,6 +702,7 @@ plot_gsea_barplot <- function(gsea_data, n_top = 12, facet_by = "sample_name",
 
 
 plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
+  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else airway
   plot_df <- model_results %>%
     dplyr::filter(SEX == sex_group, !is.na(estimate))
   if (!is.null(airway)) {
@@ -729,7 +730,7 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airwa
     subtitle_text <- if (is.null(airway)) {
       "No model results available"
     } else {
-      paste("No model results available | AIRWAY =", airway)
+      paste("No model results available | AIRWAY =", airway_label)
     }
     return(
       ggplot2::ggplot() +
@@ -748,7 +749,7 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airwa
   title_text <- if (is.null(airway)) {
     paste("HPIV3 vs NONE protein effects by airway and exposure —", sex_group)
   } else {
-    paste("HPIV3 vs NONE protein effects —", sex_group, "| AIRWAY =", airway)
+    paste("HPIV3 vs NONE protein effects —", sex_group, "| AIRWAY =", airway_label)
   }
   subtitle_text <- if (is.null(airway)) {
     "Significance reflects q-value thresholding, not log2FC magnitude alone"
@@ -795,6 +796,7 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airwa
 }
 
 plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
+  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else airway
   plot_df <- model_results %>%
     dplyr::filter(!is.na(estimate))
   if (!is.null(airway)) {
@@ -823,7 +825,7 @@ plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
     subtitle_text <- if (is.null(airway)) {
       "No model results available"
     } else {
-      paste("No model results available | AIRWAY =", airway)
+      paste("No model results available | AIRWAY =", airway_label)
     }
     return(
       ggplot2::ggplot() +
@@ -843,7 +845,7 @@ plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
   title_text <- if (is.null(airway)) {
     "Sex effects within airway/exposure/infection strata"
   } else {
-    paste("Sex effects within exposure/infection strata | AIRWAY =", airway)
+    paste("Sex effects within exposure/infection strata | AIRWAY =", airway_label)
   }
   subtitle_text <- if (is.null(airway)) {
     "Exact contrast is shown in each panel; significance reflects q-values, not log2FC size alone"
@@ -890,6 +892,7 @@ plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
 }
 
 plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
+  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else airway
   plot_df <- model_results %>%
     dplyr::filter(!is.na(estimate)) %>%
     {
@@ -924,7 +927,7 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
     subtitle_text <- if (is.null(airway)) {
       "No model results available"
     } else {
-      paste("No model results available | AIRWAY =", airway)
+      paste("No model results available | AIRWAY =", airway_label)
     }
     return(
       ggplot2::ggplot() +
@@ -944,7 +947,7 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
   title_text <- if (is.null(airway)) {
     paste("Exposure effects within airway/infection strata —", sex_group)
   } else {
-    paste("Exposure effects within infection strata —", sex_group, "| AIRWAY =", airway)
+    paste("Exposure effects within infection strata —", sex_group, "| AIRWAY =", airway_label)
   }
   subtitle_text <- if (is.null(airway)) {
     "Exact contrast is shown in each panel; significance reflects q-values, not log2FC size alone"
