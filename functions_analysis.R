@@ -1520,8 +1520,12 @@ summarize_unique_significant_proteins <- function(
     group_var,
     group_levels = NULL,
     filters = list(),
-    alpha_q = ALPHA_Q
+    alpha_q = ALPHA_Q,
+    membership_source = c("column", "contrast"),
+    contrast_col = "contrast",
+    estimate_col = "estimate"
 ) {
+  membership_source <- match.arg(membership_source)
   stopifnot(is.data.frame(model_results), group_var %in% names(model_results))
   stopifnot("PROTEIN" %in% names(model_results))
   stopifnot(is.list(filters))
@@ -1530,13 +1534,6 @@ summarize_unique_significant_proteins <- function(
   for (col in names(filters)) {
     stopifnot(col %in% names(d))
     d <- d[as.character(d[[col]]) %in% as.character(filters[[col]]), , drop = FALSE]
-  }
-
-  if (is.null(group_levels)) {
-    group_levels <- sort(unique(as.character(d[[group_var]])))
-  } else {
-    group_levels <- as.character(group_levels)
-    d <- d[as.character(d[[group_var]]) %in% group_levels, , drop = FALSE]
   }
 
   empty_membership <- tibble::tibble(
@@ -1557,6 +1554,11 @@ summarize_unique_significant_proteins <- function(
   )
 
   if (nrow(d) == 0) {
+    if (is.null(group_levels)) {
+      group_levels <- character()
+    } else {
+      group_levels <- as.character(group_levels)
+    }
     return(list(
       membership = empty_membership,
       membership_long = empty_membership_long,
@@ -1576,18 +1578,77 @@ summarize_unique_significant_proteins <- function(
     }
   }
 
-  d <- d %>%
-    dplyr::mutate(
-      significant = dplyr::coalesce(significant, FALSE),
-      !!group_var := as.character(.data[[group_var]])
-    )
+  if (membership_source == "column") {
+    if (is.null(group_levels)) {
+      group_levels <- sort(unique(as.character(d[[group_var]])))
+    } else {
+      group_levels <- as.character(group_levels)
+      d <- d[as.character(d[[group_var]]) %in% group_levels, , drop = FALSE]
+    }
 
-  membership <- d %>%
-    dplyr::group_by(PROTEIN) %>%
-    dplyr::summarise(
-      sig_sets = list(sort(unique(.data[[group_var]][significant]))),
-      .groups = "drop"
-    ) %>%
+    d <- d %>%
+      dplyr::mutate(
+        significant = dplyr::coalesce(significant, FALSE),
+        !!group_var := as.character(.data[[group_var]])
+      )
+
+    membership <- d %>%
+      dplyr::group_by(PROTEIN) %>%
+      dplyr::summarise(
+        sig_sets = list(sort(unique(.data[[group_var]][significant]))),
+        .groups = "drop"
+      )
+  } else {
+    stopifnot(contrast_col %in% names(d), estimate_col %in% names(d))
+
+    parsed_levels <- d %>%
+      dplyr::transmute(
+        .contrast = as.character(.data[[contrast_col]]),
+        .split = stringr::str_split(.contrast, " - ", n = 2)
+      ) %>%
+      dplyr::mutate(
+        group_first = purrr::map_chr(.split, ~ if (length(.x) == 2) .x[[1]] else NA_character_),
+        group_second = purrr::map_chr(.split, ~ if (length(.x) == 2) .x[[2]] else NA_character_)
+      ) %>%
+      dplyr::select(group_first, group_second)
+
+    if (is.null(group_levels)) {
+      group_levels <- sort(unique(c(parsed_levels$group_first, parsed_levels$group_second)))
+      group_levels <- group_levels[!is.na(group_levels)]
+    } else {
+      group_levels <- as.character(group_levels)
+    }
+
+    d <- d %>%
+      dplyr::mutate(
+        significant = dplyr::coalesce(significant, FALSE),
+        .contrast = as.character(.data[[contrast_col]]),
+        .split = stringr::str_split(.contrast, " - ", n = 2),
+        group_first = purrr::map_chr(.split, ~ if (length(.x) == 2) .x[[1]] else NA_character_),
+        group_second = purrr::map_chr(.split, ~ if (length(.x) == 2) .x[[2]] else NA_character_),
+        sig_group = dplyr::case_when(
+          !significant ~ NA_character_,
+          is.na(.data[[estimate_col]]) ~ NA_character_,
+          .data[[estimate_col]] > 0 ~ group_first,
+          .data[[estimate_col]] < 0 ~ group_second,
+          TRUE ~ NA_character_
+        )
+      )
+
+    if (length(group_levels) > 0) {
+      d <- d %>%
+        dplyr::mutate(sig_group = ifelse(sig_group %in% group_levels, sig_group, NA_character_))
+    }
+
+    membership <- d %>%
+      dplyr::group_by(PROTEIN) %>%
+      dplyr::summarise(
+        sig_sets = list(sort(unique(stats::na.omit(sig_group)))),
+        .groups = "drop"
+      )
+  }
+
+  membership <- membership %>%
     dplyr::mutate(
       n_sig_groups = vapply(sig_sets, length, integer(1)),
       unique_group = purrr::map_chr(
