@@ -1514,3 +1514,163 @@ summarize_hpiv3_strata <- function(data, protein_cols) {
       )
     )
 }
+
+# ── Significant-membership summaries (report-only) ────────────────────────────
+
+summarize_unique_significant_proteins <- function(model_results,
+                                                  group_var,
+                                                  group_levels = NULL,
+                                                  filters = list(),
+                                                  strata_vars = NULL) {
+  null_coalesce <- function(x, y) {
+    if (is.null(x) || length(x) == 0) y else x
+  }
+  stopifnot(is.data.frame(model_results), is.character(group_var), length(group_var) == 1)
+  if (!group_var %in% names(model_results)) {
+    stop("`group_var` is not present in model_results: ", group_var)
+  }
+  if (!"PROTEIN" %in% names(model_results)) {
+    stop("model_results must contain a PROTEIN column")
+  }
+  if (!"significant" %in% names(model_results)) {
+    stop("model_results must contain a significant column")
+  }
+
+  strata_vars <- null_coalesce(strata_vars, character(0))
+  if (length(strata_vars) > 0) {
+    missing_strata <- setdiff(strata_vars, names(model_results))
+    if (length(missing_strata) > 0) {
+      stop("Missing `strata_vars` columns: ", paste(missing_strata, collapse = ", "))
+    }
+  }
+
+  d <- tibble::as_tibble(model_results)
+
+  if (length(filters) > 0) {
+    for (col in names(filters)) {
+      if (!col %in% names(d)) {
+        stop("Filter column not present in model_results: ", col)
+      }
+      keep_vals <- filters[[col]]
+      include_na <- any(is.na(keep_vals))
+      keep_chr <- unique(as.character(stats::na.omit(keep_vals)))
+      d <- d %>%
+        dplyr::filter(
+          (as.character(.data[[col]]) %in% keep_chr) |
+            (include_na & is.na(.data[[col]]))
+        )
+    }
+  }
+
+  if (!is.null(group_levels)) {
+    group_levels <- as.character(group_levels)
+    d <- d %>% dplyr::filter(as.character(.data[[group_var]]) %in% group_levels)
+  } else {
+    group_levels <- sort(unique(as.character(d[[group_var]])))
+  }
+
+  empty_membership <- tibble::tibble(
+    PROTEIN = character(),
+    sig_groups = list(),
+    n_sig_groups = integer(),
+    membership_class = character()
+  )
+  empty_membership_long <- tibble::tibble(
+    PROTEIN = character(),
+    sig_group = character(),
+    n_sig_groups = integer(),
+    membership_class = character()
+  )
+  empty_summary <- tibble::tibble(
+    membership_class = character(),
+    n_proteins = integer()
+  )
+  if (length(strata_vars) > 0) {
+    empty_prefix <- d %>% dplyr::select(dplyr::all_of(strata_vars)) %>% dplyr::slice(0)
+    empty_membership <- dplyr::bind_cols(
+      empty_prefix,
+      empty_membership
+    )[0, ]
+    empty_membership_long <- dplyr::bind_cols(
+      empty_prefix,
+      empty_membership_long
+    )[0, ]
+    empty_summary <- dplyr::bind_cols(
+      empty_prefix,
+      empty_summary
+    )[0, ]
+  }
+
+  if (nrow(d) == 0 || length(group_levels) == 0) {
+    return(list(
+      membership = empty_membership,
+      membership_long = empty_membership_long,
+      summary = empty_summary,
+      group_var = group_var,
+      group_levels = group_levels,
+      filters = filters,
+      strata_vars = strata_vars
+    ))
+  }
+
+  key_cols <- c(strata_vars, "PROTEIN")
+  protein_scope <- d %>%
+    dplyr::distinct(dplyr::across(dplyr::all_of(key_cols)))
+
+  sig_sets <- d %>%
+    dplyr::mutate(
+      significant = dplyr::coalesce(significant, FALSE),
+      group_label = as.character(.data[[group_var]])
+    ) %>%
+    dplyr::filter(significant, group_label %in% group_levels) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(key_cols))) %>%
+    dplyr::summarise(
+      sig_groups = list(sort(unique(group_label))),
+      n_sig_groups = length(sig_groups[[1]]),
+      .groups = "drop"
+    )
+
+  membership <- protein_scope %>%
+    dplyr::left_join(sig_sets, by = key_cols) %>%
+    dplyr::mutate(
+      sig_groups = purrr::map(sig_groups, function(x) {
+        if (is.null(x) || length(x) == 0) character(0) else as.character(x)
+      }),
+      n_sig_groups = dplyr::coalesce(n_sig_groups, 0L),
+      membership_class = dplyr::case_when(
+        n_sig_groups == 0 ~ "Not significant",
+        n_sig_groups == 1 ~ paste0("Unique: ", purrr::map_chr(sig_groups, ~ .x[[1]])),
+        TRUE ~ paste0("Shared (", n_sig_groups, "-way)")
+      )
+    )
+
+  membership_long <- membership %>%
+    dplyr::mutate(
+      sig_group = purrr::map(sig_groups, function(x) {
+        if (length(x) == 0) NA_character_ else x
+      })
+    ) %>%
+    dplyr::select(dplyr::all_of(key_cols), sig_group, n_sig_groups, membership_class) %>%
+    tidyr::unnest(sig_group)
+
+  summary <- membership %>%
+    dplyr::count(
+      dplyr::across(dplyr::all_of(c(strata_vars, "membership_class"))),
+      name = "n_proteins"
+    ) %>%
+    dplyr::arrange(
+      dplyr::across(dplyr::all_of(strata_vars)),
+      dplyr::desc(n_proteins),
+      membership_class
+    )
+
+  list(
+    membership = membership,
+    membership_long = membership_long,
+    summary = summary,
+    group_var = group_var,
+    group_levels = group_levels,
+    filters = filters,
+    strata_vars = strata_vars
+  )
+}

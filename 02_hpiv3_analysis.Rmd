@@ -218,6 +218,86 @@ knitr::kable(
 )
 ```
 
+# Unique vs shared significant proteins (report-only)
+
+This section reuses the existing **HPIV3 vs NONE** model results (no refitting).  
+Concrete example shown here: `SEX = F`, `AIRWAY = SAE`, `TIMEPOINT = 72`, comparing significant-protein membership across `EXPOSURE` levels `PBS_Control`, `Peat_25`, and `Pine_25`, split by `HORMONE` (`NONE` vs `E2`).
+
+```{r hpiv3-unique-shared-significant-proteins}
+run_unique_shared_report <- function(model_results,
+                                     output_subdir,
+                                     output_prefix,
+                                     group_var,
+                                     group_levels,
+                                     filters,
+                                     strata_vars = NULL,
+                                     plot_facet_var = NULL,
+                                     title_str = NULL,
+                                     subtitle_str = NULL) {
+  unique_result <- summarize_unique_significant_proteins(
+    model_results = model_results,
+    group_var = group_var,
+    group_levels = group_levels,
+    filters = filters,
+    strata_vars = strata_vars
+  )
+
+  membership_export <- unique_result$membership %>%
+    dplyr::mutate(sig_groups = purrr::map_chr(sig_groups, ~ paste(.x, collapse = "|")))
+
+  save_table(
+    membership_export,
+    file.path(output_subdir, paste0(output_prefix, "_membership.csv"))
+  )
+  save_table(
+    unique_result$membership_long,
+    file.path(output_subdir, paste0(output_prefix, "_membership_long.csv"))
+  )
+  save_table(
+    unique_result$summary,
+    file.path(output_subdir, paste0(output_prefix, "_summary.csv"))
+  )
+
+  p_unique <- plot_unique_protein_upset(
+    unique_result,
+    title_str = title_str,
+    subtitle_str = subtitle_str,
+    facet_var = plot_facet_var
+  )
+  print(p_unique)
+  save_plot(
+    file.path(output_subdir, paste0(output_prefix, "_upset.png")),
+    p_unique,
+    width = 13,
+    height = 8
+  )
+
+  unique_result
+}
+
+hpiv3_unique_exposure_f_sae_72 <- run_unique_shared_report(
+  model_results = hpiv3_model_results,
+  output_subdir = HPIV3_OUTPUT_SUBDIR,
+  output_prefix = "hpiv3_unique_sig_proteins_f_sae_72_exposure_by_hormone",
+  group_var = "EXPOSURE",
+  group_levels = c("PBS_Control", "Peat_25", "Pine_25"),
+  filters = list(
+    SEX = "F",
+    AIRWAY = "SAE",
+    TIMEPOINT = "72"
+  ),
+  strata_vars = "HORMONE",
+  plot_facet_var = "HORMONE",
+  title_str = "Unique/shared significant proteins by exposure (F, SAE, 72h)",
+  subtitle_str = "HPIV3 vs NONE comparison results; memberships split by hormone stratum"
+)
+
+knitr::kable(
+  hpiv3_unique_exposure_f_sae_72$summary,
+  caption = "Unique/shared significant proteins across PBS_Control, Peat_25, and Pine_25 (F, SAE, 72h), split by HORMONE"
+)
+```
+
 # Visualization
 
 ```{r hpiv3-plots}
@@ -426,7 +506,11 @@ cat("  - hpiv3_all_protein_model_results.csv\n")
 cat("  - hpiv3_sex_model_results.csv\n")
 cat("  - hpiv3_exposure_model_results.csv\n")
 cat("  - hpiv3_stratum_summary_pg_ml.csv\n")
+cat("  - hpiv3_unique_sig_proteins_f_sae_72_exposure_by_hormone_membership.csv\n")
+cat("  - hpiv3_unique_sig_proteins_f_sae_72_exposure_by_hormone_membership_long.csv\n")
+cat("  - hpiv3_unique_sig_proteins_f_sae_72_exposure_by_hormone_summary.csv\n")
 cat("  - hpiv3_infection_dotplot_*.png (aggregate + split by airway: hpiv3_infection_dotplot_*_<AIRWAY>.png)\n")
 cat("  - hpiv3_sex_dotplot*.png (aggregate + split by airway: hpiv3_sex_dotplot_<AIRWAY>.png)\n")
 cat("  - hpiv3_exposure_dotplot_*.png (aggregate + split by airway: hpiv3_exposure_dotplot_*_<AIRWAY>.png)\n")
+cat("  - hpiv3_unique_sig_proteins_f_sae_72_exposure_by_hormone_upset.png\n")
 ```
