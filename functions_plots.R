@@ -705,7 +705,8 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airwa
   if (!is.null(airway) && length(airway) != 1) {
     stop("`airway` must be NULL or a single value.")
   }
-  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else airway
+  if (!is.null(airway) && !is.na(airway)) airway <- as.character(airway)
+  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else as.character(airway)
   plot_df <- model_results %>%
     dplyr::filter(SEX == sex_group, !is.na(estimate))
   if (!is.null(airway)) {
@@ -802,7 +803,8 @@ plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
   if (!is.null(airway) && length(airway) != 1) {
     stop("`airway` must be NULL or a single value.")
   }
-  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else airway
+  if (!is.null(airway) && !is.na(airway)) airway <- as.character(airway)
+  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else as.character(airway)
   plot_df <- model_results %>%
     dplyr::filter(!is.na(estimate))
   if (!is.null(airway)) {
@@ -901,7 +903,8 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
   if (!is.null(airway) && length(airway) != 1) {
     stop("`airway` must be NULL or a single value.")
   }
-  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else airway
+  if (!is.null(airway) && !is.na(airway)) airway <- as.character(airway)
+  airway_label <- if (!is.null(airway) && is.na(airway)) "<missing>" else as.character(airway)
   plot_df <- model_results %>%
     dplyr::filter(!is.na(estimate)) %>%
     {

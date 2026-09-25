@@ -267,7 +267,7 @@ if ("M" %in% unique(hpiv3_model_results$SEX)) {
   )
 }
 
-infection_airways <- sort(unique(hpiv3_model_results$AIRWAY), na.last = TRUE)
+infection_airways <- sort(unique(as.character(hpiv3_model_results$AIRWAY)), na.last = TRUE)
 infection_airway_table <- make_airway_key_table(infection_airways)
 for (row_i in seq_len(nrow(infection_airway_table))) {
   airway_i <- infection_airway_table$airway[[row_i]]
@@ -312,7 +312,7 @@ for (row_i in seq_len(nrow(infection_airway_table))) {
   }
 }
 
-sex_airways <- sort(unique(hpiv3_sex_results$AIRWAY), na.last = TRUE)
+sex_airways <- sort(unique(as.character(hpiv3_sex_results$AIRWAY)), na.last = TRUE)
 sex_airway_table <- make_airway_key_table(sex_airways)
 p_hpiv3_sex_aggregate <- plot_hpiv3_sex_dotplot(hpiv3_sex_results)
 print(p_hpiv3_sex_aggregate)
@@ -337,7 +337,7 @@ for (row_i in seq_len(nrow(sex_airway_table))) {
   )
 }
 
-exposure_airways <- sort(unique(hpiv3_exposure_results$AIRWAY), na.last = TRUE)
+exposure_airways <- sort(unique(as.character(hpiv3_exposure_results$AIRWAY)), na.last = TRUE)
 exposure_airway_table <- make_airway_key_table(exposure_airways)
 p_hpiv3_exposure_all_aggregate <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "All")
 print(p_hpiv3_exposure_all_aggregate)
