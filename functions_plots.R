@@ -1004,3 +1004,104 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
       y = "Protein"
     )
 }
+
+plot_unique_protein_upset <- function(unique_result,
+                                      title_str = NULL,
+                                      subtitle_str = NULL,
+                                      facet_var = NULL) {
+  null_coalesce <- function(x, y) {
+    if (is.null(x) || length(x) == 0 || (length(x) == 1 && is.na(x))) y else x
+  }
+
+  if (!is.list(unique_result) || !"membership" %in% names(unique_result)) {
+    stop("`unique_result` must be an output list from summarize_unique_significant_proteins().")
+  }
+  membership <- unique_result$membership
+  if (!is.data.frame(membership) || !"sig_groups" %in% names(membership)) {
+    stop("`unique_result$membership` must be a data frame containing a sig_groups list-column.")
+  }
+
+  default_title <- paste(
+    "Unique vs shared significant proteins by",
+    null_coalesce(unique_result$group_var, "group")
+  )
+  title_str <- null_coalesce(title_str, default_title)
+  subtitle_str <- null_coalesce(subtitle_str, "")
+
+  if (nrow(membership) == 0) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = title_str,
+          subtitle = "No rows available after filtering"
+        )
+    )
+  }
+
+  plot_df <- membership %>%
+    dplyr::mutate(
+      sig_groups = purrr::map(sig_groups, ~ as.character(.x)),
+      n_sig_groups = dplyr::coalesce(n_sig_groups, 0L)
+    ) %>%
+    dplyr::filter(n_sig_groups > 0)
+
+  if (nrow(plot_df) == 0) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = title_str,
+          subtitle = "No significant proteins in the selected groups"
+        )
+    )
+  }
+
+  if (!is.null(facet_var) && !facet_var %in% names(plot_df)) {
+    stop("facet_var column not found in membership: ", facet_var)
+  }
+
+  present_sets <- sort(unique(unlist(plot_df$sig_groups)))
+  if (length(present_sets) <= 1) {
+    fallback_df <- plot_df %>%
+      dplyr::mutate(set_label = purrr::map_chr(sig_groups, ~ paste(.x, collapse = " + ")))
+    p <- ggplot2::ggplot(fallback_df, ggplot2::aes(x = set_label)) +
+      ggplot2::geom_bar(fill = "steelblue") +
+      ggplot2::theme_minimal(base_size = 11) +
+      ggplot2::labs(
+        title = title_str,
+        subtitle = paste("Degenerate single-set case.", subtitle_str),
+        x = null_coalesce(unique_result$group_var, "Group"),
+        y = "Number of proteins"
+      )
+    if (!is.null(facet_var)) {
+      p <- p + ggplot2::facet_wrap(stats::as.formula(paste("~", facet_var)), scales = "free_y")
+    }
+    return(p)
+  }
+
+  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = sig_groups)) +
+    ggplot2::geom_bar(fill = "steelblue") +
+    ggupset::scale_x_upset(
+      sets = null_coalesce(unique_result$group_levels, present_sets),
+      order_by = "freq"
+    ) +
+    ggupset::theme_combmatrix() +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(angle = 20, hjust = 1),
+      panel.grid.minor = ggplot2::element_blank()
+    ) +
+    ggplot2::labs(
+      title = title_str,
+      subtitle = subtitle_str,
+      x = null_coalesce(unique_result$group_var, "Group"),
+      y = "Number of proteins"
+    )
+
+  if (!is.null(facet_var)) {
+    p <- p + ggplot2::facet_wrap(stats::as.formula(paste("~", facet_var)), scales = "free_x")
+  }
+
+  p
+}
