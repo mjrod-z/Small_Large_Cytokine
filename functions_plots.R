@@ -705,7 +705,11 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airwa
   plot_df <- model_results %>%
     dplyr::filter(SEX == sex_group, !is.na(estimate))
   if (!is.null(airway)) {
-    plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+    if (is.na(airway)) {
+      plot_df <- plot_df %>% dplyr::filter(is.na(AIRWAY))
+    } else {
+      plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+    }
   }
   plot_df <- plot_df %>%
     dplyr::mutate(
@@ -794,7 +798,11 @@ plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
   plot_df <- model_results %>%
     dplyr::filter(!is.na(estimate))
   if (!is.null(airway)) {
-    plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+    if (is.na(airway)) {
+      plot_df <- plot_df %>% dplyr::filter(is.na(AIRWAY))
+    } else {
+      plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+    }
   }
   plot_df <- plot_df %>%
     dplyr::mutate(
@@ -892,7 +900,11 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
       }
     }
   if (!is.null(airway)) {
-    plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+    if (is.na(airway)) {
+      plot_df <- plot_df %>% dplyr::filter(is.na(AIRWAY))
+    } else {
+      plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+    }
   }
   plot_df <- plot_df %>%
     dplyr::mutate(

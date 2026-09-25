@@ -221,10 +221,22 @@ knitr::kable(
 # Visualization
 
 ```{r hpiv3-plots}
-make_airway_file_keys <- function(airways) {
-  raw_keys <- safe_name(airways)
-  unique_keys <- make.unique(raw_keys, sep = "_")
-  stats::setNames(unique_keys, airways)
+make_airway_key_table <- function(airways) {
+  airway_chr <- as.character(airways)
+  airway_id <- dplyr::if_else(is.na(airway_chr), "__NA__", airway_chr)
+  tibble::tibble(
+    airway = airway_chr,
+    airway_id = airway_id,
+    airway_key = make.unique(safe_name(airway_chr), sep = "_")
+  )
+}
+
+filter_airway_rows <- function(df, airway_value) {
+  if (is.na(airway_value)) {
+    dplyr::filter(df, is.na(AIRWAY))
+  } else {
+    dplyr::filter(df, as.character(AIRWAY) == airway_value)
+  }
 }
 
 p_hpiv3_all_aggregate <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "All")
@@ -256,11 +268,13 @@ if ("M" %in% unique(hpiv3_model_results$SEX)) {
   )
 }
 
-infection_airways <- sort(unique(as.character(stats::na.omit(hpiv3_model_results$AIRWAY))))
-infection_airway_keys <- make_airway_file_keys(infection_airways)
-for (airway_i in infection_airways) {
-  if (nrow(dplyr::filter(hpiv3_model_results, as.character(AIRWAY) == airway_i, SEX == "All", !is.na(estimate))) == 0) next
-  airway_key <- infection_airway_keys[[airway_i]]
+infection_airways <- sort(unique(as.character(hpiv3_model_results$AIRWAY)), na.last = TRUE)
+infection_airway_table <- make_airway_key_table(infection_airways)
+for (row_i in seq_len(nrow(infection_airway_table))) {
+  airway_i <- infection_airway_table$airway[[row_i]]
+  airway_key <- infection_airway_table$airway_key[[row_i]]
+  airway_rows <- filter_airway_rows(hpiv3_model_results, airway_i)
+  if (nrow(dplyr::filter(airway_rows, SEX == "All", !is.na(estimate))) == 0) next
   p_hpiv3_all <- plot_hpiv3_infection_dotplot(
     hpiv3_model_results,
     sex_group = "All",
@@ -275,7 +289,7 @@ for (airway_i in infection_airways) {
   )
 
   if ("F" %in% unique(hpiv3_model_results$SEX) &&
-      nrow(dplyr::filter(hpiv3_model_results, as.character(SEX) == "F", as.character(AIRWAY) == airway_i, !is.na(estimate))) > 0) {
+      nrow(dplyr::filter(airway_rows, as.character(SEX) == "F", !is.na(estimate))) > 0) {
     p_hpiv3_f <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "F", airway = airway_i)
     print(p_hpiv3_f)
     save_plot(
@@ -287,7 +301,7 @@ for (airway_i in infection_airways) {
   }
 
   if ("M" %in% unique(hpiv3_model_results$SEX) &&
-      nrow(dplyr::filter(hpiv3_model_results, as.character(SEX) == "M", as.character(AIRWAY) == airway_i, !is.na(estimate))) > 0) {
+      nrow(dplyr::filter(airway_rows, as.character(SEX) == "M", !is.na(estimate))) > 0) {
     p_hpiv3_m <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "M", airway = airway_i)
     print(p_hpiv3_m)
     save_plot(
@@ -299,8 +313,8 @@ for (airway_i in infection_airways) {
   }
 }
 
-sex_airways <- sort(unique(as.character(stats::na.omit(hpiv3_sex_results$AIRWAY))))
-sex_airway_keys <- make_airway_file_keys(sex_airways)
+sex_airways <- sort(unique(as.character(hpiv3_sex_results$AIRWAY)), na.last = TRUE)
+sex_airway_table <- make_airway_key_table(sex_airways)
 p_hpiv3_sex_aggregate <- plot_hpiv3_sex_dotplot(hpiv3_sex_results)
 print(p_hpiv3_sex_aggregate)
 save_plot(
@@ -309,9 +323,11 @@ save_plot(
   width = 16,
   height = 12
 )
-for (airway_i in sex_airways) {
-  if (nrow(dplyr::filter(hpiv3_sex_results, as.character(AIRWAY) == airway_i, !is.na(estimate))) == 0) next
-  airway_key <- sex_airway_keys[[airway_i]]
+for (row_i in seq_len(nrow(sex_airway_table))) {
+  airway_i <- sex_airway_table$airway[[row_i]]
+  airway_key <- sex_airway_table$airway_key[[row_i]]
+  airway_rows <- filter_airway_rows(hpiv3_sex_results, airway_i)
+  if (nrow(dplyr::filter(airway_rows, !is.na(estimate))) == 0) next
   p_hpiv3_sex <- plot_hpiv3_sex_dotplot(hpiv3_sex_results, airway = airway_i)
   print(p_hpiv3_sex)
   save_plot(
@@ -322,8 +338,8 @@ for (airway_i in sex_airways) {
   )
 }
 
-exposure_airways <- sort(unique(as.character(stats::na.omit(hpiv3_exposure_results$AIRWAY))))
-exposure_airway_keys <- make_airway_file_keys(exposure_airways)
+exposure_airways <- sort(unique(as.character(hpiv3_exposure_results$AIRWAY)), na.last = TRUE)
+exposure_airway_table <- make_airway_key_table(exposure_airways)
 p_hpiv3_exposure_all_aggregate <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "All")
 print(p_hpiv3_exposure_all_aggregate)
 save_plot(
@@ -352,9 +368,11 @@ if ("M" %in% unique(hpiv3_exposure_results$SEX)) {
     height = 12
   )
 }
-for (airway_i in exposure_airways) {
-  if (nrow(dplyr::filter(hpiv3_exposure_results, as.character(AIRWAY) == airway_i, !is.na(estimate))) == 0) next
-  airway_key <- exposure_airway_keys[[airway_i]]
+for (row_i in seq_len(nrow(exposure_airway_table))) {
+  airway_i <- exposure_airway_table$airway[[row_i]]
+  airway_key <- exposure_airway_table$airway_key[[row_i]]
+  airway_rows <- filter_airway_rows(hpiv3_exposure_results, airway_i)
+  if (nrow(dplyr::filter(airway_rows, !is.na(estimate))) == 0) next
   p_hpiv3_exposure_all <- plot_hpiv3_exposure_dotplot(
     hpiv3_exposure_results,
     sex_group = "All",
@@ -369,7 +387,7 @@ for (airway_i in exposure_airways) {
   )
 
   if ("F" %in% unique(hpiv3_exposure_results$SEX) &&
-      nrow(dplyr::filter(hpiv3_exposure_results, as.character(SEX) == "F", as.character(AIRWAY) == airway_i, !is.na(estimate))) > 0) {
+      nrow(dplyr::filter(airway_rows, as.character(SEX) == "F", !is.na(estimate))) > 0) {
     p_hpiv3_exposure_f <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "F", airway = airway_i)
     print(p_hpiv3_exposure_f)
     save_plot(
@@ -381,7 +399,7 @@ for (airway_i in exposure_airways) {
   }
 
   if ("M" %in% unique(hpiv3_exposure_results$SEX) &&
-      nrow(dplyr::filter(hpiv3_exposure_results, as.character(SEX) == "M", as.character(AIRWAY) == airway_i, !is.na(estimate))) > 0) {
+      nrow(dplyr::filter(airway_rows, as.character(SEX) == "M", !is.na(estimate))) > 0) {
     p_hpiv3_exposure_m <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "M", airway = airway_i)
     print(p_hpiv3_exposure_m)
     save_plot(
