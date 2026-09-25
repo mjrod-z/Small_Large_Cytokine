@@ -16,6 +16,13 @@ short_exposure_label <- function(exposure) {
     sub(" \\d+$", "", .)
 }
 
+safe_name <- function(x) {
+  x <- as.character(x)
+  x <- gsub("[^A-Za-z0-9]+", "_", x)
+  x <- gsub("^_+|_+$", "", x)
+  tolower(x)
+}
+
 sig_label_from_q <- function(q, alpha_q = ALPHA_Q) {
   dplyr::case_when(
     is.na(q)   ~ "",
@@ -692,9 +699,13 @@ plot_gsea_barplot <- function(gsea_data, n_top = 12, facet_by = "sample_name",
 }
 
 
-plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All") {
+plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
   plot_df <- model_results %>%
-    dplyr::filter(SEX == sex_group, !is.na(estimate)) %>%
+    dplyr::filter(
+      SEX == sex_group,
+      !is.na(estimate),
+      is.null(airway) | as.character(AIRWAY) == airway
+    ) %>%
     dplyr::mutate(
       direction = dplyr::case_when(
         significant & estimate > 0 ~ "Higher in HPIV3",
@@ -709,11 +720,36 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All") {
     )
 
   if (nrow(plot_df) == 0) {
+    subtitle_text <- if (is.null(airway)) {
+      "No model results available"
+    } else {
+      paste("No model results available | AIRWAY =", airway)
+    }
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
         ggplot2::labs(title = paste("HPIV3 vs NONE:", sex_group),
-                      subtitle = "No model results available")
+                      subtitle = subtitle_text)
+    )
+  }
+
+  facet_rows <- if (is.null(airway)) {
+    "AIRWAY + facet_exposure"
+  } else {
+    "facet_exposure"
+  }
+
+  title_text <- if (is.null(airway)) {
+    paste("HPIV3 vs NONE protein effects by airway and exposure —", sex_group)
+  } else {
+    paste("HPIV3 vs NONE protein effects —", sex_group, "| AIRWAY =", airway)
+  }
+  subtitle_text <- if (is.null(airway)) {
+    "Significance reflects q-value thresholding, not log2FC magnitude alone"
+  } else {
+    paste(
+      "Figure contains only one airway.",
+      "Significance reflects q-value thresholding, not log2FC magnitude alone."
     )
   }
 
@@ -731,7 +767,11 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All") {
     ) +
     ggplot2::scale_alpha_identity() +
     ggplot2::scale_size_identity() +
-    ggplot2::facet_grid(AIRWAY + facet_exposure ~ HORMONE + facet_timepoint, scales = "free_y", space = "free_y") +
+    ggplot2::facet_grid(
+      stats::as.formula(paste(facet_rows, "~ HORMONE + facet_timepoint")),
+      scales = "free_y",
+      space = "free_y"
+    ) +
     ggplot2::theme_minimal(base_size = 11) +
     ggplot2::theme(
       panel.grid.major.y = ggplot2::element_blank(),
@@ -741,16 +781,21 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All") {
       legend.title = ggplot2::element_blank()
     ) +
     ggplot2::labs(
-      title = paste("HPIV3 vs NONE protein effects by airway and exposure —", sex_group),
+      title = title_text,
+      subtitle = subtitle_text,
       x = "Estimated log2(HPIV3 - NONE)",
       y = "Protein"
     )
 }
 
-plot_hpiv3_sex_dotplot <- function(model_results) {
+plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
   plot_df <- model_results %>%
-    dplyr::filter(!is.na(estimate)) %>%
+    dplyr::filter(
+      !is.na(estimate),
+      is.null(airway) | as.character(AIRWAY) == airway
+    ) %>%
     dplyr::mutate(
+      comparison = paste0("Sex: ", contrast),
       direction = dplyr::case_when(
         significant & estimate > 0 ~ "Higher in first sex",
         significant & estimate < 0 ~ "Higher in second sex",
@@ -764,13 +809,37 @@ plot_hpiv3_sex_dotplot <- function(model_results) {
     )
 
   if (nrow(plot_df) == 0) {
+    subtitle_text <- if (is.null(airway)) {
+      "No model results available"
+    } else {
+      paste("No model results available | AIRWAY =", airway)
+    }
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
         ggplot2::labs(
           title = "Sex comparisons within HPIV3 strata",
-          subtitle = "No model results available"
+          subtitle = subtitle_text
         )
+    )
+  }
+
+  facet_rows <- if (is.null(airway)) {
+    "AIRWAY + facet_exposure + INFECTION + comparison"
+  } else {
+    "facet_exposure + INFECTION + comparison"
+  }
+  title_text <- if (is.null(airway)) {
+    "Sex effects within airway/exposure/infection strata"
+  } else {
+    paste("Sex effects within exposure/infection strata | AIRWAY =", airway)
+  }
+  subtitle_text <- if (is.null(airway)) {
+    "Exact contrast is shown in each panel; significance reflects q-values, not log2FC size alone"
+  } else {
+    paste(
+      "Figure contains only one airway.",
+      "Exact contrast is shown in each panel; significance reflects q-values, not log2FC size alone."
     )
   }
 
@@ -789,7 +858,7 @@ plot_hpiv3_sex_dotplot <- function(model_results) {
     ggplot2::scale_alpha_identity() +
     ggplot2::scale_size_identity() +
     ggplot2::facet_grid(
-      AIRWAY + facet_exposure + INFECTION ~ HORMONE + facet_timepoint,
+      stats::as.formula(paste(facet_rows, "~ HORMONE + facet_timepoint")),
       scales = "free_y",
       space = "free_y"
     ) +
@@ -802,14 +871,14 @@ plot_hpiv3_sex_dotplot <- function(model_results) {
       legend.title = ggplot2::element_blank()
     ) +
     ggplot2::labs(
-      title = "Sex effects within airway/exposure/infection strata",
-      subtitle = "Contrast direction is defined by the emmeans contrast label",
+      title = title_text,
+      subtitle = subtitle_text,
       x = "Estimated log2 difference (contrast first level - second level)",
       y = "Protein"
     )
 }
 
-plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All") {
+plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
   plot_df <- model_results %>%
     dplyr::filter(!is.na(estimate)) %>%
     {
@@ -819,7 +888,11 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All") {
         dplyr::filter(., as.character(SEX) == sex_group)
       }
     } %>%
+    dplyr::filter(
+      is.null(airway) | as.character(AIRWAY) == airway
+    ) %>%
     dplyr::mutate(
+      comparison = paste0("Exposure: ", contrast),
       direction = dplyr::case_when(
         significant & estimate > 0 ~ "Higher in first exposure",
         significant & estimate < 0 ~ "Higher in second exposure",
@@ -832,13 +905,37 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All") {
     )
 
   if (nrow(plot_df) == 0) {
+    subtitle_text <- if (is.null(airway)) {
+      "No model results available"
+    } else {
+      paste("No model results available | AIRWAY =", airway)
+    }
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
         ggplot2::labs(
           title = paste("Exposure comparisons within HPIV3 strata —", sex_group),
-          subtitle = "No model results available"
+          subtitle = subtitle_text
         )
+    )
+  }
+
+  facet_rows <- if (is.null(airway)) {
+    "AIRWAY + INFECTION + SEX + comparison"
+  } else {
+    "INFECTION + SEX + comparison"
+  }
+  title_text <- if (is.null(airway)) {
+    paste("Exposure effects within airway/infection strata —", sex_group)
+  } else {
+    paste("Exposure effects within infection strata —", sex_group, "| AIRWAY =", airway)
+  }
+  subtitle_text <- if (is.null(airway)) {
+    "Exact contrast is shown in each panel; significance reflects q-values, not log2FC size alone"
+  } else {
+    paste(
+      "Figure contains only one airway.",
+      "Exact contrast is shown in each panel; significance reflects q-values, not log2FC size alone."
     )
   }
 
@@ -857,7 +954,7 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All") {
     ggplot2::scale_alpha_identity() +
     ggplot2::scale_size_identity() +
     ggplot2::facet_grid(
-      AIRWAY + INFECTION + SEX ~ HORMONE + facet_timepoint,
+      stats::as.formula(paste(facet_rows, "~ HORMONE + facet_timepoint")),
       scales = "free_y",
       space = "free_y"
     ) +
@@ -870,8 +967,8 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All") {
       legend.title = ggplot2::element_blank()
     ) +
     ggplot2::labs(
-      title = paste("Exposure effects within airway/infection strata —", sex_group),
-      subtitle = "Contrast direction is defined by the emmeans contrast label",
+      title = title_text,
+      subtitle = subtitle_text,
       x = "Estimated log2 difference (contrast first level - second level)",
       y = "Protein"
     )
