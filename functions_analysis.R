@@ -1215,7 +1215,7 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
   }
 
   dplyr::bind_rows(results) %>%
-    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, EXPOSURE, INFECTION) %>%
+    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, EXPOSURE, INFECTION, contrast) %>%
     dplyr::mutate(
       q.value = {
         q_vals <- rep(NA_real_, dplyr::n())
@@ -1461,7 +1461,7 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
   }
 
   dplyr::bind_rows(results) %>%
-    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION) %>%
+    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION, contrast) %>%
     dplyr::mutate(
       q.value = {
         q_vals <- rep(NA_real_, dplyr::n())
