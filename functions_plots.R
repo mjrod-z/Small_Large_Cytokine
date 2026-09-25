@@ -1004,3 +1004,67 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
       y = "Protein"
     )
 }
+
+plot_unique_protein_upset <- function(unique_result, title_str = NULL) {
+  membership <- unique_result$membership %>%
+    dplyr::filter(n_sig_groups > 0)
+
+  filter_text <- if (length(unique_result$filters) == 0) {
+    "none"
+  } else {
+    paste(
+      purrr::imap_chr(
+        unique_result$filters,
+        ~ paste0(.y, "=", paste(as.character(.x), collapse = "/"))
+      ),
+      collapse = ", "
+    )
+  }
+  group_text <- paste(as.character(unique_result$group_levels), collapse = ", ")
+  title_text <- if (is.null(title_str)) {
+    paste("Significant proteins by", unique_result$group_var)
+  } else {
+    title_str
+  }
+  subtitle_text <- paste0(
+    unique_result$group_var, ": ", group_text,
+    " | Filters: ", filter_text
+  )
+
+  if (nrow(membership) == 0) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = title_text,
+          subtitle = paste(subtitle_text, "| No significant proteins in any group")
+        )
+    )
+  }
+
+  ggplot2::ggplot(membership, ggplot2::aes(x = sig_sets)) +
+    ggplot2::geom_bar(fill = "steelblue") +
+    ggplot2::geom_text(
+      stat = "count",
+      ggplot2::aes(label = ggplot2::after_stat(count)),
+      vjust = -0.3,
+      size = 3.2
+    ) +
+    ggupset::scale_x_upset(order_by = "freq") +
+    ggupset::theme_combmatrix(
+      combmatrix.panel.point.color.fill = "black",
+      combmatrix.panel.line.size = 0
+    ) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.grid.minor = ggplot2::element_blank(),
+      strip.text = ggplot2::element_text(face = "bold"),
+      axis.text.x = ggplot2::element_text(size = 9)
+    ) +
+    ggplot2::labs(
+      title = title_text,
+      subtitle = subtitle_text,
+      x = NULL,
+      y = "Number of proteins"
+    )
+}
