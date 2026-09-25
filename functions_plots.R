@@ -1004,3 +1004,76 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
       y = "Protein"
     )
 }
+
+plot_unique_protein_upset <- function(unique_result, title_str = NULL) {
+  `%||%` <- function(x, y) if (is.null(x)) y else x
+
+  membership <- unique_result$membership %>%
+    dplyr::filter(n_sig_groups > 0)
+
+  default_title <- paste("Significant proteins by", unique_result$group_var %||% "group")
+  filter_text <- "None"
+  if (length(unique_result$filters %||% list()) > 0) {
+    filter_text <- paste(
+      names(unique_result$filters),
+      vapply(unique_result$filters, function(v) paste(as.character(v), collapse = "|"), character(1)),
+      sep = "=",
+      collapse = ", "
+    )
+  }
+
+  if (nrow(membership) == 0) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = title_str %||% default_title,
+          subtitle = "No significant proteins in any group"
+        )
+    )
+  }
+
+  upset_df <- membership %>%
+    dplyr::mutate(set_list = sig_sets) %>%
+    dplyr::select(PROTEIN, set_list)
+
+  combination_count <- upset_df %>%
+    dplyr::mutate(combo_label = vapply(set_list, paste, collapse = " + ", character(1))) %>%
+    dplyr::count(combo_label, name = "n_proteins")
+
+  if (nrow(combination_count) <= 1) {
+    return(
+      ggplot2::ggplot(combination_count, ggplot2::aes(x = combo_label, y = n_proteins)) +
+        ggplot2::geom_col(fill = "steelblue") +
+        ggplot2::geom_text(ggplot2::aes(label = n_proteins), vjust = -0.3, size = 3.2) +
+        ggplot2::theme_minimal(base_size = 11) +
+        ggplot2::labs(
+          title = title_str %||% default_title,
+          subtitle = paste("Filters:", filter_text),
+          x = NULL,
+          y = "Number of proteins"
+        )
+    )
+  }
+
+  ggplot2::ggplot(upset_df, ggplot2::aes(x = set_list)) +
+    ggplot2::geom_bar(fill = "steelblue") +
+    ggplot2::geom_text(
+      stat = "count",
+      ggplot2::aes(label = ggplot2::after_stat(count)),
+      vjust = -0.3,
+      size = 3.2
+    ) +
+    ggupset::scale_x_upset(order_by = "freq") +
+    ggupset::theme_combmatrix(
+      combmatrix.panel.point.color.fill = "black",
+      combmatrix.panel.line.size = 0
+    ) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::labs(
+      title = title_str %||% default_title,
+      subtitle = paste("Filters:", filter_text),
+      x = NULL,
+      y = "Number of proteins"
+    )
+}

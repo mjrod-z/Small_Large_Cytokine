@@ -414,6 +414,77 @@ for (row_i in seq_len(nrow(exposure_airway_table))) {
 }
 ```
 
+# Unique and shared significant proteins
+
+This section compares **HPIV3 vs NONE significance outcomes** across exposure levels within a fixed stratum.  
+Concrete example shown here: `SEX = F`, `AIRWAY = SAE`, `TIMEPOINT = 72`, and `EXPOSURE ∈ {PBS_Control, Peat_25, Pine_25}`, split by `HORMONE`.
+
+```{r hpiv3-unique-shared}
+run_unique_membership_report <- function(
+    model_results,
+    output_subdir,
+    group_var,
+    group_levels,
+    base_filters,
+    split_var
+) {
+  split_levels <- sort(unique(as.character(model_results[[split_var]])))
+  split_levels <- split_levels[!is.na(split_levels)]
+
+  for (split_level in split_levels) {
+    filters_i <- c(base_filters, stats::setNames(list(split_level), split_var))
+    unique_result <- summarize_unique_significant_proteins(
+      model_results = model_results,
+      group_var = group_var,
+      group_levels = group_levels,
+      filters = filters_i,
+      alpha_q = ALPHA_Q
+    )
+
+    base_stem <- paste(
+      c("hpiv3_unique_significant", names(filters_i), as.character(unlist(filters_i, use.names = FALSE))),
+      collapse = "_"
+    )
+    file_stem <- safe_name(base_stem)
+
+    save_table(
+      unique_result$membership_long,
+      file.path(output_subdir, paste0(file_stem, "_membership_long.csv"))
+    )
+    save_table(
+      unique_result$summary,
+      file.path(output_subdir, paste0(file_stem, "_summary.csv"))
+    )
+
+    title_i <- paste0(
+      "Unique/shared significant proteins by ", group_var,
+      " | ", paste(names(filters_i), as.character(unlist(filters_i, use.names = FALSE)), sep = "=", collapse = ", ")
+    )
+    upset_plot <- plot_unique_protein_upset(unique_result, title_str = title_i)
+    print(upset_plot)
+    save_plot(
+      file.path(output_subdir, paste0(file_stem, "_upset.png")),
+      upset_plot,
+      width = 12,
+      height = 8
+    )
+  }
+}
+
+run_unique_membership_report(
+  model_results = hpiv3_model_results,
+  output_subdir = HPIV3_OUTPUT_SUBDIR,
+  group_var = "EXPOSURE",
+  group_levels = c("PBS_Control", "Peat_25", "Pine_25"),
+  base_filters = list(
+    SEX = "F",
+    AIRWAY = "SAE",
+    TIMEPOINT = "72"
+  ),
+  split_var = "HORMONE"
+)
+```
+
 # Session summary
 
 ```{r session-summary}
@@ -429,4 +500,7 @@ cat("  - hpiv3_stratum_summary_pg_ml.csv\n")
 cat("  - hpiv3_infection_dotplot_*.png (aggregate + split by airway: hpiv3_infection_dotplot_*_<AIRWAY>.png)\n")
 cat("  - hpiv3_sex_dotplot*.png (aggregate + split by airway: hpiv3_sex_dotplot_<AIRWAY>.png)\n")
 cat("  - hpiv3_exposure_dotplot_*.png (aggregate + split by airway: hpiv3_exposure_dotplot_*_<AIRWAY>.png)\n")
+cat("  - hpiv3_unique_significant_*_membership_long.csv (unique/shared membership exports)\n")
+cat("  - hpiv3_unique_significant_*_summary.csv (counts by membership class)\n")
+cat("  - hpiv3_unique_significant_*_upset.png (UpSet intersection plots)\n")
 ```
