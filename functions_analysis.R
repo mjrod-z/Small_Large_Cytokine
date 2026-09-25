@@ -850,10 +850,18 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
         fit <- NULL
         used_lmer <- FALSE
         singular_fit <- FALSE
+        lmer_error <- NA_character_
+        lm_error <- NA_character_
 
         if (n_donors >= 2 && repeated_donor) {
-          fit <- try(lme4::lmer(log2_value ~ INFECTION + (1 | PATIENTCODE), data = dat), silent = TRUE)
-          if (!inherits(fit, "try-error")) {
+          fit <- tryCatch(
+            lme4::lmer(log2_value ~ INFECTION + (1 | PATIENTCODE), data = dat),
+            error = function(e) {
+              lmer_error <<- conditionMessage(e)
+              NULL
+            }
+          )
+          if (!is.null(fit)) {
             singular_fit <- isTRUE(tryCatch(lme4::isSingular(fit), error = function(...) FALSE))
             if (!singular_fit) {
               used_lmer <- TRUE
@@ -862,12 +870,27 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
         }
 
         if (!used_lmer) {
-          fit <- try(stats::lm(log2_value ~ INFECTION, data = dat), silent = TRUE)
-          if (inherits(fit, "try-error")) {
-            result_row$failure_reason <- if (singular_fit) {
+          fit <- tryCatch(
+            stats::lm(log2_value ~ INFECTION, data = dat),
+            error = function(e) {
+              lm_error <<- conditionMessage(e)
+              NULL
+            }
+          )
+          if (is.null(fit)) {
+            base_reason <- if (singular_fit) {
               "singular mixed model and fallback linear model failed"
             } else {
               "model fitting failed"
+            }
+            detail_reason <- lm_error
+            if (is.na(detail_reason) || !nzchar(detail_reason)) {
+              detail_reason <- lmer_error
+            }
+            result_row$failure_reason <- if (is.na(detail_reason) || !nzchar(detail_reason)) {
+              base_reason
+            } else {
+              paste0(base_reason, ": ", detail_reason)
             }
             result_row$singular_fit <- singular_fit
             results[[idx]] <- result_row
@@ -876,9 +899,20 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
           }
         }
 
-        contrast <- try(get_contrast(fit), silent = TRUE)
-        if (inherits(contrast, "try-error")) {
-          result_row$failure_reason <- "emmeans contrast failed"
+        contrast_error <- NA_character_
+        contrast <- tryCatch(
+          get_contrast(fit),
+          error = function(e) {
+            contrast_error <<- conditionMessage(e)
+            NULL
+          }
+        )
+        if (is.null(contrast)) {
+          result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
+            "emmeans contrast failed"
+          } else {
+            paste0("emmeans contrast failed: ", contrast_error)
+          }
           result_row$singular_fit <- singular_fit
           results[[idx]] <- result_row
           idx <- idx + 1L
