@@ -110,8 +110,21 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
   
   get_contrast <- function(fit) {
     emm  <- emmeans::emmeans(fit, ~ EXPOSURE, weights = emmeans_weights)
-    levs <- levels(emmeans::summary(emm)$EXPOSURE)
-    v    <- if (identical(levs, c(ctrl_level, target_exposure))) c(-1, 1) else c(1, -1)
+    levs <- levels(emm)[["EXPOSURE"]]
+    ctrl_idx <- match(ctrl_level, levs)
+    target_idx <- match(target_exposure, levs)
+    if (is.na(ctrl_idx) || is.na(target_idx)) {
+      stop(
+        "Expected contrast levels not found in emmeans results for EXPOSURE. ",
+        "Requested control='", ctrl_level,
+        "', target='", target_exposure,
+        "'. Available levels: ",
+        paste(levs, collapse = ", ")
+      )
+    }
+    v <- rep(0, length(levs))
+    v[ctrl_idx] <- -1
+    v[target_idx] <- 1
     contrast_list        <- list(v)
     names(contrast_list) <- paste0(target_exposure, " - ", ctrl_level)
     emmeans::contrast(emm, method = contrast_list, adjust = "none")
@@ -755,7 +768,15 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
 
   get_contrast <- function(fit) {
     emm <- emmeans::emmeans(fit, ~ INFECTION, weights = "equal")
-    ctrl_idx <- which(levels(emmeans::summary(emm)$INFECTION) == control_level)
+    infection_levels <- levels(emm)[["INFECTION"]]
+    ctrl_idx <- match(control_level, infection_levels)
+    if (is.na(ctrl_idx)) {
+      stop(
+        "Control level '", control_level,
+        "' not found in emmeans results for INFECTION. Available levels: ",
+        paste(infection_levels, collapse = ", ")
+      )
+    }
     emmeans::contrast(emm, method = "trt.vs.ctrl", ref = ctrl_idx, adjust = "none")
   }
 
