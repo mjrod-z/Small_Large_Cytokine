@@ -110,7 +110,7 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
   
   get_contrast <- function(fit) {
     emm  <- emmeans::emmeans(fit, ~ EXPOSURE, weights = emmeans_weights)
-    levs <- emm@levels[["EXPOSURE"]]
+    levs <- levels(emm)[["EXPOSURE"]]
     ctrl_idx <- match(ctrl_level, levs)
     target_idx <- match(target_exposure, levs)
     if (is.na(ctrl_idx) || is.na(target_idx)) {
@@ -768,7 +768,7 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
 
   get_contrast <- function(fit) {
     emm <- emmeans::emmeans(fit, ~ INFECTION, weights = "equal")
-    infection_levels <- emm@levels[["INFECTION"]]
+    infection_levels <- levels(emm)[["INFECTION"]]
     ctrl_idx <- match(control_level, infection_levels)
     if (is.na(ctrl_idx)) {
       stop(
