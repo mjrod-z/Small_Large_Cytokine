@@ -1219,7 +1219,7 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       contrast_level_1 = ifelse(is.na(contrast), NA_character_, trimws(sub(" - .*", "", contrast))),
       contrast_level_2 = ifelse(is.na(contrast), NA_character_, trimws(sub("^.* - ", "", contrast)))
     ) %>%
-    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, EXPOSURE, INFECTION, contrast_level_1, contrast_level_2) %>%
+    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, EXPOSURE, INFECTION, comparison, contrast, contrast_level_1, contrast_level_2) %>%
     dplyr::mutate(
       q.value = {
         q_vals <- rep(NA_real_, dplyr::n())
@@ -1469,7 +1469,7 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       contrast_level_1 = ifelse(is.na(contrast), NA_character_, trimws(sub(" - .*", "", contrast))),
       contrast_level_2 = ifelse(is.na(contrast), NA_character_, trimws(sub("^.* - ", "", contrast)))
     ) %>%
-    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION, contrast_level_1, contrast_level_2) %>%
+    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION, comparison, contrast, contrast_level_1, contrast_level_2) %>%
     dplyr::mutate(
       q.value = {
         q_vals <- rep(NA_real_, dplyr::n())
