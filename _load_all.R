@@ -2,7 +2,7 @@
 
 required_pkgs <- c(
   "here", "dplyr", "tidyr", "readr", "stringr",
-  "purrr", "tibble", "ggplot2", "ggnewscale", "ggpattern",
+  "purrr", "tibble", "ggplot2", "ggnewscale", "ggpattern", "ggupset",
   "rvest", "lme4", "emmeans", "ARTool"
 )
 
@@ -22,6 +22,7 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(ggnewscale)
   library(ggpattern)
+  library(ggupset)
 })
 
 project_root <- here::here()
@@ -63,8 +64,10 @@ required_objects <- c(
   "build_hpiv3_analysis_data",
   "compute_hpiv3_missingness_qc",
   "fit_hpiv3_infection_models",
+  "summarize_unique_significant_proteins",
   "summarize_hpiv3_strata",
   "plot_hpiv3_infection_dotplot",
+  "plot_unique_protein_upset",
   "save_plot",
   "save_table",
   "GENE_BACKGROUND_THRESHOLD",

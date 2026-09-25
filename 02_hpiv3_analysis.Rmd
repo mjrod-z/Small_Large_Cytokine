@@ -414,6 +414,146 @@ for (row_i in seq_len(nrow(exposure_airway_table))) {
 }
 ```
 
+# Unique and shared significant proteins
+
+This section compares significant `HPIV3 - NONE` proteins across exposures within a fixed stratum:
+
+- `SEX = F`
+- `AIRWAY = SAE`
+- `TIMEPOINT = 72`
+- `EXPOSURE` restricted to `PBS_Control`, `Peat_25`, and `Pine_25`
+- Separate outputs are rendered for each available `HORMONE` level
+
+```{r hpiv3-unique-significant-proteins}
+run_unique_significant_report <- function(spec, model_results, output_subdir) {
+  stopifnot(
+    is.list(spec),
+    !is.null(spec$group_var),
+    !is.null(spec$group_levels),
+    !is.null(spec$base_filters)
+  )
+
+  base_rows <- model_results
+  for (filter_name in names(spec$base_filters)) {
+    base_rows <- base_rows %>%
+      dplyr::filter(
+        as.character(.data[[filter_name]]) %in% as.character(spec$base_filters[[filter_name]])
+      )
+  }
+
+  hormone_levels <- sort(unique(as.character(base_rows$HORMONE)))
+  hormone_levels <- hormone_levels[!is.na(hormone_levels) & nzchar(hormone_levels)]
+
+  if (length(hormone_levels) == 0) {
+    cat("No rows available for unique/shared protein analysis after base filtering.\n")
+    return(invisible(list()))
+  }
+
+  results <- vector("list", length(hormone_levels))
+  names(results) <- hormone_levels
+
+  for (i in seq_along(hormone_levels)) {
+    hormone_i <- hormone_levels[[i]]
+    filters_i <- c(spec$base_filters, list(HORMONE = hormone_i))
+    unique_result <- summarize_unique_significant_proteins(
+      model_results = model_results,
+      group_var = spec$group_var,
+      group_levels = spec$group_levels,
+      filters = filters_i,
+      alpha_q = ALPHA_Q
+    )
+
+    file_stub <- paste(
+      spec$file_prefix,
+      spec$file_sex,
+      spec$file_airway,
+      spec$file_timepoint,
+      safe_name(hormone_i),
+      sep = "_"
+    )
+    title_i <- paste(
+      "HPIV3 vs NONE significant proteins across exposures",
+      "| SEX =", spec$base_filters$SEX,
+      "| AIRWAY =", spec$base_filters$AIRWAY,
+      "| TIMEPOINT =", spec$base_filters$TIMEPOINT,
+      "| HORMONE =", hormone_i
+    )
+
+    p_unique <- plot_unique_protein_upset(
+      unique_result,
+      title_str = title_i
+    )
+    print(p_unique)
+    print(
+      knitr::kable(
+        unique_result$summary,
+        caption = paste("Unique/shared significant protein counts for HORMONE =", hormone_i)
+      )
+    )
+    summary_stub <- paste(
+      spec$summary_prefix,
+      spec$file_sex,
+      spec$file_airway,
+      spec$file_timepoint,
+      safe_name(hormone_i),
+      sep = "_"
+    )
+    plot_stub <- paste(
+      spec$plot_prefix,
+      spec$file_sex,
+      spec$file_airway,
+      spec$file_timepoint,
+      safe_name(hormone_i),
+      sep = "_"
+    )
+
+    save_table(
+      unique_result$membership_long,
+      file.path(output_subdir, paste0(file_stub, ".csv"))
+    )
+    save_table(
+      unique_result$summary,
+      file.path(output_subdir, paste0(summary_stub, ".csv"))
+    )
+    save_plot(
+      file.path(output_subdir, paste0(plot_stub, ".png")),
+      p_unique,
+      width = 11,
+      height = 7
+    )
+
+    results[[i]] <- unique_result
+  }
+
+  invisible(results)
+}
+
+unique_significant_specs <- list(
+  list(
+    group_var = "EXPOSURE",
+    group_levels = c("PBS_Control", "Peat_25", "Pine_25"),
+    base_filters = list(
+      SEX = "F",
+      AIRWAY = "SAE",
+      TIMEPOINT = "72"
+    ),
+    file_prefix = "hpiv3_unique_proteins",
+    summary_prefix = "hpiv3_unique_proteins_summary",
+    plot_prefix = "hpiv3_unique_proteins_upset",
+    file_sex = "F",
+    file_airway = "SAE",
+    file_timepoint = "72"
+  )
+)
+
+unique_significant_outputs <- purrr::map(
+  unique_significant_specs,
+  run_unique_significant_report,
+  model_results = hpiv3_model_results,
+  output_subdir = HPIV3_OUTPUT_SUBDIR
+)
+```
+
 # Session summary
 
 ```{r session-summary}
@@ -429,4 +569,7 @@ cat("  - hpiv3_stratum_summary_pg_ml.csv\n")
 cat("  - hpiv3_infection_dotplot_*.png (aggregate + split by airway: hpiv3_infection_dotplot_*_<AIRWAY>.png)\n")
 cat("  - hpiv3_sex_dotplot*.png (aggregate + split by airway: hpiv3_sex_dotplot_<AIRWAY>.png)\n")
 cat("  - hpiv3_exposure_dotplot_*.png (aggregate + split by airway: hpiv3_exposure_dotplot_*_<AIRWAY>.png)\n")
+cat("  - hpiv3_unique_proteins_F_SAE_72_*.csv\n")
+cat("  - hpiv3_unique_proteins_summary_F_SAE_72_*.csv\n")
+cat("  - hpiv3_unique_proteins_upset_F_SAE_72_*.png\n")
 ```
