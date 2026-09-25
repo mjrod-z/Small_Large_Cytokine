@@ -172,7 +172,7 @@ knitr::kable(
 )
 ```
 
-# HPIV3 non-infection mixed-effects modeling
+# HPIV3 sex and exposure stratified mixed-effects modeling
 
 ```{r hpiv3-noninfection-models}
 hpiv3_sex_results <- fit_hpiv3_sex_models(
