@@ -3,7 +3,7 @@
 required_pkgs <- c(
   "here", "dplyr", "tidyr", "readr", "stringr",
   "purrr", "tibble", "ggplot2", "ggnewscale", "ggpattern",
-  "rvest", "lme4", "emmeans", "ARTool"
+  "ggupset", "rvest", "lme4", "emmeans", "ARTool"
 )
 
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
@@ -22,6 +22,7 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(ggnewscale)
   library(ggpattern)
+  library(ggupset)
 })
 
 project_root <- here::here()

@@ -1514,3 +1514,117 @@ summarize_hpiv3_strata <- function(data, protein_cols) {
       )
     )
 }
+
+summarize_unique_significant_proteins <- function(
+    model_results,
+    group_var,
+    group_levels = NULL,
+    filters = list(),
+    alpha_q = ALPHA_Q
+) {
+  stopifnot(is.data.frame(model_results), group_var %in% names(model_results))
+  stopifnot("PROTEIN" %in% names(model_results))
+  stopifnot(is.list(filters))
+
+  d <- model_results
+  for (col in names(filters)) {
+    stopifnot(col %in% names(d))
+    d <- d[as.character(d[[col]]) %in% as.character(filters[[col]]), , drop = FALSE]
+  }
+
+  if (is.null(group_levels)) {
+    group_levels <- sort(unique(as.character(d[[group_var]])))
+  } else {
+    group_levels <- as.character(group_levels)
+    d <- d[as.character(d[[group_var]]) %in% group_levels, , drop = FALSE]
+  }
+
+  empty_membership <- tibble::tibble(
+    PROTEIN = character(),
+    sig_sets = list(),
+    n_sig_groups = integer(),
+    membership_class = character()
+  )
+  empty_membership_long <- tibble::tibble(
+    PROTEIN = character(),
+    sig_group = character(),
+    n_sig_groups = integer(),
+    membership_class = character()
+  )
+  empty_summary <- tibble::tibble(
+    membership_class = character(),
+    n_proteins = integer()
+  )
+
+  if (nrow(d) == 0) {
+    return(list(
+      membership = empty_membership,
+      membership_long = empty_membership_long,
+      summary = empty_summary,
+      group_var = group_var,
+      group_levels = group_levels,
+      filters = filters,
+      alpha_q = alpha_q
+    ))
+  }
+
+  if (!("significant" %in% names(d))) {
+    if ("q.value" %in% names(d)) {
+      d$significant <- !is.na(d$q.value) & d$q.value < alpha_q
+    } else {
+      d$significant <- FALSE
+    }
+  }
+
+  d <- d %>%
+    dplyr::mutate(
+      significant = dplyr::coalesce(significant, FALSE),
+      !!group_var := as.character(.data[[group_var]])
+    )
+
+  membership <- d %>%
+    dplyr::group_by(PROTEIN) %>%
+    dplyr::summarise(
+      sig_sets = list(sort(unique(.data[[group_var]][significant]))),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      n_sig_groups = vapply(sig_sets, length, integer(1)),
+      unique_group = purrr::map_chr(
+        sig_sets,
+        function(x) if (length(x) > 0) x[[1]] else NA_character_
+      ),
+      membership_class = dplyr::case_when(
+        n_sig_groups == 0 ~ "Not significant",
+        n_sig_groups == 1 ~ paste0("Unique: ", unique_group),
+        TRUE ~ paste0("Shared (", n_sig_groups, "-way)")
+      )
+    ) %>%
+    dplyr::select(-unique_group)
+
+  membership_long <- membership %>%
+    dplyr::transmute(
+      PROTEIN = PROTEIN,
+      sig_group = purrr::map(
+        sig_sets,
+        function(x) if (length(x) == 0) NA_character_ else x
+      ),
+      n_sig_groups = n_sig_groups,
+      membership_class = membership_class
+    ) %>%
+    tidyr::unnest_longer(sig_group)
+
+  summary_counts <- membership %>%
+    dplyr::count(membership_class, name = "n_proteins") %>%
+    dplyr::arrange(dplyr::desc(n_proteins), membership_class)
+
+  list(
+    membership = membership,
+    membership_long = membership_long,
+    summary = summary_counts,
+    group_var = group_var,
+    group_levels = group_levels,
+    filters = filters,
+    alpha_q = alpha_q
+  )
+}
