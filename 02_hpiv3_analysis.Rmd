@@ -252,6 +252,7 @@ if ("M" %in% unique(hpiv3_model_results$SEX)) {
 
 infection_airways <- sort(unique(as.character(stats::na.omit(hpiv3_model_results$AIRWAY))))
 for (airway_i in infection_airways) {
+  if (nrow(dplyr::filter(hpiv3_model_results, as.character(AIRWAY) == airway_i, SEX == "All", !is.na(estimate))) == 0) next
   p_hpiv3_all <- plot_hpiv3_infection_dotplot(
     hpiv3_model_results,
     sex_group = "All",
@@ -341,6 +342,7 @@ if ("M" %in% unique(hpiv3_exposure_results$SEX)) {
   )
 }
 for (airway_i in exposure_airways) {
+  if (nrow(dplyr::filter(hpiv3_exposure_results, as.character(AIRWAY) == airway_i, !is.na(estimate))) == 0) next
   p_hpiv3_exposure_all <- plot_hpiv3_exposure_dotplot(
     hpiv3_exposure_results,
     sex_group = "All",

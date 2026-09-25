@@ -20,7 +20,9 @@ safe_name <- function(x) {
   x <- as.character(x)
   x <- gsub("[^A-Za-z0-9]+", "_", x)
   x <- gsub("^_+|_+$", "", x)
-  tolower(x)
+  x <- tolower(x)
+  x[is.na(x) | x == ""] <- "unknown"
+  x
 }
 
 sig_label_from_q <- function(q, alpha_q = ALPHA_Q) {
