@@ -221,6 +221,12 @@ knitr::kable(
 # Visualization
 
 ```{r hpiv3-plots}
+make_airway_file_keys <- function(airways) {
+  raw_keys <- safe_name(airways)
+  unique_keys <- make.unique(raw_keys, sep = "_")
+  stats::setNames(unique_keys, airways)
+}
+
 p_hpiv3_all_aggregate <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "All")
 print(p_hpiv3_all_aggregate)
 save_plot(
@@ -251,8 +257,10 @@ if ("M" %in% unique(hpiv3_model_results$SEX)) {
 }
 
 infection_airways <- sort(unique(as.character(stats::na.omit(hpiv3_model_results$AIRWAY))))
+infection_airway_keys <- make_airway_file_keys(infection_airways)
 for (airway_i in infection_airways) {
   if (nrow(dplyr::filter(hpiv3_model_results, as.character(AIRWAY) == airway_i, SEX == "All", !is.na(estimate))) == 0) next
+  airway_key <- infection_airway_keys[[airway_i]]
   p_hpiv3_all <- plot_hpiv3_infection_dotplot(
     hpiv3_model_results,
     sex_group = "All",
@@ -260,7 +268,7 @@ for (airway_i in infection_airways) {
   )
   print(p_hpiv3_all)
   save_plot(
-    file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_infection_dotplot_all_", safe_name(airway_i), ".png")),
+    file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_infection_dotplot_all_", airway_key, ".png")),
     p_hpiv3_all,
     width = 14,
     height = 10
@@ -271,7 +279,7 @@ for (airway_i in infection_airways) {
     p_hpiv3_f <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "F", airway = airway_i)
     print(p_hpiv3_f)
     save_plot(
-      file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_infection_dotplot_female_", safe_name(airway_i), ".png")),
+      file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_infection_dotplot_female_", airway_key, ".png")),
       p_hpiv3_f,
       width = 14,
       height = 10
@@ -283,7 +291,7 @@ for (airway_i in infection_airways) {
     p_hpiv3_m <- plot_hpiv3_infection_dotplot(hpiv3_model_results, sex_group = "M", airway = airway_i)
     print(p_hpiv3_m)
     save_plot(
-      file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_infection_dotplot_male_", safe_name(airway_i), ".png")),
+      file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_infection_dotplot_male_", airway_key, ".png")),
       p_hpiv3_m,
       width = 14,
       height = 10
@@ -292,6 +300,7 @@ for (airway_i in infection_airways) {
 }
 
 sex_airways <- sort(unique(as.character(stats::na.omit(hpiv3_sex_results$AIRWAY))))
+sex_airway_keys <- make_airway_file_keys(sex_airways)
 p_hpiv3_sex_aggregate <- plot_hpiv3_sex_dotplot(hpiv3_sex_results)
 print(p_hpiv3_sex_aggregate)
 save_plot(
@@ -302,10 +311,11 @@ save_plot(
 )
 for (airway_i in sex_airways) {
   if (nrow(dplyr::filter(hpiv3_sex_results, as.character(AIRWAY) == airway_i, !is.na(estimate))) == 0) next
+  airway_key <- sex_airway_keys[[airway_i]]
   p_hpiv3_sex <- plot_hpiv3_sex_dotplot(hpiv3_sex_results, airway = airway_i)
   print(p_hpiv3_sex)
   save_plot(
-    file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_sex_dotplot_", safe_name(airway_i), ".png")),
+    file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_sex_dotplot_", airway_key, ".png")),
     p_hpiv3_sex,
     width = 16,
     height = 12
@@ -313,6 +323,7 @@ for (airway_i in sex_airways) {
 }
 
 exposure_airways <- sort(unique(as.character(stats::na.omit(hpiv3_exposure_results$AIRWAY))))
+exposure_airway_keys <- make_airway_file_keys(exposure_airways)
 p_hpiv3_exposure_all_aggregate <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "All")
 print(p_hpiv3_exposure_all_aggregate)
 save_plot(
@@ -343,6 +354,7 @@ if ("M" %in% unique(hpiv3_exposure_results$SEX)) {
 }
 for (airway_i in exposure_airways) {
   if (nrow(dplyr::filter(hpiv3_exposure_results, as.character(AIRWAY) == airway_i, !is.na(estimate))) == 0) next
+  airway_key <- exposure_airway_keys[[airway_i]]
   p_hpiv3_exposure_all <- plot_hpiv3_exposure_dotplot(
     hpiv3_exposure_results,
     sex_group = "All",
@@ -350,7 +362,7 @@ for (airway_i in exposure_airways) {
   )
   print(p_hpiv3_exposure_all)
   save_plot(
-    file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_exposure_dotplot_all_", safe_name(airway_i), ".png")),
+    file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_exposure_dotplot_all_", airway_key, ".png")),
     p_hpiv3_exposure_all,
     width = 16,
     height = 12
@@ -361,7 +373,7 @@ for (airway_i in exposure_airways) {
     p_hpiv3_exposure_f <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "F", airway = airway_i)
     print(p_hpiv3_exposure_f)
     save_plot(
-      file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_exposure_dotplot_female_", safe_name(airway_i), ".png")),
+      file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_exposure_dotplot_female_", airway_key, ".png")),
       p_hpiv3_exposure_f,
       width = 16,
       height = 12
@@ -373,7 +385,7 @@ for (airway_i in exposure_airways) {
     p_hpiv3_exposure_m <- plot_hpiv3_exposure_dotplot(hpiv3_exposure_results, sex_group = "M", airway = airway_i)
     print(p_hpiv3_exposure_m)
     save_plot(
-      file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_exposure_dotplot_male_", safe_name(airway_i), ".png")),
+      file.path(HPIV3_OUTPUT_SUBDIR, paste0("hpiv3_exposure_dotplot_male_", airway_key, ".png")),
       p_hpiv3_exposure_m,
       width = 16,
       height = 12
