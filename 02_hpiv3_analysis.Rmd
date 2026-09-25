@@ -222,10 +222,11 @@ knitr::kable(
 
 ```{r hpiv3-plots}
 make_airway_key_table <- function(airways) {
-  airway_chr <- rep(NA_character_, length(airways))
-  airway_chr[!is.na(airways)] <- as.character(airways[!is.na(airways)])
+  airway_values <- unique(airways)
+  airway_chr <- rep(NA_character_, length(airway_values))
+  airway_chr[!is.na(airway_values)] <- as.character(airway_values[!is.na(airway_values)])
   tibble::tibble(
-    airway = airways,
+    airway = airway_values,
     airway_key = make.unique(safe_name(airway_chr), sep = "_")
   )
 }
