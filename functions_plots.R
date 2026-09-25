@@ -701,11 +701,11 @@ plot_gsea_barplot <- function(gsea_data, n_top = 12, facet_by = "sample_name",
 
 plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
   plot_df <- model_results %>%
-    dplyr::filter(
-      SEX == sex_group,
-      !is.na(estimate),
-      is.null(airway) | as.character(AIRWAY) == airway
-    ) %>%
+    dplyr::filter(SEX == sex_group, !is.na(estimate))
+  if (!is.null(airway)) {
+    plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+  }
+  plot_df <- plot_df %>%
     dplyr::mutate(
       direction = dplyr::case_when(
         significant & estimate > 0 ~ "Higher in HPIV3",
@@ -790,10 +790,11 @@ plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airwa
 
 plot_hpiv3_sex_dotplot <- function(model_results, airway = NULL) {
   plot_df <- model_results %>%
-    dplyr::filter(
-      !is.na(estimate),
-      is.null(airway) | as.character(AIRWAY) == airway
-    ) %>%
+    dplyr::filter(!is.na(estimate))
+  if (!is.null(airway)) {
+    plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+  }
+  plot_df <- plot_df %>%
     dplyr::mutate(
       comparison = paste0("Sex: ", contrast),
       direction = dplyr::case_when(
@@ -887,10 +888,11 @@ plot_hpiv3_exposure_dotplot <- function(model_results, sex_group = "All", airway
       } else {
         dplyr::filter(., as.character(SEX) == sex_group)
       }
-    } %>%
-    dplyr::filter(
-      is.null(airway) | as.character(AIRWAY) == airway
-    ) %>%
+    }
+  if (!is.null(airway)) {
+    plot_df <- plot_df %>% dplyr::filter(as.character(AIRWAY) == airway)
+  }
+  plot_df <- plot_df %>%
     dplyr::mutate(
       comparison = paste0("Exposure: ", contrast),
       direction = dplyr::case_when(
