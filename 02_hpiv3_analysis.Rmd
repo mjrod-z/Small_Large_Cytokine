@@ -224,10 +224,8 @@ knitr::kable(
 make_airway_key_table <- function(airways) {
   airway_chr <- rep(NA_character_, length(airways))
   airway_chr[!is.na(airways)] <- as.character(airways[!is.na(airways)])
-  airway_id <- dplyr::if_else(is.na(airways), "__NA__", airway_chr)
   tibble::tibble(
     airway = airway_chr,
-    airway_id = airway_id,
     airway_key = make.unique(safe_name(airway_chr), sep = "_")
   )
 }
