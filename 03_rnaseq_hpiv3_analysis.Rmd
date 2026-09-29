@@ -47,6 +47,15 @@ RUN_DREAM_MODELS <- FALSE
 MAX_VOLCANO_PANELS <- 12L
 GSEA_RESULTS_PATH <- getOption("hpiv3.rnaseq.gsea_file", NULL)
 
+# Reference/order levels used throughout this report. EXPOSURE is ordered so
+# that PBS is the reference level for every interaction model below; there is
+# no dose axis (each of PEAT and PINE has exactly one level).
+RNA_INFECTION_LEVELS <- c("NONE", "HPIV3")
+RNA_HORMONE_LEVELS <- c("NONE", "E2")
+RNA_EXPOSURE_LEVELS <- c("PBS", "PEAT", "PINE")
+RNA_SEX_LEVELS <- c("M", "F")
+RNA_MIN_GROUP_N <- 2L
+
 cat("✓ HPIV3 RNA-seq report configuration loaded\n")
 cat("  Counts          :", RNA_COUNT_FILE, "\n")
 cat("  Metadata        :", RNA_METADATA_FILE, "\n")
@@ -57,19 +66,20 @@ cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
 # Analysis specifications at a glance
 
 - **Sample selection:** retain samples with matched metadata and a non-zero library size. Unmatched IDs and per-sample library sizes/gene detection are reported; no minimum library-size threshold is applied.
-- **Input/QC checks:** require unique, non-empty gene and sample IDs; finite, non-negative integer raw counts; unique metadata `SAMPLEID`s; and recognized infection (`NONE`/`HPIV3`) and hormone (`NONE`/`E2`) labels. Required metadata fields are `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and `SEX`; `AGE`, `RACE`, and `SMOKER` are optional.
-- **Gene filtering:** retain genes with at least 10 total raw counts across selected samples and CPM ≥ 1 in at least 50% of samples in at least one observed `AIRWAY × HORMONE × TIMEPOINT` stratum. These defaults are controlled by `RNA_MIN_TOTAL_COUNT`, `RNA_CPM_THRESHOLD`, and `RNA_MIN_SAMPLE_FRACTION`. Per-stratum and final gene inclusion tables are exported.
-- **Normalization/QC:** by default, edgeR TMM factors are calculated on the filtered raw-count matrix. Effective library sizes are scaled to geometric mean 1 and used to produce normalized counts and blind DESeq2 VST values (`blind = TRUE`). Size factors, both matrices, and a VST PCA (when possible) are exported. Set `RUN_NORMALIZATION <- FALSE` to skip; if a required Bioconductor package is unavailable, normalization/VST and dependent plots are skipped with a message.
-- **Differential expression:** DREAM/voom modeling is disabled by default (`RUN_DREAM_MODELS <- FALSE`) because the stratified pairwise models can be expensive. If enabled, models use TMM-normalized voom weights and a `PATIENTCODE` random intercept.
+- **No timepoint factor:** this dataset has no `TIMEPOINT` column. Sample column names in the count matrix are treated as sample IDs as-is; they are never split at underscores or used to infer a timepoint.
+- **Input/QC checks:** require unique, non-empty gene and sample IDs; finite, non-negative integer raw counts; unique metadata `SAMPLEID`s; and recognized infection (`NONE`/`HPIV3`), hormone (`NONE`/`E2`), and exposure (`PBS`/`PEAT`/`PINE`) labels. Required metadata fields are `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and `SEX`; `AGE`, `RACE`, and `SMOKER` are optional.
+- **Gene filtering:** retain genes with at least 10 total raw counts across selected samples and CPM ≥ 1 in at least 50% of samples in at least one observed `AIRWAY × HORMONE` stratum. These defaults are controlled by `RNA_MIN_TOTAL_COUNT`, `RNA_CPM_THRESHOLD`, and `RNA_MIN_SAMPLE_FRACTION`. Per-stratum and final gene inclusion tables are exported.
+- **Normalization/QC:** by default, edgeR TMM factors are calculated on the filtered raw-count matrix. Effective library sizes are scaled to geometric mean 1 and used to produce normalized counts and blind DESeq2 VST values (`blind = TRUE`). Size factors, both matrices, and a VST PCA faceted by `AIRWAY` (when possible) are exported. Set `RUN_NORMALIZATION <- FALSE` to skip; if a required Bioconductor package is unavailable, normalization/VST and dependent plots are skipped with a message.
+- **Differential expression:** DREAM/voom interaction modeling is disabled by default (`RUN_DREAM_MODELS <- FALSE`) because the stratified interaction models can be expensive. If enabled, models use TMM-normalized voom weights, `variancePartition::dream()`, and a `PATIENTCODE` random intercept. There is no dose-response analysis in this report: `EXPOSURE` has exactly one level each of `PEAT` and `PINE` plus the `PBS` control, so there is no dose to model.
 - **Outputs:** generated tables and figures are written below `output/rna_seq/`; only precomputed GSEA results are read from an explicitly configured optional path.
 
 # Data contract and QC rules
 
-Required inputs use repository conventions: `data/raw/HPIV3_RNA_data.csv` has `GENEID` in its first column and one raw-count column per sample; column names may optionally end in `_<TIMEPOINT>` (for example, `<SAMPLEID>_24`); names without a suffix are treated as sample IDs with a missing timepoint. The required `data/raw/HPIV3_metadata.csv` has one row per `SAMPLEID` and the columns `SAMPLEID`, `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and `SEX`. Optional metadata columns `AGE`, `RACE`, and `SMOKER` are retained when present.
+Required inputs use repository conventions: `data/raw/HPIV3_RNA_data.csv` has `GENEID` in its first column and one raw-count column per sample; sample column names are treated as `SAMPLEID` values exactly as written, with no underscore splitting or timepoint suffix parsing. The required `data/raw/HPIV3_metadata.csv` has one row per `SAMPLEID` and the columns `SAMPLEID`, `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and `SEX`. Optional metadata columns `AGE`, `RACE`, and `SMOKER` are retained when present.
 
-The report rejects malformed or duplicate gene/sample identifiers, non-finite, negative, or non-integer raw counts, duplicate metadata IDs, and unexpected infection or hormone labels. Count sample IDs with a timepoint suffix are split at their final underscore; names without a suffix are matched to metadata as-is. Unmatched IDs are exported and count samples without metadata are excluded. Zero-library samples are excluded.
+The report rejects malformed or duplicate gene/sample identifiers, non-finite, negative, or non-integer raw counts, duplicate metadata IDs, and unexpected infection, hormone, or exposure labels. Count sample IDs are matched to metadata as-is (no suffix splitting). Unmatched IDs are exported and count samples without metadata are excluded. Zero-library samples are excluded.
 
-Genes must have at least `RNA_MIN_TOTAL_COUNT` total counts and CPM ≥ `RNA_CPM_THRESHOLD` in at least `RNA_MIN_SAMPLE_FRACTION` of samples in one or more observed `AIRWAY × HORMONE × TIMEPOINT` strata. The report records the per-stratum and per-gene filtering decisions. Infection, sex, exposure, airway, hormone, and timepoint dimensions are reported from the matched RNA-seq sample metadata; no protein-only fields are required.
+Genes must have at least `RNA_MIN_TOTAL_COUNT` total counts and CPM ≥ `RNA_CPM_THRESHOLD` in at least `RNA_MIN_SAMPLE_FRACTION` of samples in one or more observed `AIRWAY × HORMONE` strata. The report records the per-stratum and per-gene filtering decisions. Infection, sex, exposure, airway, and hormone dimensions are reported from the matched RNA-seq sample metadata; no protein-only fields and no timepoint field are required.
 
 # Load counts and prepare analysis-ready data
 
@@ -113,26 +123,14 @@ if (anyNA(counts_raw$GENEID) || any(!nzchar(trimws(counts_raw$GENEID))) ||
   stop("RNA-seq GENEID values must be non-empty and unique.")
 }
 
+# There is no TIMEPOINT factor in this dataset: sample column names are
+# treated as SAMPLEID values exactly as written, with no underscore
+# splitting or suffix parsing.
 trimmed_sample_names <- trimws(sample_names)
-sample_parts <- stringr::str_match(trimmed_sample_names, "^(.*)_([^_]+)$")
-has_timepoint <- !is.na(sample_parts[, 1])
-bad_sample_names <- (has_timepoint &
-  (!nzchar(sample_parts[, 2]) | !nzchar(sample_parts[, 3]))) |
-  (!has_timepoint & grepl("_", trimmed_sample_names))
-if (any(bad_sample_names)) {
-  stop(
-    "Unable to split sample column names into SAMPLEID and TIMEPOINT: ",
-    paste(utils::head(sample_names[bad_sample_names], 10), collapse = ", ")
-  )
-}
 sample_ids <- trimmed_sample_names
-timepoints <- rep(NA_character_, length(sample_names))
-sample_ids[has_timepoint] <- sample_parts[has_timepoint, 2]
-timepoints[has_timepoint] <- sample_parts[has_timepoint, 3]
 sample_map <- tibble::tibble(
   SAMPLENAME = sample_names,
-  SAMPLEID = sample_ids,
-  TIMEPOINT = timepoints
+  SAMPLEID = sample_ids
 )
 
 counts_numeric <- counts_raw %>%
@@ -157,7 +155,7 @@ metadata_std <- metadata_raw %>%
     SAMPLEID = trimws(as.character(SAMPLEID)),
     AIRWAY = trimws(as.character(AIRWAY)),
     PATIENTCODE = trimws(as.character(PATIENTCODE)),
-    EXPOSURE = trimws(as.character(EXPOSURE)),
+    EXPOSURE = toupper(trimws(as.character(EXPOSURE))),
     INFECTION = toupper(trimws(as.character(INFECTION))),
     HORMONE = toupper(trimws(as.character(HORMONE))),
     SEX = toupper(trimws(as.character(SEX)))
@@ -184,6 +182,10 @@ unexpected_hormone <- setdiff(
   unique(stats::na.omit(metadata_std$HORMONE)),
   c("NONE", "E2")
 )
+unexpected_exposure <- setdiff(
+  unique(stats::na.omit(metadata_std$EXPOSURE)),
+  RNA_EXPOSURE_LEVELS
+)
 if (length(unexpected_infection) > 0) {
   stop("Unexpected INFECTION values (expected NONE/NO or HPIV3): ",
        paste(sort(unexpected_infection), collapse = ", "))
@@ -191,6 +193,10 @@ if (length(unexpected_infection) > 0) {
 if (length(unexpected_hormone) > 0) {
   stop("Unexpected HORMONE values (expected NONE or E2): ",
        paste(sort(unexpected_hormone), collapse = ", "))
+}
+if (length(unexpected_exposure) > 0) {
+  stop("Unexpected EXPOSURE values (expected PBS, PEAT, or PINE): ",
+       paste(sort(unexpected_exposure), collapse = ", "))
 }
 if (anyDuplicated(metadata_std$SAMPLEID)) {
   stop("HPIV3 metadata must contain at most one row per SAMPLEID.")
@@ -203,11 +209,11 @@ metadata_fields <- intersect(c("AGE", "RACE", "SMOKER"), names(metadata_std))
 sample_metadata <- sample_map %>%
   dplyr::left_join(metadata_std, by = "SAMPLEID") %>%
   dplyr::mutate(
-    TIMEPOINT = factor(TIMEPOINT, levels = unique(stats::na.omit(TIMEPOINT))),
     AIRWAY = factor(AIRWAY),
-    HORMONE = factor(HORMONE, levels = c("NONE", "E2")),
-    INFECTION = factor(INFECTION, levels = c("NONE", "HPIV3")),
-    SEX = factor(SEX, levels = c("M", "F")),
+    HORMONE = factor(HORMONE, levels = RNA_HORMONE_LEVELS),
+    INFECTION = factor(INFECTION, levels = RNA_INFECTION_LEVELS),
+    EXPOSURE = factor(EXPOSURE, levels = RNA_EXPOSURE_LEVELS),
+    SEX = factor(SEX, levels = RNA_SEX_LEVELS),
     CELLTYPE = AIRWAY
   )
 
@@ -248,7 +254,7 @@ analysis_ready_counts <- data.frame(
 )
 analysis_ready_metadata <- selected_metadata %>%
   dplyr::select(
-    SAMPLENAME, SAMPLEID, TIMEPOINT, AIRWAY, CELLTYPE, PATIENTCODE,
+    SAMPLENAME, SAMPLEID, AIRWAY, CELLTYPE, PATIENTCODE,
     EXPOSURE, HORMONE, INFECTION, SEX, dplyr::all_of(metadata_fields),
     library_size, n_genes_detected
   )
@@ -269,7 +275,6 @@ cat("  Genes in raw matrix:", nrow(count_matrix), "\n")
 cat("  Samples kept       :", ncol(count_matrix), "\n")
 cat("  AIRWAY             :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$AIRWAY)))), collapse = " | "), "\n")
 cat("  HORMONE            :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$HORMONE)))), collapse = " | "), "\n")
-cat("  TIMEPOINT          :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$TIMEPOINT)))), collapse = " | "), "\n")
 cat("  INFECTION          :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$INFECTION)))), collapse = " | "), "\n")
 cat("  SEX                :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$SEX)))), collapse = " | "), "\n")
 cat("  EXPOSURE           :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$EXPOSURE)))), collapse = " | "), "\n")
@@ -278,7 +283,7 @@ cat("  EXPOSURE           :", paste(sort(unique(stats::na.omit(as.character(sele
 ```{r sample-qc-preview}
 knitr::kable(
   analysis_ready_metadata %>%
-    dplyr::select(SAMPLENAME, SAMPLEID, AIRWAY, TIMEPOINT, INFECTION, SEX,
+    dplyr::select(SAMPLENAME, SAMPLEID, AIRWAY, INFECTION, SEX,
                   HORMONE, EXPOSURE, library_size, n_genes_detected) %>%
     utils::head(20),
   caption = "First 20 retained RNA-seq samples and library QC"
@@ -291,7 +296,7 @@ knitr::kable(
 library_sizes <- colSums(count_matrix)
 cpm_matrix <- sweep(count_matrix, 2, library_sizes / 1e6, "/")
 cpm_matrix[, library_sizes == 0] <- 0
-strata_cols <- c("AIRWAY", "HORMONE", "TIMEPOINT")
+strata_cols <- c("AIRWAY", "HORMONE")
 strata_values <- unique(selected_metadata[, strata_cols, drop = FALSE])
 stratum_filter_rows <- vector("list", nrow(strata_values))
 
@@ -317,7 +322,6 @@ for (i in seq_len(nrow(strata_values))) {
     GENEID = rownames(cpm_matrix),
     AIRWAY = as.character(stratum_i$AIRWAY[[1]]),
     HORMONE = as.character(stratum_i$HORMONE[[1]]),
-    TIMEPOINT = as.character(stratum_i$TIMEPOINT[[1]]),
     n_samples = length(sample_names_i),
     fraction_above_cpm = fraction_above,
     passes_stratum = fraction_above >= RNA_MIN_SAMPLE_FRACTION
@@ -438,7 +442,7 @@ if (!vst_available) {
       ggplot2::aes(x = PC1, y = PC2, color = INFECTION, shape = SEX)
     ) +
       ggplot2::geom_point(size = 3, alpha = 0.85) +
-      ggplot2::facet_wrap(~ AIRWAY + TIMEPOINT, scales = "free") +
+      ggplot2::facet_wrap(~ AIRWAY, scales = "free") +
       ggplot2::theme_minimal(base_size = 12) +
       ggplot2::labs(
         title = "HPIV3 RNA-seq PCA (VST)",
@@ -458,20 +462,48 @@ if (!vst_available) {
 }
 ```
 
-# DREAM/voom differential expression
+# DREAM/voom interaction differential expression
 
-The mixed-model step is deliberately off by default because fitting all airway/timepoint/hormone/infection/exposure/sex strata can be expensive. Set `RUN_DREAM_MODELS <- TRUE` in the setup chunk to run it. When enabled, each pairwise comparison uses raw integer counts, TMM normalization, voom precision weights, and a `PATIENTCODE` random intercept. Contrasts are:
+This section is deliberately off by default (`RUN_DREAM_MODELS <- FALSE`) because fitting every stratum can be expensive. Set `RUN_DREAM_MODELS <- TRUE` in the setup chunk to run it. When enabled, every model uses raw integer counts, TMM normalization, `variancePartition::voomWithDreamWeights()` precision weights, and `variancePartition::dream()` with a `PATIENTCODE` random intercept (`(1 | PATIENTCODE)`).
 
-- Infection (`HPIV3` versus `NONE`) within airway, hormone, timepoint, exposure, and sex.
-- Sex (`F` versus `M`) within airway, hormone, timepoint, exposure, and infection.
-- All pairwise exposure comparisons within airway, hormone, timepoint, sex, and infection.
+## Why interaction models, and why stratify instead of pooling
+
+The scientific questions of interest are about **effect modification** — e.g. "does E2 change the transcriptional response to HPIV3?" — not simple main effects. Answering that requires an interaction term (`INFECTION * HORMONE`), not two separate simple-effect models compared informally. At the same time, naively fitting one giant model such as `~ AIRWAY * INFECTION * HORMONE * EXPOSURE * SEX + (1 | PATIENTCODE)` would pool across biologically distinct compartments and create unstable, largely untestable high-order terms. Instead, every interaction model below is fit **separately within strata** defined by the remaining biological factors, so that no factor is flattened/pooled into an average that could mask compartment-specific biology. `AIRWAY` is always a stratifying factor (SAE and LAE are different tissues); `SEX` is stratified in the primary/secondary models per investigator request, with combined-sex models kept as separate sanity checks (see below).
+
+There is no `TIMEPOINT` factor in this dataset and no dose-response modeling: `EXPOSURE` has exactly three levels (`PBS`, `PEAT`, `PINE`), each with a single dose, so there is no dose axis to fit.
+
+## Primary and secondary interaction tests
+
+All models use the reference/order levels `INFECTION = c("NONE", "HPIV3")`, `HORMONE = c("NONE", "E2")`, `EXPOSURE = c("PBS", "PEAT", "PINE")`, and `SEX = c("M", "F")`, so `PBS`, `NONE`, and `M` are always the reference level of their factor. Interaction coefficient names come directly from `stats::model.matrix()`/`dream()` (e.g. `INFECTIONHPIV3:HORMONEE2`); `make.names()` is applied defensively wherever coefficient names are matched against expected design columns.
+
+1. **Primary — infection-by-hormone.** Stratified by `AIRWAY × SEX × EXPOSURE`; within each stratum, fit `~ INFECTION * HORMONE + (1 | PATIENTCODE)`. The interaction coefficient `INFECTIONHPIV3:HORMONEE2` tests whether the HPIV3-vs-NONE response differs between E2 and NONE hormone conditions (a difference-in-differences).
+2. **Primary — infection-by-exposure.** Stratified by `AIRWAY × SEX × HORMONE`; within each stratum, fit `~ INFECTION * EXPOSURE + (1 | PATIENTCODE)`. The interaction coefficients `INFECTIONHPIV3:EXPOSUREPEAT` and `INFECTIONHPIV3:EXPOSUREPINE` test whether PEAT or PINE (respectively) change the HPIV3-vs-NONE response relative to PBS.
+3. **Secondary — hormone-by-exposure.** Stratified by `AIRWAY × SEX × INFECTION`; within each stratum, fit `~ HORMONE * EXPOSURE + (1 | PATIENTCODE)`. The interaction coefficients `HORMONEE2:EXPOSUREPEAT` and `HORMONEE2:EXPOSUREPINE` test whether E2 changes the PEAT-vs-PBS or PINE-vs-PBS response.
+
+Stratifying by `SEX` (rather than pooling both sexes into one model) keeps every primary/secondary interaction estimate specific to a single sex, avoiding a pooled estimate that could hide a sex-specific effect. The same logic applies to not pooling across `EXPOSURE`, `HORMONE`, or `INFECTION`: each is either the tested interaction factor or an explicit stratification factor, never silently averaged over.
+
+## Combined-sex sanity checks
+
+Because stratifying by sex on top of everything else can leave very small strata, three additional **exploratory, sanity-check-only** models are also fit with both sexes combined and `SEX` added as a third interacting factor:
+
+- Infection-by-hormone sanity check: stratified by `AIRWAY × EXPOSURE`; fit `~ INFECTION * HORMONE * SEX + (1 | PATIENTCODE)`.
+- Infection-by-exposure sanity check: stratified by `AIRWAY × HORMONE`; fit `~ INFECTION * EXPOSURE * SEX + (1 | PATIENTCODE)`.
+- Hormone-by-exposure sanity check: stratified by `AIRWAY × INFECTION`; fit `~ HORMONE * EXPOSURE * SEX + (1 | PATIENTCODE)`.
+
+These sanity checks export all two-way and three-way interaction coefficients (e.g. `INFECTIONHPIV3:HORMONEE2`, `INFECTIONHPIV3:SEXF`, `HORMONEE2:SEXF`, and `INFECTIONHPIV3:HORMONEE2:SEXF`). They exist to check whether combining sexes changes conclusions and whether a sex-specific pattern exists — they are **not** merged into the primary/secondary result tables used for volcano/overlap plots, and are exported to their own tables (`hpiv3_rnaseq_dream_sanity_results.csv`/`hpiv3_rnaseq_dream_sanity_failures.csv`).
+
+## Failure handling
+
+A stratum/model is skipped (with the reason recorded in a failures table) rather than silently fit if: the stratum has fewer than two observed levels for any modeled factor; any cell of the full crossing of modeled factors has fewer than `RNA_MIN_GROUP_N` (default 2) observations; the fixed-effect design matrix is rank-deficient; or `voomWithDreamWeights()`/`dream()` raises an error. No model is fit on a subset that does not meet these requirements.
 
 ```{r dream-models}
 rnaseq_model_results <- tibble::tibble()
 rnaseq_model_failures <- tibble::tibble()
+rnaseq_sanity_results <- tibble::tibble()
+rnaseq_sanity_failures <- tibble::tibble()
 
 if (!RUN_DREAM_MODELS) {
-  message("DREAM/voom differential expression skipped (RUN_DREAM_MODELS is FALSE).")
+  message("DREAM/voom interaction differential expression skipped (RUN_DREAM_MODELS is FALSE).")
 } else {
   dream_packages <- c("edgeR", "limma", "variancePartition")
   missing_dream_packages <- dream_packages[
@@ -484,15 +516,56 @@ if (!RUN_DREAM_MODELS) {
     )
   }
 
-  run_dream_family <- function(group_var, strata_vars, family_name) {
-    required_model_fields <- unique(c(group_var, strata_vars, "PATIENTCODE"))
+  # Reference levels for every modeled factor; PBS/NONE/M are always first.
+  RNA_FACTOR_LEVELS <- list(
+    INFECTION = RNA_INFECTION_LEVELS,
+    HORMONE = RNA_HORMONE_LEVELS,
+    EXPOSURE = RNA_EXPOSURE_LEVELS,
+    SEX = RNA_SEX_LEVELS
+  )
+
+  run_dream_interaction_family <- function(formula_vars, strata_vars, family_name, tier) {
+    required_model_fields <- unique(c(formula_vars, strata_vars, "PATIENTCODE"))
     model_metadata <- selected_metadata %>%
-      dplyr::select(SAMPLENAME, dplyr::all_of(required_model_fields))
+      dplyr::select(SAMPLENAME, dplyr::all_of(required_model_fields)) %>%
+      dplyr::filter(!is.na(PATIENTCODE), nzchar(PATIENTCODE))
+    complete_rows <- stats::complete.cases(model_metadata[, formula_vars, drop = FALSE])
+    model_metadata <- model_metadata[complete_rows, , drop = FALSE]
     strata <- unique(model_metadata[, strata_vars, drop = FALSE])
     family_results <- list()
     family_failures <- list()
     result_i <- 1L
     failure_i <- 1L
+    fixed_formula <- stats::as.formula(paste("~", paste(formula_vars, collapse = " * ")))
+    full_formula <- stats::as.formula(
+      paste("~", paste(formula_vars, collapse = " * "), "+ (1 | PATIENTCODE)")
+    )
+
+    context_string <- function(stratum_values) {
+      paste(
+        vapply(
+          strata_vars,
+          function(col) paste0(
+            col, "=",
+            ifelse(is.na(stratum_values[[col]][[1]]), "<missing>",
+                   as.character(stratum_values[[col]][[1]]))
+          ),
+          character(1)
+        ),
+        collapse = " | "
+      )
+    }
+
+    record_failure <- function(stratum_values, reason) {
+      context <- as.list(stratum_values)
+      family_failures[[failure_i]] <<- tibble::tibble(
+        analysis = family_name,
+        tier = tier,
+        contrast_id = paste(family_name, context_string(stratum_values), sep = " | "),
+        failure_reason = reason
+      ) %>% dplyr::bind_cols(tibble::as_tibble(context))
+      failure_i <<- failure_i + 1L
+    }
 
     for (stratum_i in seq_len(nrow(strata))) {
       stratum_values <- strata[stratum_i, , drop = FALSE]
@@ -506,126 +579,129 @@ if (!RUN_DREAM_MODELS) {
             as.character(model_metadata[[col]]) == value_i
         }
       }
-      stratum_metadata <- model_metadata[in_stratum, , drop = FALSE] %>%
-        dplyr::filter(
-          !is.na(.data[[group_var]]),
-          !is.na(PATIENTCODE),
-          nzchar(PATIENTCODE)
-        )
-      observed_groups <- unique(as.character(stratum_metadata[[group_var]]))
-      group_levels <- switch(
-        group_var,
-        INFECTION = intersect(c("NONE", "HPIV3"), observed_groups),
-        SEX = intersect(c("M", "F"), observed_groups),
-        sort(observed_groups)
-      )
-      if (length(group_levels) < 2) next
-      pairs <- utils::combn(group_levels, 2, simplify = FALSE)
+      stratum_metadata <- model_metadata[in_stratum, , drop = FALSE]
 
-      for (pair in pairs) {
-        comparison_metadata <- stratum_metadata %>%
-          dplyr::filter(as.character(.data[[group_var]]) %in% pair) %>%
-          dplyr::mutate(GROUP = factor(as.character(.data[[group_var]]), levels = pair))
-        comparison_metadata <- as.data.frame(comparison_metadata)
-        rownames(comparison_metadata) <- comparison_metadata$SAMPLENAME
-        comparison_metadata$PATIENTCODE <- factor(comparison_metadata$PATIENTCODE)
-        group_counts <- table(comparison_metadata$GROUP)
-        contrast_label <- paste(pair[[2]], "minus", pair[[1]])
-        contrast_context <- paste(
-          vapply(
-            strata_vars,
-            function(col) paste0(
-              col, "=",
-              ifelse(is.na(stratum_values[[col]][[1]]), "<missing>",
-                     as.character(stratum_values[[col]][[1]]))
-            ),
-            character(1)
-          ),
-          collapse = " | "
+      # Every modeled factor must have at least two observed levels here;
+      # otherwise its interaction term(s) cannot be estimated in this stratum.
+      observed_levels <- lapply(formula_vars, function(v) {
+        intersect(RNA_FACTOR_LEVELS[[v]], unique(as.character(stratum_metadata[[v]])))
+      })
+      names(observed_levels) <- formula_vars
+      insufficient_levels <- formula_vars[vapply(observed_levels, length, integer(1)) < 2]
+      if (length(insufficient_levels) > 0) {
+        record_failure(
+          stratum_values,
+          paste0("Fewer than two observed levels for: ", paste(insufficient_levels, collapse = ", "))
         )
-        contrast_id <- paste(family_name, contrast_context, contrast_label, sep = " | ")
-        context <- as.list(stratum_values)
+        next
+      }
 
-        if (any(group_counts < 2)) {
-          family_failures[[failure_i]] <- tibble::tibble(
-            analysis = family_name,
-            group_var = group_var,
-            contrast = contrast_label,
-            contrast_id = contrast_id,
-            failure_reason = "Fewer than two samples in at least one group"
-          ) %>% dplyr::bind_cols(tibble::as_tibble(context))
-          failure_i <- failure_i + 1L
-          next
+      # Preserve the minimum-of-two-observations-per-group rule across the
+      # full crossing of modeled factors, so no cell is silently empty/sparse.
+      full_grid <- expand.grid(observed_levels, stringsAsFactors = FALSE)
+      cell_counts <- apply(full_grid, 1, function(row) {
+        keep <- rep(TRUE, nrow(stratum_metadata))
+        for (v in formula_vars) {
+          keep <- keep & as.character(stratum_metadata[[v]]) == row[[v]]
         }
-
-        sample_ids <- comparison_metadata$SAMPLENAME
-        comparison_counts <- filtered_count_matrix[, sample_ids, drop = FALSE]
-        comparison_formula <- ~ 0 + GROUP + (1 | PATIENTCODE)
-        design <- stats::model.matrix(~ 0 + GROUP, data = comparison_metadata)
-        coefficient_names <- colnames(design)
-        first_coef <- make.names(paste0("GROUP", pair[[1]]))
-        second_coef <- make.names(paste0("GROUP", pair[[2]]))
-        if (!all(c(first_coef, second_coef) %in% coefficient_names)) {
-          family_failures[[failure_i]] <- tibble::tibble(
-            analysis = family_name,
-            group_var = group_var,
-            contrast = contrast_label,
-            contrast_id = contrast_id,
-            failure_reason = "Could not map group levels to design-matrix coefficients"
-          ) %>% dplyr::bind_cols(tibble::as_tibble(context))
-          failure_i <- failure_i + 1L
-          next
-        }
-        contrast_matrix <- limma::makeContrasts(
-          contrasts = paste0(second_coef, "-", first_coef),
-          levels = design
+        sum(keep)
+      })
+      if (any(cell_counts < RNA_MIN_GROUP_N)) {
+        record_failure(
+          stratum_values,
+          paste0("Fewer than ", RNA_MIN_GROUP_N, " observations in at least one design cell")
         )
+        next
+      }
 
-        fit_attempt <- tryCatch({
-          dge_i <- edgeR::DGEList(counts = comparison_counts)
-          dge_i <- edgeR::calcNormFactors(dge_i, method = "TMM")
-          voom_i <- variancePartition::voomWithDreamWeights(
-            dge_i,
-            comparison_formula,
-            data = comparison_metadata
+      comparison_metadata <- as.data.frame(stratum_metadata)
+      rownames(comparison_metadata) <- comparison_metadata$SAMPLENAME
+      comparison_metadata$PATIENTCODE <- factor(comparison_metadata$PATIENTCODE)
+      for (v in formula_vars) {
+        comparison_metadata[[v]] <- factor(
+          as.character(comparison_metadata[[v]]),
+          levels = observed_levels[[v]]
+        )
+      }
+
+      design <- stats::model.matrix(fixed_formula, data = comparison_metadata)
+      if (qr(design)$rank < ncol(design)) {
+        record_failure(stratum_values, "Fixed-effect design matrix is rank-deficient")
+        next
+      }
+
+      sample_ids <- comparison_metadata$SAMPLENAME
+      comparison_counts <- filtered_count_matrix[, sample_ids, drop = FALSE]
+
+      fit_attempt <- tryCatch({
+        dge_i <- edgeR::DGEList(counts = comparison_counts)
+        dge_i <- edgeR::calcNormFactors(dge_i, method = "TMM")
+        voom_i <- variancePartition::voomWithDreamWeights(
+          dge_i,
+          full_formula,
+          data = comparison_metadata
+        )
+        fit_i <- variancePartition::dream(
+          voom_i,
+          full_formula,
+          data = comparison_metadata
+        )
+        limma::eBayes(fit_i)
+      }, error = function(e) e)
+
+      if (inherits(fit_attempt, "error")) {
+        record_failure(stratum_values, conditionMessage(fit_attempt))
+        next
+      }
+
+      raw_coef_names <- colnames(fit_attempt$coefficients)
+      if (is.null(raw_coef_names)) {
+        raw_coef_names <- colnames(design)
+      }
+      # Defensive robustness check (requirement: handle coefficient names
+      # robustly with make.names()): our factor levels are simple alphanumeric
+      # strings, so make.names() should be a no-op. If it is not, the mapping
+      # from formula terms to fitted coefficients is not safe, so skip rather
+      # than silently mis-map a contrast.
+      if (!identical(raw_coef_names, make.names(raw_coef_names, unique = TRUE))) {
+        record_failure(
+          stratum_values,
+          "Design coefficient names are not syntactically valid; cannot map interaction terms safely"
+        )
+        next
+      }
+      interaction_coefs <- raw_coef_names[grepl(":", raw_coef_names, fixed = TRUE)]
+      if (length(interaction_coefs) == 0) {
+        record_failure(stratum_values, "No interaction coefficients were estimated")
+        next
+      }
+
+      for (term in interaction_coefs) {
+        top_i <- tryCatch(
+          limma::topTable(fit_attempt, coef = term, number = Inf, sort.by = "none"),
+          error = function(e) e
+        )
+        if (inherits(top_i, "error")) {
+          record_failure(
+            stratum_values,
+            paste0("topTable failed for ", term, ": ", conditionMessage(top_i))
           )
-          fit_i <- variancePartition::dream(
-            voom_i,
-            comparison_formula,
-            data = comparison_metadata,
-            L = contrast_matrix
-          )
-          fit_i <- limma::eBayes(fit_i)
-          top_i <- limma::topTable(fit_i, coef = 1, number = Inf, sort.by = "none")
-          top_i$GENEID <- rownames(top_i)
-          tibble::as_tibble(top_i)
-        }, error = function(e) e)
-
-        if (inherits(fit_attempt, "error")) {
-          family_failures[[failure_i]] <- tibble::tibble(
-            analysis = family_name,
-            group_var = group_var,
-            contrast = contrast_label,
-            contrast_id = contrast_id,
-            failure_reason = conditionMessage(fit_attempt)
-          ) %>% dplyr::bind_cols(tibble::as_tibble(context))
-          failure_i <- failure_i + 1L
           next
         }
-
-        result_table <- fit_attempt %>%
+        top_i$GENEID <- rownames(top_i)
+        interaction_order <- lengths(gregexpr(":", term, fixed = TRUE)) + 1L
+        result_table <- tibble::as_tibble(top_i) %>%
           dplyr::mutate(
             analysis = family_name,
-            group_var = group_var,
-            contrast = contrast_label,
-            contrast_id = contrast_id,
-            group_first = pair[[1]],
-            group_second = pair[[2]],
+            tier = tier,
+            term = term,
+            interaction_order = interaction_order,
+            contrast_id = paste(family_name, context_string(stratum_values), term, sep = " | "),
             q.value = .data$adj.P.Val,
             significant = !is.na(q.value) & q.value < RNA_ADJ_P_CUTOFF,
             deg_class = dplyr::case_when(
-              significant & logFC >= RNA_LOG2FC_CUTOFF ~ "Up in second group",
-              significant & logFC <= -RNA_LOG2FC_CUTOFF ~ "Up in first group",
+              significant & logFC >= RNA_LOG2FC_CUTOFF ~ "Positive interaction",
+              significant & logFC <= -RNA_LOG2FC_CUTOFF ~ "Negative interaction",
               TRUE ~ "Not significant"
             )
           )
@@ -643,26 +719,69 @@ if (!RUN_DREAM_MODELS) {
     )
   }
 
-  infection_fit <- run_dream_family(
-    "INFECTION",
-    c("AIRWAY", "HORMONE", "TIMEPOINT", "EXPOSURE", "SEX"),
-    "infection"
+  # Primary tests -------------------------------------------------------
+  primary_infection_hormone <- run_dream_interaction_family(
+    formula_vars = c("INFECTION", "HORMONE"),
+    strata_vars = c("AIRWAY", "SEX", "EXPOSURE"),
+    family_name = "infection_by_hormone",
+    tier = "primary"
   )
-  sex_fit <- run_dream_family(
-    "SEX",
-    c("AIRWAY", "HORMONE", "TIMEPOINT", "EXPOSURE", "INFECTION"),
-    "sex"
+  primary_infection_exposure <- run_dream_interaction_family(
+    formula_vars = c("INFECTION", "EXPOSURE"),
+    strata_vars = c("AIRWAY", "SEX", "HORMONE"),
+    family_name = "infection_by_exposure",
+    tier = "primary"
   )
-  exposure_fit <- run_dream_family(
-    "EXPOSURE",
-    c("AIRWAY", "HORMONE", "TIMEPOINT", "SEX", "INFECTION"),
-    "exposure"
+
+  # Secondary test --------------------------------------------------------
+  secondary_hormone_exposure <- run_dream_interaction_family(
+    formula_vars = c("HORMONE", "EXPOSURE"),
+    strata_vars = c("AIRWAY", "SEX", "INFECTION"),
+    family_name = "hormone_by_exposure",
+    tier = "secondary"
   )
+
   rnaseq_model_results <- dplyr::bind_rows(
-    infection_fit$results, sex_fit$results, exposure_fit$results
+    primary_infection_hormone$results,
+    primary_infection_exposure$results,
+    secondary_hormone_exposure$results
   )
   rnaseq_model_failures <- dplyr::bind_rows(
-    infection_fit$failures, sex_fit$failures, exposure_fit$failures
+    primary_infection_hormone$failures,
+    primary_infection_exposure$failures,
+    secondary_hormone_exposure$failures
+  )
+
+  # Combined-sex sanity checks (exploratory only; kept separate from the
+  # primary/secondary results used for the volcano/overlap plots below).
+  sanity_infection_hormone_sex <- run_dream_interaction_family(
+    formula_vars = c("INFECTION", "HORMONE", "SEX"),
+    strata_vars = c("AIRWAY", "EXPOSURE"),
+    family_name = "infection_by_hormone_sanity",
+    tier = "sanity"
+  )
+  sanity_infection_exposure_sex <- run_dream_interaction_family(
+    formula_vars = c("INFECTION", "EXPOSURE", "SEX"),
+    strata_vars = c("AIRWAY", "HORMONE"),
+    family_name = "infection_by_exposure_sanity",
+    tier = "sanity"
+  )
+  sanity_hormone_exposure_sex <- run_dream_interaction_family(
+    formula_vars = c("HORMONE", "EXPOSURE", "SEX"),
+    strata_vars = c("AIRWAY", "INFECTION"),
+    family_name = "hormone_by_exposure_sanity",
+    tier = "sanity"
+  )
+
+  rnaseq_sanity_results <- dplyr::bind_rows(
+    sanity_infection_hormone_sex$results,
+    sanity_infection_exposure_sex$results,
+    sanity_hormone_exposure_sex$results
+  )
+  rnaseq_sanity_failures <- dplyr::bind_rows(
+    sanity_infection_hormone_sex$failures,
+    sanity_infection_exposure_sex$failures,
+    sanity_hormone_exposure_sex$failures
   )
 
   save_table(
@@ -677,123 +796,67 @@ if (!RUN_DREAM_MODELS) {
     rnaseq_model_results %>% dplyr::filter(significant),
     file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dream_significant_results.csv")
   )
+  save_table(
+    rnaseq_sanity_results,
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dream_sanity_results.csv")
+  )
+  save_table(
+    rnaseq_sanity_failures,
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dream_sanity_failures.csv")
+  )
 }
 ```
 
 ```{r dream-results-preview}
 if (nrow(rnaseq_model_results) == 0) {
-  message("No DREAM model results are available to preview.")
+  message("No primary/secondary DREAM interaction results are available to preview.")
 } else {
   knitr::kable(
     rnaseq_model_results %>%
-      dplyr::arrange(analysis, q.value, GENEID) %>%
-      dplyr::select(analysis, AIRWAY, HORMONE, TIMEPOINT, INFECTION,
-                    SEX, EXPOSURE, contrast, GENEID, logFC, P.Value,
-                    q.value, significant, deg_class) %>%
+      dplyr::arrange(tier, analysis, q.value, GENEID) %>%
+      dplyr::select(
+        tier, analysis, dplyr::any_of(c("AIRWAY", "SEX", "HORMONE", "EXPOSURE", "INFECTION")),
+        term, GENEID, logFC, P.Value, q.value, significant, deg_class
+      ) %>%
       utils::head(20),
     digits = 3,
-    caption = "Top HPIV3 RNA-seq DREAM/voom differential-expression results"
+    caption = "Top primary/secondary HPIV3 RNA-seq DREAM/voom interaction results"
   )
 }
 ```
 
-# Dose-response summaries
-
-```{r dose-response}
-if (!vst_available) {
-  message("Dose-response summaries skipped because VST values are unavailable.")
+```{r dream-sanity-preview}
+if (nrow(rnaseq_sanity_results) == 0) {
+  message("No combined-sex sanity-check DREAM interaction results are available to preview.")
 } else {
-  vst_long <- as.data.frame(vst_matrix, check.names = FALSE) %>%
-    dplyr::mutate(GENEID = rownames(vst_matrix)) %>%
-    tidyr::pivot_longer(
-      cols = -GENEID,
-      names_to = "SAMPLENAME",
-      values_to = "VST"
-    ) %>%
-    dplyr::left_join(selected_metadata, by = "SAMPLENAME")
-
-  rnaseq_dose_summary <- vst_long %>%
-    dplyr::mutate(
-      dose = suppressWarnings(as.numeric(
-        stringr::str_extract(as.character(EXPOSURE), "\\d+(?:\\.\\d+)?$")
-      ))
-    ) %>%
-    dplyr::group_by(GENEID, AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION, EXPOSURE, dose) %>%
-    dplyr::summarise(
-      n_samples = sum(!is.na(VST)),
-      mean_vst = mean(VST, na.rm = TRUE),
-      sd_vst = stats::sd(VST, na.rm = TRUE),
-      .groups = "drop"
-    ) %>%
-    dplyr::mutate(
-      mean_vst = ifelse(is.nan(mean_vst), NA_real_, mean_vst),
-      sd_vst = ifelse(is.na(sd_vst) | is.nan(sd_vst), 0, sd_vst)
-    )
-  save_table(
-    rnaseq_dose_summary,
-    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dose_response_summary.csv")
+  knitr::kable(
+    rnaseq_sanity_results %>%
+      dplyr::arrange(analysis, interaction_order, q.value, GENEID) %>%
+      dplyr::select(
+        analysis, dplyr::any_of(c("AIRWAY", "HORMONE", "EXPOSURE", "INFECTION")),
+        term, interaction_order, GENEID, logFC, P.Value, q.value, significant, deg_class
+      ) %>%
+      utils::head(20),
+    digits = 3,
+    caption = "Exploratory combined-sex sanity-check interaction results (not used for volcano/overlap plots)"
   )
-
-  dose_plot_data <- rnaseq_dose_summary %>%
-    dplyr::filter(!is.na(dose)) %>%
-    dplyr::group_by(GENEID, EXPOSURE, dose) %>%
-    dplyr::summarise(mean_vst = mean(mean_vst, na.rm = TRUE), .groups = "drop") %>%
-    dplyr::filter(is.finite(mean_vst)) %>%
-    dplyr::group_by(GENEID) %>%
-    dplyr::summarise(vst_range = diff(range(mean_vst, na.rm = TRUE)), .groups = "drop") %>%
-    dplyr::arrange(dplyr::desc(vst_range)) %>%
-    utils::head(12) %>%
-    dplyr::select(GENEID) %>%
-    dplyr::inner_join(
-      rnaseq_dose_summary %>%
-        dplyr::filter(!is.na(dose)) %>%
-        dplyr::group_by(GENEID, EXPOSURE, dose) %>%
-        dplyr::summarise(mean_vst = mean(mean_vst, na.rm = TRUE), .groups = "drop") %>%
-        dplyr::filter(is.finite(mean_vst)),
-      by = "GENEID"
-    )
-
-  if (nrow(dose_plot_data) > 0) {
-    p_dose <- ggplot2::ggplot(
-      dose_plot_data,
-      ggplot2::aes(x = dose, y = mean_vst, color = EXPOSURE, group = EXPOSURE)
-    ) +
-      ggplot2::geom_line(alpha = 0.65) +
-      ggplot2::geom_point(size = 1.8) +
-      ggplot2::facet_wrap(~ GENEID, scales = "free_y") +
-      ggplot2::theme_minimal(base_size = 11) +
-      ggplot2::labs(
-        title = "VST expression across numeric exposure doses",
-        subtitle = "Up to 12 genes with greatest VST range; means are pooled across observed metadata strata",
-        x = "Numeric exposure suffix",
-        y = "Mean VST expression",
-        color = "Exposure"
-      )
-    print(p_dose)
-    save_plot(
-      file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dose_response.png"),
-      p_dose,
-      width = 14,
-      height = 10
-    )
-  } else {
-    message("Dose-response plot skipped; exposure labels have no numeric suffix.")
-  }
 }
 ```
 
 # Volcano plots and unique/shared significant genes
 
+Volcano and unique/shared-gene overlap outputs below use only the primary/secondary interaction results (`rnaseq_model_results`); combined-sex sanity-check results (`rnaseq_sanity_results`) are exported separately and are not mixed into these plots.
+
 ```{r volcano-and-overlap}
 if (nrow(rnaseq_model_results) == 0) {
-  message("Volcano and gene-overlap outputs require DREAM results; no model results are available.")
+  message("Volcano and gene-overlap outputs require primary/secondary DREAM interaction results; none are available.")
 } else {
   volcano_data <- rnaseq_model_results %>%
     dplyr::mutate(
       neg_log10_q = -log10(pmax(q.value, .Machine$double.xmin)),
       volcano_class = dplyr::case_when(
-        significant & logFC >= RNA_LOG2FC_CUTOFF ~ "Up in second group",
-        significant & logFC <= -RNA_LOG2FC_CUTOFF ~ "Up in first group",
+        significant & logFC >= RNA_LOG2FC_CUTOFF ~ "Positive interaction",
+        significant & logFC <= -RNA_LOG2FC_CUTOFF ~ "Negative interaction",
         TRUE ~ "Not significant"
       ),
       plot_panel = contrast_id
@@ -812,17 +875,17 @@ if (nrow(rnaseq_model_results) == 0) {
       color = "grey50"
     ) +
     ggplot2::scale_color_manual(values = c(
-      "Up in first group" = "#2C7BB6",
+      "Negative interaction" = "#2C7BB6",
       "Not significant" = "grey75",
-      "Up in second group" = "#D7191C"
+      "Positive interaction" = "#D7191C"
     )) +
     ggplot2::facet_wrap(~ plot_panel, scales = "free_y") +
     ggplot2::theme_minimal(base_size = 10) +
     ggplot2::theme(legend.position = "bottom") +
     ggplot2::labs(
-      title = "HPIV3 RNA-seq DREAM/voom volcano plots",
-      subtitle = paste("First", length(volcano_panels), "model comparisons"),
-      x = "Estimated log2 fold change (second group − first group)",
+      title = "HPIV3 RNA-seq DREAM/voom interaction volcano plots",
+      subtitle = paste("First", length(volcano_panels), "primary/secondary interaction terms"),
+      x = "Interaction log2 fold-change (dream coefficient)",
       y = "−log10 adjusted p-value",
       color = NULL
     )
