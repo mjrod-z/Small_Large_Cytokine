@@ -248,6 +248,242 @@ build_hpiv3_analysis_data <- function(
     )
   }
 
+  build_hpiv3_rnaseq_data <- function(
+      count_path = here::here(PATH_DATA_RAW, "HPIV3_RNA_data.csv"),
+      metadata_path = here::here(PATH_DATA_RAW, "HPIV3_metadata.csv")) {
+    if (!file.exists(count_path)) {
+      stop("Missing HPIV3 RNA-seq count file: ", count_path)
+    }
+    if (!file.exists(metadata_path)) {
+      stop("Missing HPIV3 metadata file: ", metadata_path)
+    }
+
+    counts_raw <- readr::read_csv(
+      count_path,
+      show_col_types = FALSE,
+      col_types = readr::cols(.default = readr::col_character())
+    )
+    metadata_raw <- readr::read_csv(
+      metadata_path,
+      show_col_types = FALSE,
+      col_types = readr::cols(.default = readr::col_character())
+    )
+    if (ncol(counts_raw) < 2 || names(counts_raw)[[1]] != "GENEID") {
+      stop("HPIV3 RNA-seq counts must have GENEID as the first column and at least one sample column.")
+    }
+    assert_required_columns(
+      metadata_raw,
+      c("SAMPLEID", "AIRWAY", "PATIENTCODE", "EXPOSURE", "HORMONE", "INFECTION", "SEX"),
+      "HPIV3 metadata"
+    )
+
+    sample_names <- names(counts_raw)[-1]
+    if (anyNA(sample_names) || any(!nzchar(trimws(sample_names))) || anyDuplicated(sample_names)) {
+      stop("HPIV3 RNA-seq sample column names must be non-empty and unique.")
+    }
+    if (anyDuplicated(counts_raw$GENEID) || any(is.na(counts_raw$GENEID)) ||
+        any(!nzchar(trimws(counts_raw$GENEID)))) {
+      stop("HPIV3 RNA-seq GENEID values must be non-empty and unique.")
+    }
+
+    sample_parts <- extract_hpiv3_sample_components(sample_names)
+    counts <- counts_raw %>%
+      dplyr::mutate(GENEID = trimws(as.character(GENEID))) %>%
+      dplyr::mutate(dplyr::across(
+        dplyr::all_of(sample_names),
+        ~ suppressWarnings(as.numeric(.x))
+      ))
+    count_values <- unlist(counts[sample_names], use.names = FALSE)
+    if (anyNA(count_values) || any(!is.finite(count_values)) ||
+        any(count_values < 0) || any(count_values != floor(count_values))) {
+      stop("HPIV3 RNA-seq sample columns must contain finite, non-negative integer raw counts.")
+    }
+
+    metadata_std <- metadata_raw %>%
+      dplyr::mutate(
+        SAMPLEID = trimws(as.character(SAMPLEID)),
+        AIRWAY = trimws(as.character(AIRWAY)),
+        PATIENTCODE = trimws(as.character(PATIENTCODE)),
+        EXPOSURE = trimws(as.character(EXPOSURE)),
+        INFECTION = normalize_hpiv3_infection(INFECTION, "metadata INFECTION"),
+        HORMONE = normalize_hpiv3_hormone(HORMONE),
+        SEX = priority_factor(toupper(trimws(as.character(SEX))), c("F", "M"))
+      )
+    if (anyDuplicated(metadata_std$SAMPLEID)) {
+      stop("HPIV3 metadata must contain at most one row per SAMPLEID.")
+    }
+
+    unmatched_count_ids <- tibble::tibble(
+      SAMPLENAME = sort(setdiff(sample_parts$SAMPLENAME, sample_names))
+    )
+    unmatched_metadata_ids <- tibble::tibble(
+      SAMPLEID = sort(setdiff(unique(metadata_std$SAMPLEID), unique(sample_parts$SAMPLEID)))
+    )
+    unmatched_sample_ids <- tibble::tibble(
+      SAMPLEID = sort(setdiff(unique(sample_parts$SAMPLEID), unique(metadata_std$SAMPLEID)))
+    )
+    if (nrow(unmatched_sample_ids) > 0 || nrow(unmatched_metadata_ids) > 0) {
+      warning(
+        "HPIV3 RNA-seq SAMPLEID mismatches detected: ",
+        nrow(unmatched_sample_ids), " count-only, ",
+        nrow(unmatched_metadata_ids), " metadata-only."
+      )
+    }
+
+    sample_data <- sample_parts %>%
+      dplyr::left_join(metadata_std, by = "SAMPLEID") %>%
+      dplyr::mutate(
+        TIMEPOINT = priority_factor(TIMEPOINT, c("24", "72"), sort_remaining = TRUE),
+        AIRWAY = priority_factor(AIRWAY),
+        SEX = priority_factor(SEX, c("F", "M")),
+        CELLTYPE = AIRWAY
+      ) %>%
+      apply_factor_spec()
+
+    count_matrix <- as.matrix(counts[, sample_names, drop = FALSE])
+    storage.mode(count_matrix) <- "numeric"
+    rownames(count_matrix) <- counts$GENEID
+    colnames(count_matrix) <- sample_names
+
+    long_counts <- counts %>%
+      tidyr::pivot_longer(
+        cols = dplyr::all_of(sample_names),
+        names_to = "SAMPLENAME",
+        values_to = "COUNT"
+      ) %>%
+      dplyr::left_join(sample_data, by = "SAMPLENAME") %>%
+      dplyr::select(
+        SAMPLENAME, SAMPLEID, TIMEPOINT, AIRWAY, CELLTYPE, PATIENTCODE,
+        EXPOSURE, HORMONE, INFECTION, SEX, GENEID, COUNT,
+        dplyr::any_of(c("AGE", "RACE", "SMOKER"))
+      )
+
+    list(
+      data = long_counts,
+      sample_data = sample_data,
+      count_matrix = count_matrix,
+      gene_cols = rownames(count_matrix),
+      qc = list(
+        unmatched_count_ids = unmatched_count_ids,
+        unmatched_sample_ids = unmatched_sample_ids,
+        unmatched_metadata_ids = unmatched_metadata_ids
+      )
+    )
+  }
+
+  filter_hpiv3_rnaseq_genes <- function(data, min_total_count = GENE_BACKGROUND_THRESHOLD) {
+    stopifnot(is.data.frame(data), all(c("GENEID", "COUNT") %in% names(data)))
+    if (length(min_total_count) != 1 || is.na(min_total_count) || min_total_count < 0) {
+      stop("min_total_count must be a single non-negative number.")
+    }
+    qc <- data %>%
+      dplyr::group_by(GENEID) %>%
+      dplyr::summarise(
+        total_count = sum(COUNT, na.rm = TRUE),
+        n_samples = dplyr::n_distinct(SAMPLENAME),
+        included_background = total_count >= min_total_count,
+        .groups = "drop"
+      )
+    list(
+      data = data %>% dplyr::semi_join(
+        qc %>% dplyr::filter(included_background) %>% dplyr::select(GENEID),
+        by = "GENEID"
+      ),
+      qc = qc
+    )
+  }
+
+  compute_hpiv3_rnaseq_filter_qc <- function(
+      data,
+      cpm_threshold = 1,
+      min_sample_fraction = 0.5,
+      strata_cols = c("AIRWAY", "HORMONE", "TIMEPOINT")) {
+    stopifnot(is.data.frame(data), all(c("GENEID", "SAMPLENAME", "COUNT") %in% names(data)))
+    if (length(cpm_threshold) != 1 || is.na(cpm_threshold) || cpm_threshold < 0 ||
+        length(min_sample_fraction) != 1 || is.na(min_sample_fraction) ||
+        min_sample_fraction < 0 || min_sample_fraction > 1) {
+      stop("CPM threshold must be non-negative and sample fraction must be between 0 and 1.")
+    }
+    missing_strata <- setdiff(strata_cols, names(data))
+    if (length(missing_strata) > 0) {
+      stop("RNA-seq filter data is missing stratum columns: ", paste(missing_strata, collapse = ", "))
+    }
+
+    library_sizes <- data %>%
+      dplyr::distinct(SAMPLENAME, .data[[strata_cols[[1]]]], .data[[if (length(strata_cols) > 1) strata_cols[[2]] else strata_cols[[1]]]])
+    sample_libraries <- data %>%
+      dplyr::group_by(SAMPLENAME) %>%
+      dplyr::summarise(library_size = sum(COUNT, na.rm = TRUE), .groups = "drop")
+    cpm_data <- data %>%
+      dplyr::left_join(sample_libraries, by = "SAMPLENAME") %>%
+      dplyr::mutate(CPM = dplyr::if_else(library_size > 0, COUNT / library_size * 1e6, 0))
+
+    stratum_qc <- cpm_data %>%
+      dplyr::group_by(dplyr::across(dplyr::all_of(c("GENEID", strata_cols)))) %>%
+      dplyr::summarise(
+        n_samples = dplyr::n_distinct(SAMPLENAME),
+        n_samples_above_threshold = dplyr::n_distinct(SAMPLENAME[CPM >= cpm_threshold]),
+        fraction_above_threshold = n_samples_above_threshold / n_samples,
+        passes_stratum = fraction_above_threshold >= min_sample_fraction,
+        .groups = "drop"
+      )
+    gene_status <- stratum_qc %>%
+      dplyr::group_by(GENEID) %>%
+      dplyr::summarise(
+        max_fraction_above_threshold = max(fraction_above_threshold, na.rm = TRUE),
+        included_completeness = any(passes_stratum),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        cpm_threshold = cpm_threshold,
+        min_sample_fraction = min_sample_fraction
+      )
+
+    list(qc = stratum_qc, gene_status = gene_status)
+  }
+
+  normalize_hpiv3_rnaseq <- function(count_matrix, method = c("TMM", "median_ratio")) {
+    method <- match.arg(method)
+    count_matrix <- as.matrix(count_matrix)
+    if (is.null(rownames(count_matrix)) || is.null(colnames(count_matrix)) ||
+        anyNA(count_matrix) || any(count_matrix < 0) ||
+        any(count_matrix != floor(count_matrix))) {
+      stop("count_matrix must be a non-negative integer matrix with gene and sample names.")
+    }
+    if (!requireNamespace("DESeq2", quietly = TRUE)) {
+      stop("The DESeq2 package is required for HPIV3 RNA-seq VST normalization.")
+    }
+
+    if (method == "TMM") {
+      if (!requireNamespace("edgeR", quietly = TRUE)) {
+        stop("The edgeR package is required for TMM normalization.")
+      }
+      dge <- edgeR::DGEList(counts = count_matrix)
+      dge <- edgeR::calcNormFactors(dge, method = "TMM")
+      size_factors <- dge$samples$lib.size * dge$samples$norm.factors
+      size_factors <- size_factors / exp(mean(log(size_factors)))
+    } else {
+      size_factors <- DESeq2::estimateSizeFactorsForMatrix(count_matrix)
+    }
+
+    names(size_factors) <- colnames(count_matrix)
+    normalized_counts <- sweep(count_matrix, 2, size_factors, "/")
+    dds <- DESeq2::DESeqDataSetFromMatrix(
+      countData = round(count_matrix),
+      colData = S4Vectors::DataFrame(row.names = colnames(count_matrix)),
+      design = ~ 1
+    )
+    DESeq2::sizeFactors(dds) <- size_factors
+    vst_values <- SummarizedExperiment::assay(DESeq2::varianceStabilizingTransformation(dds, blind = TRUE))
+
+    list(
+      method = method,
+      size_factors = tibble::tibble(SAMPLENAME = names(size_factors), size_factor = as.numeric(size_factors)),
+      normalized_counts = normalized_counts,
+      vst = vst_values
+    )
+  }
+
   protein_raw <- readr::read_csv(
     protein_path,
     show_col_types = FALSE,
