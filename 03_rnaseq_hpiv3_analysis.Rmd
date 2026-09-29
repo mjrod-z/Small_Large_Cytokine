@@ -857,7 +857,7 @@ if (nrow(rnaseq_model_results) == 0) {
     dplyr::group_by(analysis, GENEID) %>%
     dplyr::summarise(
       significant_contrasts = list(sort(unique(contrast_id[significant]))),
-      n_significant_contrasts = length(significant_contrasts[[1]]),
+      n_significant_contrasts = length(unique(contrast_id[significant])),
       membership_class = dplyr::case_when(
         n_significant_contrasts == 0 ~ "Not significant",
         n_significant_contrasts == 1 ~ "Unique",
