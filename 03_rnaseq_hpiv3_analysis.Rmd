@@ -1,0 +1,1080 @@
+---
+title: "HPIV3 RNA-seq Analysis"
+author: "MJR"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: journal
+    code_folding: hide
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "output/reports",
+      knit_root_dir = "."
+    )
+  })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 12,
+  fig.height = 9
+)
+set.seed(4454)
+```
+
+# Setup
+
+```{r load-packages}
+source(here::here("_load_all.R"))
+
+RNA_OUTPUT_SUBDIR <- "rna_seq"
+RNA_COUNT_FILE <- here::here(PATH_DATA_RAW, "HPIV3_RNA_data.csv")
+RNA_METADATA_FILE <- here::here(PATH_DATA_RAW, "HPIV3_metadata.csv")
+MJR_SAMPLE_PATTERN <- getOption("hpiv3.rnaseq.mjr_pattern", "MJR")
+RNA_CPM_THRESHOLD <- 1
+RNA_MIN_SAMPLE_FRACTION <- 0.5
+RNA_MIN_TOTAL_COUNT <- GENE_BACKGROUND_THRESHOLD
+RNA_ADJ_P_CUTOFF <- ADJ_P_CUTOFF
+RNA_LOG2FC_CUTOFF <- LOG2FC_CUTOFF
+RUN_NORMALIZATION <- TRUE
+RUN_DREAM_MODELS <- FALSE
+MAX_VOLCANO_PANELS <- 12L
+GSEA_RESULTS_PATH <- getOption("hpiv3.rnaseq.gsea_file", NULL)
+
+cat("✓ HPIV3 RNA-seq report configuration loaded\n")
+cat("  Counts          :", RNA_COUNT_FILE, "\n")
+cat("  Metadata        :", RNA_METADATA_FILE, "\n")
+cat("  MJR sample regex:", MJR_SAMPLE_PATTERN, "\n")
+cat("  Output directory:", file.path(PATH_OUTPUT, RNA_OUTPUT_SUBDIR), "\n")
+cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
+```
+
+# Analysis specifications at a glance
+
+- **Sample selection:** retain sample IDs matching `MJR_SAMPLE_PATTERN`
+  (default: `"MJR"`), with matched metadata and a non-zero library size.
+  Unmatched IDs and per-sample library sizes/gene detection are reported; no
+  minimum library-size threshold is applied.
+- **Input/QC checks:** require unique, non-empty gene and sample IDs; finite,
+  non-negative integer raw counts; unique metadata `SAMPLEID`s; and recognized
+  infection (`NONE`/`HPIV3`) and hormone (`NONE`/`E2`) labels. Required metadata
+  fields are `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and
+  `SEX`; `AGE`, `RACE`, and `SMOKER` are optional.
+- **Gene filtering:** retain genes with at least 10 total raw counts across
+  selected samples and CPM ≥ 1 in at least 50% of samples in at least one
+  observed `AIRWAY × HORMONE × TIMEPOINT` stratum. These defaults are controlled
+  by `RNA_MIN_TOTAL_COUNT`, `RNA_CPM_THRESHOLD`, and `RNA_MIN_SAMPLE_FRACTION`.
+  Per-stratum and final gene inclusion tables are exported.
+- **Normalization/QC:** by default, edgeR TMM factors are calculated on the
+  filtered raw-count matrix. Effective library sizes are scaled to geometric
+  mean 1 and used to produce normalized counts and blind DESeq2 VST values
+  (`blind = TRUE`). Size factors, both matrices, and a VST PCA (when possible)
+  are exported. Set `RUN_NORMALIZATION <- FALSE` to skip; if a required
+  Bioconductor package is unavailable, normalization/VST and dependent plots
+  are skipped with a message.
+- **Differential expression:** DREAM/voom modeling is disabled by default
+  (`RUN_DREAM_MODELS <- FALSE`) because the stratified pairwise models can be
+  expensive. If enabled, models use TMM-normalized voom weights and a
+  `PATIENTCODE` random intercept.
+- **Outputs:** generated tables and figures are written below
+  `output/rna_seq/`; only precomputed GSEA results are read from an explicitly
+  configured optional path.
+
+# Data contract and QC rules
+
+Required inputs use repository conventions: `data/raw/HPIV3_RNA_data.csv` has
+`GENEID` in its first column and one raw-count column per sample; column names
+may optionally end in `_<TIMEPOINT>` (for example, `<SAMPLEID>_24`); names
+without a suffix are treated as sample IDs with a missing timepoint. The required
+`data/raw/HPIV3_metadata.csv` has one row per `SAMPLEID` and the columns
+`SAMPLEID`, `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and
+`SEX`. Optional metadata columns `AGE`, `RACE`, and `SMOKER` are retained when
+present. Sample IDs matching the configurable `MJR_SAMPLE_PATTERN` are selected.
+
+The report rejects malformed or duplicate gene/sample identifiers, non-finite,
+negative, or non-integer raw counts, duplicate metadata IDs, and unexpected
+infection or hormone labels. Count sample IDs are split at their final
+underscore and matched to metadata by `SAMPLEID`; unmatched IDs are exported
+and count samples without metadata are excluded. Zero-library and non-MJR
+samples are excluded. No arbitrary minimum library-size cutoff is imposed.
+
+Genes must have at least `RNA_MIN_TOTAL_COUNT` total counts and CPM ≥
+`RNA_CPM_THRESHOLD` in at least `RNA_MIN_SAMPLE_FRACTION` of samples in one or
+more observed `AIRWAY × HORMONE × TIMEPOINT` strata. The report records the
+per-stratum and per-gene filtering decisions. Infection, sex, exposure, airway,
+hormone, and timepoint dimensions are reported from the matched RNA-seq sample
+metadata; no protein-only fields are required.
+
+# Load counts and prepare analysis-ready data
+
+```{r load-rnaseq-data}
+if (!file.exists(RNA_COUNT_FILE)) {
+  stop("Required HPIV3 RNA-seq counts are missing: ", RNA_COUNT_FILE)
+}
+if (!file.exists(RNA_METADATA_FILE)) {
+  stop("Required HPIV3 RNA-seq metadata are missing: ", RNA_METADATA_FILE)
+}
+
+counts_raw <- readr::read_csv(
+  RNA_COUNT_FILE,
+  show_col_types = FALSE,
+  col_types = readr::cols(.default = readr::col_character())
+)
+metadata_raw <- readr::read_csv(
+  RNA_METADATA_FILE,
+  show_col_types = FALSE,
+  col_types = readr::cols(.default = readr::col_character())
+)
+
+required_metadata <- c(
+  "SAMPLEID", "AIRWAY", "PATIENTCODE", "EXPOSURE", "HORMONE", "INFECTION", "SEX"
+)
+missing_metadata <- setdiff(required_metadata, names(metadata_raw))
+if (length(missing_metadata) > 0) {
+  stop("HPIV3 metadata is missing required columns: ",
+       paste(missing_metadata, collapse = ", "))
+}
+if (ncol(counts_raw) < 2 || names(counts_raw)[[1]] != "GENEID") {
+  stop("RNA-seq counts must have GENEID as the first column and at least one sample column.")
+}
+
+sample_names <- names(counts_raw)[-1]
+if (anyNA(sample_names) || any(!nzchar(trimws(sample_names))) || anyDuplicated(sample_names)) {
+  stop("RNA-seq sample column names must be non-empty and unique.")
+}
+if (anyNA(counts_raw$GENEID) || any(!nzchar(trimws(counts_raw$GENEID))) ||
+    anyDuplicated(counts_raw$GENEID)) {
+  stop("RNA-seq GENEID values must be non-empty and unique.")
+}
+
+trimmed_sample_names <- trimws(sample_names)
+sample_parts <- stringr::str_match(trimmed_sample_names, "^(.*)_([^_]+)$")
+has_timepoint <- !is.na(sample_parts[, 1])
+bad_sample_names <- (has_timepoint &
+  (!nzchar(sample_parts[, 2]) | !nzchar(sample_parts[, 3]))) |
+  (!has_timepoint & grepl("_", trimmed_sample_names))
+if (any(bad_sample_names)) {
+  stop(
+    "Unable to split sample column names into SAMPLEID and TIMEPOINT: ",
+    paste(utils::head(sample_names[bad_sample_names], 10), collapse = ", ")
+  )
+}
+sample_ids <- trimmed_sample_names
+timepoints <- rep(NA_character_, length(sample_names))
+sample_ids[has_timepoint] <- sample_parts[has_timepoint, 2]
+timepoints[has_timepoint] <- sample_parts[has_timepoint, 3]
+sample_map <- tibble::tibble(
+  SAMPLENAME = sample_names,
+  SAMPLEID = sample_ids,
+  TIMEPOINT = timepoints
+)
+
+counts_numeric <- counts_raw %>%
+  dplyr::mutate(
+    GENEID = trimws(as.character(GENEID)),
+    dplyr::across(
+      dplyr::all_of(sample_names),
+      ~ suppressWarnings(as.numeric(.x))
+    )
+  )
+count_matrix_all <- as.matrix(counts_numeric[, sample_names, drop = FALSE])
+storage.mode(count_matrix_all) <- "numeric"
+if (anyNA(count_matrix_all) || any(!is.finite(count_matrix_all)) ||
+    any(count_matrix_all < 0) || any(count_matrix_all != floor(count_matrix_all))) {
+  stop("RNA-seq sample columns must contain finite, non-negative integer raw counts.")
+}
+rownames(count_matrix_all) <- counts_numeric$GENEID
+colnames(count_matrix_all) <- sample_names
+
+metadata_std <- metadata_raw %>%
+  dplyr::mutate(
+    SAMPLEID = trimws(as.character(SAMPLEID)),
+    AIRWAY = trimws(as.character(AIRWAY)),
+    PATIENTCODE = trimws(as.character(PATIENTCODE)),
+    EXPOSURE = trimws(as.character(EXPOSURE)),
+    INFECTION = toupper(trimws(as.character(INFECTION))),
+    HORMONE = toupper(trimws(as.character(HORMONE))),
+    SEX = toupper(trimws(as.character(SEX)))
+  )
+for (col in intersect(
+  c("AIRWAY", "PATIENTCODE", "EXPOSURE", "SEX", "AGE", "RACE", "SMOKER"),
+  names(metadata_std)
+)) {
+  blank_value <- !is.na(metadata_std[[col]]) & metadata_std[[col]] == ""
+  metadata_std[[col]][blank_value] <- NA_character_
+}
+for (col in c("INFECTION", "HORMONE")) {
+  blank_or_na <- !is.na(metadata_std[[col]]) &
+    metadata_std[[col]] %in% c("", "NA")
+  metadata_std[[col]][blank_or_na] <- NA_character_
+}
+no_infection <- !is.na(metadata_std$INFECTION) & metadata_std$INFECTION == "NO"
+metadata_std$INFECTION[no_infection] <- "NONE"
+unexpected_infection <- setdiff(
+  unique(stats::na.omit(metadata_std$INFECTION)),
+  c("NONE", "HPIV3")
+)
+unexpected_hormone <- setdiff(
+  unique(stats::na.omit(metadata_std$HORMONE)),
+  c("NONE", "E2")
+)
+if (length(unexpected_infection) > 0) {
+  stop("Unexpected INFECTION values (expected NONE/NO or HPIV3): ",
+       paste(sort(unexpected_infection), collapse = ", "))
+}
+if (length(unexpected_hormone) > 0) {
+  stop("Unexpected HORMONE values (expected NONE or E2): ",
+       paste(sort(unexpected_hormone), collapse = ", "))
+}
+if (anyDuplicated(metadata_std$SAMPLEID)) {
+  stop("HPIV3 metadata must contain at most one row per SAMPLEID.")
+}
+if (anyNA(metadata_std$SAMPLEID) || any(!nzchar(metadata_std$SAMPLEID))) {
+  stop("HPIV3 metadata SAMPLEID values must be non-empty.")
+}
+
+metadata_fields <- intersect(c("AGE", "RACE", "SMOKER"), names(metadata_std))
+sample_metadata <- sample_map %>%
+  dplyr::left_join(metadata_std, by = "SAMPLEID") %>%
+  dplyr::mutate(
+    TIMEPOINT = factor(TIMEPOINT, levels = unique(stats::na.omit(TIMEPOINT))),
+    AIRWAY = factor(AIRWAY),
+    HORMONE = factor(HORMONE, levels = c("NONE", "E2")),
+    INFECTION = factor(INFECTION, levels = c("NONE", "HPIV3")),
+    SEX = factor(SEX, levels = c("M", "F")),
+    CELLTYPE = AIRWAY
+  )
+
+mjr_keep <- grepl(MJR_SAMPLE_PATTERN, sample_metadata$SAMPLEID, ignore.case = TRUE)
+if (!any(mjr_keep)) {
+  stop("No RNA-seq samples matched MJR_SAMPLE_PATTERN = '", MJR_SAMPLE_PATTERN,
+       "'. Set options(hpiv3.rnaseq.mjr_pattern = '<pattern>') to match the sample IDs.")
+}
+matched_keep <- sample_metadata$SAMPLEID %in% metadata_std$SAMPLEID
+library_sizes_all <- colSums(count_matrix_all)
+sample_metadata$library_size <- as.numeric(library_sizes_all[sample_metadata$SAMPLENAME])
+sample_metadata$n_genes_detected <- as.integer(
+  colSums(count_matrix_all > 0)[sample_metadata$SAMPLENAME]
+)
+sample_metadata$selected_MJR <- mjr_keep
+sample_metadata$has_metadata <- matched_keep
+sample_metadata$keep_sample <- mjr_keep & matched_keep & sample_metadata$library_size > 0
+
+unmatched_count_ids <- sample_map %>%
+  dplyr::filter(!SAMPLEID %in% metadata_std$SAMPLEID) %>%
+  dplyr::distinct(SAMPLEID, SAMPLENAME)
+unmatched_metadata_ids <- tibble::tibble(
+  SAMPLEID = sort(setdiff(metadata_std$SAMPLEID, unique(sample_map$SAMPLEID)))
+)
+if (nrow(unmatched_count_ids) > 0 || nrow(unmatched_metadata_ids) > 0) {
+  message(
+    "Sample-ID mismatch: ", nrow(unmatched_count_ids), " count sample(s), ",
+    nrow(unmatched_metadata_ids), " metadata ID(s). See exported QC tables."
+  )
+}
+if (sum(sample_metadata$keep_sample) == 0) {
+  stop("No MJR RNA-seq samples remain after metadata matching and zero-library filtering.")
+}
+
+selected_metadata <- sample_metadata %>%
+  dplyr::filter(keep_sample) %>%
+  dplyr::arrange(match(SAMPLENAME, colnames(count_matrix_all)))
+count_matrix <- count_matrix_all[, selected_metadata$SAMPLENAME, drop = FALSE]
+
+analysis_ready_counts <- data.frame(
+  GENEID = rownames(count_matrix),
+  count_matrix,
+  check.names = FALSE
+)
+analysis_ready_metadata <- selected_metadata %>%
+  dplyr::select(
+    SAMPLENAME, SAMPLEID, TIMEPOINT, AIRWAY, CELLTYPE, PATIENTCODE,
+    EXPOSURE, HORMONE, INFECTION, SEX, dplyr::all_of(metadata_fields),
+    library_size, n_genes_detected
+  )
+
+save_table(analysis_ready_counts,
+           file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_raw_counts_mjr.csv"))
+save_table(analysis_ready_metadata,
+           file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_analysis_ready_metadata.csv"))
+save_table(unmatched_count_ids,
+           file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_unmatched_count_sample_ids.csv"))
+save_table(unmatched_metadata_ids,
+           file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_unmatched_metadata_sample_ids.csv"))
+save_table(sample_metadata,
+           file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_sample_qc.csv"))
+
+cat("✓ RNA-seq inputs matched and filtered\n")
+cat("  Genes in raw matrix:", nrow(count_matrix), "\n")
+cat("  MJR samples kept   :", ncol(count_matrix), "\n")
+cat("  AIRWAY             :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$AIRWAY)))), collapse = " | "), "\n")
+cat("  HORMONE            :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$HORMONE)))), collapse = " | "), "\n")
+cat("  TIMEPOINT          :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$TIMEPOINT)))), collapse = " | "), "\n")
+cat("  INFECTION          :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$INFECTION)))), collapse = " | "), "\n")
+cat("  SEX                :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$SEX)))), collapse = " | "), "\n")
+cat("  EXPOSURE           :", paste(sort(unique(stats::na.omit(as.character(selected_metadata$EXPOSURE)))), collapse = " | "), "\n")
+```
+
+```{r sample-qc-preview}
+knitr::kable(
+  analysis_ready_metadata %>%
+    dplyr::select(SAMPLENAME, SAMPLEID, AIRWAY, TIMEPOINT, INFECTION, SEX,
+                  HORMONE, EXPOSURE, library_size, n_genes_detected) %>%
+    utils::head(20),
+  caption = "First 20 retained MJR RNA-seq samples and library QC"
+)
+```
+
+# Low-abundance filtering and QC summaries
+
+```{r rnaseq-filtering}
+library_sizes <- colSums(count_matrix)
+cpm_matrix <- sweep(count_matrix, 2, library_sizes / 1e6, "/")
+cpm_matrix[, library_sizes == 0] <- 0
+strata_cols <- c("AIRWAY", "HORMONE", "TIMEPOINT")
+strata_values <- unique(selected_metadata[, strata_cols, drop = FALSE])
+stratum_filter_rows <- vector("list", nrow(strata_values))
+
+for (i in seq_len(nrow(strata_values))) {
+  stratum_i <- strata_values[i, , drop = FALSE]
+  sample_idx <- rep(TRUE, nrow(selected_metadata))
+  for (col in strata_cols) {
+    value_i <- as.character(stratum_i[[col]][[1]])
+    if (is.na(value_i)) {
+      sample_idx <- sample_idx & is.na(selected_metadata[[col]])
+    } else {
+      sample_idx <- sample_idx & !is.na(selected_metadata[[col]]) &
+        as.character(selected_metadata[[col]]) == value_i
+    }
+  }
+  sample_names_i <- selected_metadata$SAMPLENAME[sample_idx]
+  fraction_above <- if (length(sample_names_i) == 0) {
+    rep(0, nrow(cpm_matrix))
+  } else {
+    rowMeans(cpm_matrix[, sample_names_i, drop = FALSE] >= RNA_CPM_THRESHOLD)
+  }
+  stratum_filter_rows[[i]] <- tibble::tibble(
+    GENEID = rownames(cpm_matrix),
+    AIRWAY = as.character(stratum_i$AIRWAY[[1]]),
+    HORMONE = as.character(stratum_i$HORMONE[[1]]),
+    TIMEPOINT = as.character(stratum_i$TIMEPOINT[[1]]),
+    n_samples = length(sample_names_i),
+    fraction_above_cpm = fraction_above,
+    passes_stratum = fraction_above >= RNA_MIN_SAMPLE_FRACTION
+  )
+}
+
+rnaseq_stratum_qc <- dplyr::bind_rows(stratum_filter_rows)
+total_count <- rowSums(count_matrix)
+rnaseq_gene_status <- rnaseq_stratum_qc %>%
+  dplyr::group_by(GENEID) %>%
+  dplyr::summarise(
+    max_fraction_above_cpm = max(fraction_above_cpm, na.rm = TRUE),
+    passes_any_stratum = any(passes_stratum),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    total_count = unname(total_count[match(GENEID, names(total_count))]),
+    passes_total_count = total_count >= RNA_MIN_TOTAL_COUNT,
+    included = passes_any_stratum & passes_total_count,
+    cpm_threshold = RNA_CPM_THRESHOLD,
+    min_sample_fraction = RNA_MIN_SAMPLE_FRACTION,
+    min_total_count = RNA_MIN_TOTAL_COUNT
+  )
+
+save_table(rnaseq_stratum_qc,
+           file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_gene_filter_by_stratum.csv"))
+save_table(rnaseq_gene_status,
+           file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_gene_filter_status.csv"))
+knitr::kable(
+  rnaseq_gene_status %>%
+    dplyr::count(included, name = "n_genes") %>%
+    dplyr::arrange(dplyr::desc(included)),
+  caption = "Gene inclusion counts after low-abundance filtering"
+)
+
+included_genes <- rnaseq_gene_status %>%
+  dplyr::filter(included) %>%
+  dplyr::pull(GENEID)
+if (length(included_genes) == 0) {
+  stop("No genes passed the configured raw-count/CPM filters; review the QC exports and thresholds.")
+}
+filtered_count_matrix <- count_matrix[included_genes, , drop = FALSE]
+```
+
+# TMM normalization, VST, and sample-level QC
+
+TMM-normalized counts and variance-stabilized counts are produced when the
+Bioconductor packages used by the repository's RNA-seq workflow are available.
+If they are not installed, raw-count QC and filtering still complete and this
+section reports the missing optional packages. Set `RUN_NORMALIZATION <- FALSE`
+to skip normalization explicitly.
+
+```{r normalize-vst}
+normalization_packages <- c("edgeR", "DESeq2", "S4Vectors", "SummarizedExperiment")
+missing_normalization_packages <- normalization_packages[
+  !vapply(normalization_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+vst_available <- FALSE
+
+if (!RUN_NORMALIZATION) {
+  message("Normalization skipped because RUN_NORMALIZATION is FALSE.")
+} else if (length(missing_normalization_packages) > 0) {
+  message(
+    "Normalization/VST skipped; missing packages: ",
+    paste(missing_normalization_packages, collapse = ", ")
+  )
+} else {
+  dge <- edgeR::DGEList(counts = filtered_count_matrix)
+  dge <- edgeR::calcNormFactors(dge, method = "TMM")
+  effective_library_size <- dge$samples$lib.size * dge$samples$norm.factors
+  size_factors <- effective_library_size /
+    exp(mean(log(effective_library_size[effective_library_size > 0])))
+  names(size_factors) <- colnames(filtered_count_matrix)
+  normalized_count_matrix <- sweep(filtered_count_matrix, 2, size_factors, "/")
+
+  vst_dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(filtered_count_matrix),
+    colData = S4Vectors::DataFrame(
+      row.names = colnames(filtered_count_matrix)
+    ),
+    design = ~ 1
+  )
+  DESeq2::sizeFactors(vst_dds) <- size_factors
+  vst_matrix <- SummarizedExperiment::assay(
+    DESeq2::varianceStabilizingTransformation(vst_dds, blind = TRUE)
+  )
+  vst_available <- TRUE
+
+  save_table(
+    data.frame(GENEID = rownames(normalized_count_matrix), normalized_count_matrix,
+               check.names = FALSE),
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_tmm_normalized_counts.csv")
+  )
+  save_table(
+    data.frame(GENEID = rownames(vst_matrix), vst_matrix, check.names = FALSE),
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_vst_counts.csv")
+  )
+  save_table(
+    tibble::tibble(SAMPLENAME = names(size_factors), size_factor = as.numeric(size_factors)),
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_tmm_size_factors.csv")
+  )
+}
+```
+
+```{r pca-qc}
+if (!vst_available) {
+  message("PCA skipped because VST values are unavailable.")
+} else if (ncol(vst_matrix) < 3) {
+  message("PCA skipped; at least three retained samples are needed.")
+} else {
+  variable_genes <- apply(vst_matrix, 1, stats::var, na.rm = TRUE) > 0
+  if (sum(variable_genes) < 2) {
+    message("PCA skipped; fewer than two variable genes remain.")
+  } else {
+    pca <- stats::prcomp(t(vst_matrix[variable_genes, , drop = FALSE]), center = TRUE)
+    pca_scores <- as.data.frame(pca$x[, 1:2, drop = FALSE]) %>%
+      tibble::rownames_to_column("SAMPLENAME") %>%
+      dplyr::left_join(selected_metadata, by = "SAMPLENAME")
+    variance_pct <- 100 * pca$sdev^2 / sum(pca$sdev^2)
+    p_pca <- ggplot2::ggplot(
+      pca_scores,
+      ggplot2::aes(x = PC1, y = PC2, color = INFECTION, shape = SEX)
+    ) +
+      ggplot2::geom_point(size = 3, alpha = 0.85) +
+      ggplot2::facet_wrap(~ AIRWAY + TIMEPOINT, scales = "free") +
+      ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::labs(
+        title = "HPIV3 RNA-seq PCA (VST)",
+        x = sprintf("PC1 (%.1f%%)", variance_pct[[1]]),
+        y = sprintf("PC2 (%.1f%%)", variance_pct[[2]]),
+        color = "Infection",
+        shape = "Sex"
+      )
+    print(p_pca)
+    save_plot(
+      file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_pca_vst.png"),
+      p_pca,
+      width = 13,
+      height = 9
+    )
+  }
+}
+```
+
+# DREAM/voom differential expression
+
+The mixed-model step is deliberately off by default because fitting all
+airway/timepoint/hormone/infection/exposure/sex strata can be expensive. Set
+`RUN_DREAM_MODELS <- TRUE` in the setup chunk to run it. When enabled, each
+pairwise comparison uses raw integer counts, TMM normalization, voom precision
+weights, and a `PATIENTCODE` random intercept. Contrasts are:
+
+- Infection (`HPIV3` versus `NONE`) within airway, hormone, timepoint, exposure,
+  and sex.
+- Sex (`F` versus `M`) within airway, hormone, timepoint, exposure, and
+  infection.
+- All pairwise exposure comparisons within airway, hormone, timepoint, sex, and
+  infection.
+
+```{r dream-models}
+rnaseq_model_results <- tibble::tibble()
+rnaseq_model_failures <- tibble::tibble()
+
+if (!RUN_DREAM_MODELS) {
+  message("DREAM/voom differential expression skipped (RUN_DREAM_MODELS is FALSE).")
+} else {
+  dream_packages <- c("edgeR", "limma", "variancePartition")
+  missing_dream_packages <- dream_packages[
+    !vapply(dream_packages, requireNamespace, logical(1), quietly = TRUE)
+  ]
+  if (length(missing_dream_packages) > 0) {
+    stop(
+      "RUN_DREAM_MODELS is TRUE, but these required packages are missing: ",
+      paste(missing_dream_packages, collapse = ", ")
+    )
+  }
+
+  run_dream_family <- function(group_var, strata_vars, family_name) {
+    required_model_fields <- unique(c(group_var, strata_vars, "PATIENTCODE"))
+    model_metadata <- selected_metadata %>%
+      dplyr::select(SAMPLENAME, dplyr::all_of(required_model_fields))
+    strata <- unique(model_metadata[, strata_vars, drop = FALSE])
+    family_results <- list()
+    family_failures <- list()
+    result_i <- 1L
+    failure_i <- 1L
+
+    for (stratum_i in seq_len(nrow(strata))) {
+      stratum_values <- strata[stratum_i, , drop = FALSE]
+      in_stratum <- rep(TRUE, nrow(model_metadata))
+      for (col in strata_vars) {
+        value_i <- as.character(stratum_values[[col]][[1]])
+        if (is.na(value_i)) {
+          in_stratum <- in_stratum & is.na(model_metadata[[col]])
+        } else {
+          in_stratum <- in_stratum & !is.na(model_metadata[[col]]) &
+            as.character(model_metadata[[col]]) == value_i
+        }
+      }
+      stratum_metadata <- model_metadata[in_stratum, , drop = FALSE] %>%
+        dplyr::filter(
+          !is.na(.data[[group_var]]),
+          !is.na(PATIENTCODE),
+          nzchar(PATIENTCODE)
+        )
+      observed_groups <- unique(as.character(stratum_metadata[[group_var]]))
+      group_levels <- switch(
+        group_var,
+        INFECTION = intersect(c("NONE", "HPIV3"), observed_groups),
+        SEX = intersect(c("M", "F"), observed_groups),
+        sort(observed_groups)
+      )
+      if (length(group_levels) < 2) next
+      pairs <- utils::combn(group_levels, 2, simplify = FALSE)
+
+      for (pair in pairs) {
+        comparison_metadata <- stratum_metadata %>%
+          dplyr::filter(as.character(.data[[group_var]]) %in% pair) %>%
+          dplyr::mutate(GROUP = factor(as.character(.data[[group_var]]), levels = pair))
+        comparison_metadata <- as.data.frame(comparison_metadata)
+        rownames(comparison_metadata) <- comparison_metadata$SAMPLENAME
+        comparison_metadata$PATIENTCODE <- factor(comparison_metadata$PATIENTCODE)
+        group_counts <- table(comparison_metadata$GROUP)
+        contrast_label <- paste(pair[[2]], "minus", pair[[1]])
+        contrast_context <- paste(
+          vapply(
+            strata_vars,
+            function(col) paste0(
+              col, "=",
+              ifelse(is.na(stratum_values[[col]][[1]]), "<missing>",
+                     as.character(stratum_values[[col]][[1]]))
+            ),
+            character(1)
+          ),
+          collapse = " | "
+        )
+        contrast_id <- paste(family_name, contrast_context, contrast_label, sep = " | ")
+        context <- as.list(stratum_values)
+
+        if (any(group_counts < 2)) {
+          family_failures[[failure_i]] <- tibble::tibble(
+            analysis = family_name,
+            group_var = group_var,
+            contrast = contrast_label,
+            contrast_id = contrast_id,
+            failure_reason = "Fewer than two samples in at least one group"
+          ) %>% dplyr::bind_cols(tibble::as_tibble(context))
+          failure_i <- failure_i + 1L
+          next
+        }
+
+        sample_ids <- comparison_metadata$SAMPLENAME
+        comparison_counts <- filtered_count_matrix[, sample_ids, drop = FALSE]
+        comparison_formula <- ~ 0 + GROUP + (1 | PATIENTCODE)
+        design <- stats::model.matrix(~ 0 + GROUP, data = comparison_metadata)
+        coefficient_names <- colnames(design)
+        first_coef <- make.names(paste0("GROUP", pair[[1]]))
+        second_coef <- make.names(paste0("GROUP", pair[[2]]))
+        if (!all(c(first_coef, second_coef) %in% coefficient_names)) {
+          family_failures[[failure_i]] <- tibble::tibble(
+            analysis = family_name,
+            group_var = group_var,
+            contrast = contrast_label,
+            contrast_id = contrast_id,
+            failure_reason = "Could not map group levels to design-matrix coefficients"
+          ) %>% dplyr::bind_cols(tibble::as_tibble(context))
+          failure_i <- failure_i + 1L
+          next
+        }
+        contrast_matrix <- limma::makeContrasts(
+          contrasts = paste0(second_coef, "-", first_coef),
+          levels = design
+        )
+
+        fit_attempt <- tryCatch({
+          dge_i <- edgeR::DGEList(counts = comparison_counts)
+          dge_i <- edgeR::calcNormFactors(dge_i, method = "TMM")
+          voom_i <- variancePartition::voomWithDreamWeights(
+            dge_i,
+            comparison_formula,
+            data = comparison_metadata
+          )
+          fit_i <- variancePartition::dream(
+            voom_i,
+            comparison_formula,
+            data = comparison_metadata,
+            L = contrast_matrix
+          )
+          fit_i <- limma::eBayes(fit_i)
+          top_i <- limma::topTable(fit_i, coef = 1, number = Inf, sort.by = "none")
+          top_i$GENEID <- rownames(top_i)
+          tibble::as_tibble(top_i)
+        }, error = function(e) e)
+
+        if (inherits(fit_attempt, "error")) {
+          family_failures[[failure_i]] <- tibble::tibble(
+            analysis = family_name,
+            group_var = group_var,
+            contrast = contrast_label,
+            contrast_id = contrast_id,
+            failure_reason = conditionMessage(fit_attempt)
+          ) %>% dplyr::bind_cols(tibble::as_tibble(context))
+          failure_i <- failure_i + 1L
+          next
+        }
+
+        result_table <- fit_attempt %>%
+          dplyr::mutate(
+            analysis = family_name,
+            group_var = group_var,
+            contrast = contrast_label,
+            contrast_id = contrast_id,
+            group_first = pair[[1]],
+            group_second = pair[[2]],
+            q.value = .data$adj.P.Val,
+            significant = !is.na(q.value) & q.value < RNA_ADJ_P_CUTOFF,
+            deg_class = dplyr::case_when(
+              significant & logFC >= RNA_LOG2FC_CUTOFF ~ "Up in second group",
+              significant & logFC <= -RNA_LOG2FC_CUTOFF ~ "Up in first group",
+              TRUE ~ "Not significant"
+            )
+          )
+        for (col in strata_vars) {
+          result_table[[col]] <- as.character(stratum_values[[col]][[1]])
+        }
+        family_results[[result_i]] <- result_table
+        result_i <- result_i + 1L
+      }
+    }
+
+    list(
+      results = dplyr::bind_rows(family_results),
+      failures = dplyr::bind_rows(family_failures)
+    )
+  }
+
+  infection_fit <- run_dream_family(
+    "INFECTION",
+    c("AIRWAY", "HORMONE", "TIMEPOINT", "EXPOSURE", "SEX"),
+    "infection"
+  )
+  sex_fit <- run_dream_family(
+    "SEX",
+    c("AIRWAY", "HORMONE", "TIMEPOINT", "EXPOSURE", "INFECTION"),
+    "sex"
+  )
+  exposure_fit <- run_dream_family(
+    "EXPOSURE",
+    c("AIRWAY", "HORMONE", "TIMEPOINT", "SEX", "INFECTION"),
+    "exposure"
+  )
+  rnaseq_model_results <- dplyr::bind_rows(
+    infection_fit$results, sex_fit$results, exposure_fit$results
+  )
+  rnaseq_model_failures <- dplyr::bind_rows(
+    infection_fit$failures, sex_fit$failures, exposure_fit$failures
+  )
+
+  save_table(
+    rnaseq_model_results,
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dream_all_results.csv")
+  )
+  save_table(
+    rnaseq_model_failures,
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dream_failures.csv")
+  )
+  save_table(
+    rnaseq_model_results %>% dplyr::filter(significant),
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dream_significant_results.csv")
+  )
+}
+```
+
+```{r dream-results-preview}
+if (nrow(rnaseq_model_results) == 0) {
+  message("No DREAM model results are available to preview.")
+} else {
+  knitr::kable(
+    rnaseq_model_results %>%
+      dplyr::arrange(analysis, q.value, GENEID) %>%
+      dplyr::select(analysis, AIRWAY, HORMONE, TIMEPOINT, INFECTION,
+                    SEX, EXPOSURE, contrast, GENEID, logFC, P.Value,
+                    q.value, significant, deg_class) %>%
+      utils::head(20),
+    digits = 3,
+    caption = "Top HPIV3 RNA-seq DREAM/voom differential-expression results"
+  )
+}
+```
+
+# Dose-response summaries
+
+```{r dose-response}
+if (!vst_available) {
+  message("Dose-response summaries skipped because VST values are unavailable.")
+} else {
+  vst_long <- as.data.frame(vst_matrix, check.names = FALSE) %>%
+    dplyr::mutate(GENEID = rownames(vst_matrix)) %>%
+    tidyr::pivot_longer(
+      cols = -GENEID,
+      names_to = "SAMPLENAME",
+      values_to = "VST"
+    ) %>%
+    dplyr::left_join(selected_metadata, by = "SAMPLENAME")
+
+  rnaseq_dose_summary <- vst_long %>%
+    dplyr::mutate(
+      dose = suppressWarnings(as.numeric(
+        stringr::str_extract(as.character(EXPOSURE), "\\d+(?:\\.\\d+)?$")
+      ))
+    ) %>%
+    dplyr::group_by(GENEID, AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION, EXPOSURE, dose) %>%
+    dplyr::summarise(
+      n_samples = sum(!is.na(VST)),
+      mean_vst = mean(VST, na.rm = TRUE),
+      sd_vst = stats::sd(VST, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      mean_vst = ifelse(is.nan(mean_vst), NA_real_, mean_vst),
+      sd_vst = ifelse(is.na(sd_vst) | is.nan(sd_vst), 0, sd_vst)
+    )
+  save_table(
+    rnaseq_dose_summary,
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dose_response_summary.csv")
+  )
+
+  dose_plot_data <- rnaseq_dose_summary %>%
+    dplyr::filter(!is.na(dose)) %>%
+    dplyr::group_by(GENEID, EXPOSURE, dose) %>%
+    dplyr::summarise(mean_vst = mean(mean_vst, na.rm = TRUE), .groups = "drop") %>%
+    dplyr::filter(is.finite(mean_vst)) %>%
+    dplyr::group_by(GENEID) %>%
+    dplyr::summarise(vst_range = diff(range(mean_vst, na.rm = TRUE)), .groups = "drop") %>%
+    dplyr::arrange(dplyr::desc(vst_range)) %>%
+    utils::head(12) %>%
+    dplyr::select(GENEID) %>%
+    dplyr::inner_join(
+      rnaseq_dose_summary %>%
+        dplyr::filter(!is.na(dose)) %>%
+        dplyr::group_by(GENEID, EXPOSURE, dose) %>%
+        dplyr::summarise(mean_vst = mean(mean_vst, na.rm = TRUE), .groups = "drop") %>%
+        dplyr::filter(is.finite(mean_vst)),
+      by = "GENEID"
+    )
+
+  if (nrow(dose_plot_data) > 0) {
+    p_dose <- ggplot2::ggplot(
+      dose_plot_data,
+      ggplot2::aes(x = dose, y = mean_vst, color = EXPOSURE, group = EXPOSURE)
+    ) +
+      ggplot2::geom_line(alpha = 0.65) +
+      ggplot2::geom_point(size = 1.8) +
+      ggplot2::facet_wrap(~ GENEID, scales = "free_y") +
+      ggplot2::theme_minimal(base_size = 11) +
+      ggplot2::labs(
+        title = "VST expression across numeric exposure doses",
+        subtitle = "Up to 12 genes with greatest VST range; means are pooled across observed metadata strata",
+        x = "Numeric exposure suffix",
+        y = "Mean VST expression",
+        color = "Exposure"
+      )
+    print(p_dose)
+    save_plot(
+      file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dose_response.png"),
+      p_dose,
+      width = 14,
+      height = 10
+    )
+  } else {
+    message("Dose-response plot skipped; exposure labels have no numeric suffix.")
+  }
+}
+```
+
+# Volcano plots and unique/shared significant genes
+
+```{r volcano-and-overlap}
+if (nrow(rnaseq_model_results) == 0) {
+  message("Volcano and gene-overlap outputs require DREAM results; no model results are available.")
+} else {
+  volcano_data <- rnaseq_model_results %>%
+    dplyr::mutate(
+      neg_log10_q = -log10(pmax(q.value, .Machine$double.xmin)),
+      volcano_class = dplyr::case_when(
+        significant & logFC >= RNA_LOG2FC_CUTOFF ~ "Up in second group",
+        significant & logFC <= -RNA_LOG2FC_CUTOFF ~ "Up in first group",
+        TRUE ~ "Not significant"
+      ),
+      plot_panel = contrast_id
+    )
+  volcano_panels <- utils::head(unique(volcano_data$plot_panel), MAX_VOLCANO_PANELS)
+  volcano_plot_data <- volcano_data %>%
+    dplyr::filter(plot_panel %in% volcano_panels)
+  p_volcano <- ggplot2::ggplot(
+    volcano_plot_data,
+    ggplot2::aes(x = logFC, y = neg_log10_q, color = volcano_class)
+  ) +
+    ggplot2::geom_point(alpha = 0.55, size = 1) +
+    ggplot2::geom_vline(
+      xintercept = c(-RNA_LOG2FC_CUTOFF, RNA_LOG2FC_CUTOFF),
+      linetype = "dashed",
+      color = "grey50"
+    ) +
+    ggplot2::scale_color_manual(values = c(
+      "Up in first group" = "#2C7BB6",
+      "Not significant" = "grey75",
+      "Up in second group" = "#D7191C"
+    )) +
+    ggplot2::facet_wrap(~ plot_panel, scales = "free_y") +
+    ggplot2::theme_minimal(base_size = 10) +
+    ggplot2::theme(legend.position = "bottom") +
+    ggplot2::labs(
+      title = "HPIV3 RNA-seq DREAM/voom volcano plots",
+      subtitle = paste("First", length(volcano_panels), "model comparisons"),
+      x = "Estimated log2 fold change (second group − first group)",
+      y = "−log10 adjusted p-value",
+      color = NULL
+    )
+  print(p_volcano)
+  save_plot(
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_volcano_overview.png"),
+    p_volcano,
+    width = 15,
+    height = max(8, 3.2 * ceiling(length(volcano_panels) / 3))
+  )
+
+  rnaseq_gene_membership <- rnaseq_model_results %>%
+    dplyr::group_by(analysis, GENEID) %>%
+    dplyr::summarise(
+      significant_contrasts = list(sort(unique(contrast_id[significant]))),
+      n_significant_contrasts = length(unique(contrast_id[significant])),
+      membership_class = dplyr::case_when(
+        n_significant_contrasts == 0 ~ "Not significant",
+        n_significant_contrasts == 1 ~ "Unique",
+        TRUE ~ "Shared"
+      ),
+      .groups = "drop"
+    )
+  rnaseq_gene_membership_long <- rnaseq_gene_membership %>%
+    dplyr::mutate(
+      contrast = purrr::map(
+        significant_contrasts,
+        ~ if (length(.x) == 0) NA_character_ else .x
+      )
+    ) %>%
+    tidyr::unnest_longer(contrast) %>%
+    dplyr::select(
+      analysis, GENEID, contrast, n_significant_contrasts, membership_class
+    )
+  rnaseq_gene_membership_summary <- rnaseq_gene_membership %>%
+    dplyr::count(analysis, membership_class, name = "n_genes")
+
+  save_table(
+    rnaseq_gene_membership_long,
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_unique_shared_gene_membership.csv")
+  )
+  save_table(
+    rnaseq_gene_membership_summary,
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_unique_shared_gene_summary.csv")
+  )
+  p_overlap <- ggplot2::ggplot(
+    rnaseq_gene_membership_summary,
+    ggplot2::aes(x = membership_class, y = n_genes, fill = membership_class)
+  ) +
+    ggplot2::geom_col(show.legend = FALSE) +
+    ggplot2::facet_wrap(~ analysis, scales = "free_y") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::labs(
+      title = "Unique/shared significant-gene overlap across model contrasts",
+      x = NULL,
+      y = "Genes"
+    )
+  print(p_overlap)
+  save_plot(
+    file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_unique_shared_gene_overlap.png"),
+    p_overlap,
+    width = 12,
+    height = 7
+  )
+
+  for (family_name in unique(rnaseq_model_results$analysis)) {
+    family_data <- rnaseq_model_results %>%
+      dplyr::filter(analysis == family_name)
+    overlap_sets <- family_data %>%
+      dplyr::filter(significant) %>%
+      dplyr::count(contrast_id, sort = TRUE) %>%
+      utils::head(10) %>%
+      dplyr::pull(contrast_id)
+    family_membership <- family_data %>%
+      dplyr::filter(contrast_id %in% overlap_sets) %>%
+      dplyr::group_by(GENEID) %>%
+      dplyr::summarise(
+        sig_sets = list(sort(unique(contrast_id[significant]))),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(purrr::map_int(sig_sets, length) > 0)
+
+    if (nrow(family_membership) == 0) {
+      p_upset <- ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = paste("Significant-gene overlap:", family_name),
+          subtitle = "No significant genes in the selected comparisons"
+        )
+    } else {
+      p_upset <- ggplot2::ggplot(
+        family_membership,
+        ggplot2::aes(x = sig_sets)
+      ) +
+        ggplot2::geom_bar(fill = "steelblue") +
+        ggupset::scale_x_upset(order_by = "freq") +
+        ggupset::theme_combmatrix(
+          combmatrix.panel.point.color.fill = "black",
+          combmatrix.panel.line.size = 0
+        ) +
+        ggplot2::theme_minimal(base_size = 10) +
+        ggplot2::labs(
+          title = paste("Significant-gene overlap:", family_name),
+          subtitle = "Intersections across up to 10 comparisons with the most DEGs",
+          x = NULL,
+          y = "Number of genes"
+        )
+    }
+    print(p_upset)
+    save_plot(
+      file.path(
+        RNA_OUTPUT_SUBDIR,
+        paste0("hpiv3_rnaseq_gene_upset_", safe_name(family_name), ".png")
+      ),
+      p_upset,
+      width = 14,
+      height = 9
+    )
+  }
+}
+```
+
+# Optional GSEA results
+
+No GSEA input filename is assumed by this report because the repository does
+not contain a GSEA result file. To use an existing precomputed result file,
+set `options(hpiv3.rnaseq.gsea_file = "/path/to/results.csv")` before knitting.
+The file must include `Pathway`, `NES`, `FDR_qval`, and `sample_name`; otherwise
+the GSEA table and plot are skipped with an explanatory message.
+
+```{r optional-gsea}
+if (is.null(GSEA_RESULTS_PATH) || length(GSEA_RESULTS_PATH) != 1 ||
+    is.na(GSEA_RESULTS_PATH) || !nzchar(GSEA_RESULTS_PATH)) {
+  message("GSEA skipped: no precomputed result path was configured.")
+} else if (!file.exists(GSEA_RESULTS_PATH)) {
+  message("GSEA skipped: configured result file does not exist: ", GSEA_RESULTS_PATH)
+} else {
+  gsea_candidate <- tryCatch(
+    readr::read_csv(GSEA_RESULTS_PATH, show_col_types = FALSE),
+    error = function(e) e
+  )
+  if (inherits(gsea_candidate, "error")) {
+    message("GSEA skipped: could not read configured results: ",
+            conditionMessage(gsea_candidate))
+  } else {
+    required_gsea_cols <- c("Pathway", "NES", "FDR_qval", "sample_name")
+    missing_gsea_cols <- setdiff(required_gsea_cols, names(gsea_candidate))
+    if (length(missing_gsea_cols) > 0) {
+      message(
+        "GSEA skipped: result file is missing columns: ",
+        paste(missing_gsea_cols, collapse = ", ")
+      )
+    } else if (!exists("plot_gsea_barplot", mode = "function")) {
+      message("GSEA skipped: project plot_gsea_barplot() helper is unavailable.")
+    } else {
+      gsea_data <- gsea_candidate %>%
+        dplyr::mutate(
+          NES = suppressWarnings(as.numeric(NES)),
+          FDR_qval = suppressWarnings(as.numeric(FDR_qval))
+        ) %>%
+        dplyr::filter(is.finite(NES), is.finite(FDR_qval))
+      if (nrow(gsea_data) == 0) {
+        message("GSEA skipped: no rows have finite NES and FDR_qval values.")
+      } else {
+        save_table(
+          gsea_data,
+          file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_gsea_results_used.csv")
+        )
+        p_gsea <- plot_gsea_barplot(gsea_data)
+        print(p_gsea)
+        save_plot(
+          file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_gsea_barplot.png"),
+          p_gsea,
+          width = 14,
+          height = 9
+        )
+      }
+    }
+  }
+}
+```
+
+# Session and output summary
+
+```{r session-summary}
+cat("Outputs are written under:", file.path(PATH_OUTPUT, RNA_OUTPUT_SUBDIR), "\n")
+cat("Generated output categories:\n")
+cat("  - MJR-filtered raw count matrix and analysis-ready sample metadata\n")
+cat("  - Unmatched sample-ID tables and per-sample library/gene-detection QC\n")
+cat("  - Per-stratum CPM and total-count gene-filter QC/status tables\n")
+cat("  - TMM-normalized counts, size factors, VST matrix, and PCA (when packages are available)\n")
+cat("  - DREAM/voom all-results, significant DEG, and model-failure tables (when enabled)\n")
+cat("  - VST exposure-dose summaries and dose-response plot (when VST is available)\n")
+cat("  - Volcano overview, unique/shared gene membership, overlap summaries, and UpSet plots (when models are enabled)\n")
+cat("  - Precomputed GSEA table and barplot (only when configured and valid)\n")
+cat("  - Session date:", as.character(Sys.Date()), "\n")
+```
