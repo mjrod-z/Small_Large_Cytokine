@@ -56,6 +56,37 @@ cat("  Output directory:", file.path(PATH_OUTPUT, RNA_OUTPUT_SUBDIR), "\n")
 cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
 ```
 
+# Analysis specifications at a glance
+
+- **Sample selection:** retain sample IDs matching `MJR_SAMPLE_PATTERN`
+  (default: `"MJR"`), with matched metadata and a non-zero library size.
+  Unmatched IDs and per-sample library sizes/gene detection are reported; no
+  minimum library-size threshold is applied.
+- **Input/QC checks:** require unique, non-empty gene and sample IDs; finite,
+  non-negative integer raw counts; unique metadata `SAMPLEID`s; and recognized
+  infection (`NONE`/`HPIV3`) and hormone (`NONE`/`E2`) labels. Required metadata
+  fields are `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and
+  `SEX`; `AGE`, `RACE`, and `SMOKER` are optional.
+- **Gene filtering:** retain genes with at least 10 total raw counts across
+  selected samples and CPM ≥ 1 in at least 50% of samples in at least one
+  observed `AIRWAY × HORMONE × TIMEPOINT` stratum. These defaults are controlled
+  by `RNA_MIN_TOTAL_COUNT`, `RNA_CPM_THRESHOLD`, and `RNA_MIN_SAMPLE_FRACTION`.
+  Per-stratum and final gene inclusion tables are exported.
+- **Normalization/QC:** by default, edgeR TMM factors are calculated on the
+  filtered raw-count matrix. Effective library sizes are scaled to geometric
+  mean 1 and used to produce normalized counts and blind DESeq2 VST values
+  (`blind = TRUE`). Size factors, both matrices, and a VST PCA (when possible)
+  are exported. Set `RUN_NORMALIZATION <- FALSE` to skip; if a required
+  Bioconductor package is unavailable, normalization/VST and dependent plots
+  are skipped with a message.
+- **Differential expression:** DREAM/voom modeling is disabled by default
+  (`RUN_DREAM_MODELS <- FALSE`) because the stratified pairwise models can be
+  expensive. If enabled, models use TMM-normalized voom weights and a
+  `PATIENTCODE` random intercept.
+- **Outputs:** generated tables and figures are written below
+  `output/rna_seq/`; only precomputed GSEA results are read from an explicitly
+  configured optional path.
+
 # Data contract and QC rules
 
 Required inputs use repository conventions: `data/raw/HPIV3_RNA_data.csv` has
