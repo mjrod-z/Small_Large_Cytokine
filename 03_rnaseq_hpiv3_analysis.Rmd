@@ -100,10 +100,11 @@ present. Sample IDs matching the configurable `MJR_SAMPLE_PATTERN` are selected.
 
 The report rejects malformed or duplicate gene/sample identifiers, non-finite,
 negative, or non-integer raw counts, duplicate metadata IDs, and unexpected
-infection or hormone labels. Count sample IDs are split at their final
-underscore and matched to metadata by `SAMPLEID`; unmatched IDs are exported
-and count samples without metadata are excluded. Zero-library and non-MJR
-samples are excluded. No arbitrary minimum library-size cutoff is imposed.
+infection or hormone labels. Count sample IDs with a timepoint suffix are split
+at their final underscore; names without a suffix are matched to metadata as-is.
+Unmatched IDs are exported and count samples without metadata are excluded.
+Zero-library and non-MJR samples are excluded. No arbitrary minimum library-size
+cutoff is imposed.
 
 Genes must have at least `RNA_MIN_TOTAL_COUNT` total counts and CPM ≥
 `RNA_CPM_THRESHOLD` in at least `RNA_MIN_SAMPLE_FRACTION` of samples in one or
