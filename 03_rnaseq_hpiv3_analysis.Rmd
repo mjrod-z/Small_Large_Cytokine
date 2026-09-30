@@ -44,6 +44,20 @@ RNA_ADJ_P_CUTOFF <- ADJ_P_CUTOFF
 RNA_LOG2FC_CUTOFF <- LOG2FC_CUTOFF
 RUN_NORMALIZATION <- TRUE
 RUN_DREAM_MODELS <- FALSE
+
+# Restrict DREAM/voom modeling to a single family and/or a single stratum
+# within that family, for faster iteration/debugging. Leave both NULL to
+# preserve the existing behavior of running every family and every stratum.
+#
+# RUN_DREAM_FAMILY selects one of:
+#   "infection_by_hormone", "infection_by_exposure", "hormone_by_exposure",
+#   "infection_by_hormone_sanity", "infection_by_exposure_sanity",
+#   "hormone_by_exposure_sanity"
+# RUN_DREAM_STRATUM is a named character vector matching the strata_vars of
+# the selected family, e.g. c(AIRWAY = "LAE", SEX = "F", EXPOSURE = "PEAT").
+# It is ignored if RUN_DREAM_FAMILY is NULL.
+RUN_DREAM_FAMILY <- NULL
+RUN_DREAM_STRATUM <- NULL
 MAX_VOLCANO_PANELS <- 12L
 GSEA_RESULTS_PATH <- getOption("hpiv3.rnaseq.gsea_file", NULL)
 
@@ -61,6 +75,16 @@ cat("  Counts          :", RNA_COUNT_FILE, "\n")
 cat("  Metadata        :", RNA_METADATA_FILE, "\n")
 cat("  Output directory:", file.path(PATH_OUTPUT, RNA_OUTPUT_SUBDIR), "\n")
 cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
+cat(
+  "  DREAM family    :",
+  if (is.null(RUN_DREAM_FAMILY)) "<all>" else RUN_DREAM_FAMILY, "\n"
+)
+cat(
+  "  DREAM stratum   :",
+  if (is.null(RUN_DREAM_STRATUM)) "<all>" else paste(
+    names(RUN_DREAM_STRATUM), RUN_DREAM_STRATUM, sep = "=", collapse = ", "
+  ), "\n"
+)
 ```
 
 # Analysis specifications at a glance
@@ -466,6 +490,8 @@ if (!vst_available) {
 
 This section is deliberately off by default (`RUN_DREAM_MODELS <- FALSE`) because fitting every stratum can be expensive. Set `RUN_DREAM_MODELS <- TRUE` in the setup chunk to run it. When enabled, every model uses raw integer counts, TMM normalization, `variancePartition::voomWithDreamWeights()` precision weights, and `variancePartition::dream()` with a `PATIENTCODE` random intercept (`(1 | PATIENTCODE)`).
 
+For faster iteration/debugging, set `RUN_DREAM_FAMILY` in the setup chunk to the name of a single family (e.g. `"infection_by_hormone"`) to run only that family; leave it `NULL` to run all six families as before. Optionally also set `RUN_DREAM_STRATUM` to a named character vector (e.g. `c(AIRWAY = "LAE", SEX = "F", EXPOSURE = "PEAT")`) to further restrict the selected family to a single stratum; leave it `NULL` to run every stratum of the selected family. Skipped families/strata contribute empty result/failure tibbles, so the downstream `bind_rows()`/export code below is unaffected.
+
 ## Why interaction models, and why stratify instead of pooling
 
 The scientific questions of interest are about **effect modification** — e.g. "does E2 change the transcriptional response to HPIV3?" — not simple main effects. Answering that requires an interaction term (`INFECTION * HORMONE`), not two separate simple-effect models compared informally. At the same time, naively fitting one giant model such as `~ AIRWAY * INFECTION * HORMONE * EXPOSURE * SEX + (1 | PATIENTCODE)` would pool across biologically distinct compartments and create unstable, largely untestable high-order terms. Instead, every interaction model below is fit **separately within strata** defined by the remaining biological factors, so that no factor is flattened/pooled into an average that could mask compartment-specific biology. `AIRWAY` is always a stratifying factor (SAE and LAE are different tissues); `SEX` is stratified in the primary/secondary models per investigator request, with combined-sex models kept as separate sanity checks (see below).
@@ -524,6 +550,41 @@ if (!RUN_DREAM_MODELS) {
     SEX = RNA_SEX_LEVELS
   )
 
+  # Returns an empty (zero-row) result/failure pair with the same shape a
+  # real family run would produce, so downstream bind_rows()/export code
+  # continues to work for skipped families.
+  empty_dream_result <- function() {
+    list(
+      results = tibble::tibble(),
+      failures = tibble::tibble()
+    )
+  }
+
+  # A family should run if no family selector is set, or if the selector
+  # matches this family's name.
+  should_run_dream_family <- function(family_name) {
+    is.null(RUN_DREAM_FAMILY) || identical(RUN_DREAM_FAMILY, family_name)
+  }
+
+  # A stratum should run if no stratum selector is set, or if every named
+  # entry in the selector matches this stratum's values. The selector is
+  # only applied to columns it names; it is ignored entirely if it is NULL
+  # or unnamed.
+  should_run_dream_stratum <- function(stratum_values) {
+    if (is.null(RUN_DREAM_STRATUM) ||
+        is.null(names(RUN_DREAM_STRATUM)) ||
+        !any(nzchar(names(RUN_DREAM_STRATUM)))) {
+      return(TRUE)
+    }
+    selector <- RUN_DREAM_STRATUM[nzchar(names(RUN_DREAM_STRATUM))]
+    all(vapply(names(selector), function(col) {
+      if (!col %in% names(stratum_values)) {
+        return(TRUE)
+      }
+      identical(as.character(stratum_values[[col]][[1]]), as.character(selector[[col]]))
+    }, logical(1)))
+  }
+
   run_dream_interaction_family <- function(formula_vars, strata_vars, family_name, tier) {
     required_model_fields <- unique(c(formula_vars, strata_vars, "PATIENTCODE"))
     model_metadata <- selected_metadata %>%
@@ -569,6 +630,9 @@ if (!RUN_DREAM_MODELS) {
 
     for (stratum_i in seq_len(nrow(strata))) {
       stratum_values <- strata[stratum_i, , drop = FALSE]
+      if (!should_run_dream_stratum(stratum_values)) {
+        next
+      }
       in_stratum <- rep(TRUE, nrow(model_metadata))
       for (col in strata_vars) {
         value_i <- as.character(stratum_values[[col]][[1]])
@@ -707,14 +771,32 @@ if (!RUN_DREAM_MODELS) {
     )
   }
 
+  # Runs run_dream_interaction_family() only if this family is selected by
+  # RUN_DREAM_FAMILY (or no family selector is set); otherwise returns an
+  # empty result/failure pair so downstream bind_rows()/export code is
+  # unaffected by skipped families.
+  run_selected_dream_family <- function(formula_vars, strata_vars, family_name, tier) {
+    if (!should_run_dream_family(family_name)) {
+      message("Skipping DREAM family: ", family_name)
+      return(empty_dream_result())
+    }
+    message("Running DREAM family: ", family_name)
+    run_dream_interaction_family(
+      formula_vars = formula_vars,
+      strata_vars = strata_vars,
+      family_name = family_name,
+      tier = tier
+    )
+  }
+
   # Primary tests -------------------------------------------------------
-  primary_infection_hormone <- run_dream_interaction_family(
+  primary_infection_hormone <- run_selected_dream_family(
     formula_vars = c("INFECTION", "HORMONE"),
     strata_vars = c("AIRWAY", "SEX", "EXPOSURE"),
     family_name = "infection_by_hormone",
     tier = "primary"
   )
-  primary_infection_exposure <- run_dream_interaction_family(
+  primary_infection_exposure <- run_selected_dream_family(
     formula_vars = c("INFECTION", "EXPOSURE"),
     strata_vars = c("AIRWAY", "SEX", "HORMONE"),
     family_name = "infection_by_exposure",
@@ -722,7 +804,7 @@ if (!RUN_DREAM_MODELS) {
   )
 
   # Secondary test --------------------------------------------------------
-  secondary_hormone_exposure <- run_dream_interaction_family(
+  secondary_hormone_exposure <- run_selected_dream_family(
     formula_vars = c("HORMONE", "EXPOSURE"),
     strata_vars = c("AIRWAY", "SEX", "INFECTION"),
     family_name = "hormone_by_exposure",
@@ -742,19 +824,19 @@ if (!RUN_DREAM_MODELS) {
 
   # Combined-sex sanity checks (exploratory only; kept separate from the
   # primary/secondary results used for the volcano/overlap plots below).
-  sanity_infection_hormone_sex <- run_dream_interaction_family(
+  sanity_infection_hormone_sex <- run_selected_dream_family(
     formula_vars = c("INFECTION", "HORMONE", "SEX"),
     strata_vars = c("AIRWAY", "EXPOSURE"),
     family_name = "infection_by_hormone_sanity",
     tier = "sanity"
   )
-  sanity_infection_exposure_sex <- run_dream_interaction_family(
+  sanity_infection_exposure_sex <- run_selected_dream_family(
     formula_vars = c("INFECTION", "EXPOSURE", "SEX"),
     strata_vars = c("AIRWAY", "HORMONE"),
     family_name = "infection_by_exposure_sanity",
     tier = "sanity"
   )
-  sanity_hormone_exposure_sex <- run_dream_interaction_family(
+  sanity_hormone_exposure_sex <- run_selected_dream_family(
     formula_vars = c("HORMONE", "EXPOSURE", "SEX"),
     strata_vars = c("AIRWAY", "INFECTION"),
     family_name = "hormone_by_exposure_sanity",
