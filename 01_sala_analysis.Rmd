@@ -104,10 +104,6 @@ ensure_all_analyzed_for_export <- function(df,
 SALA_highdose       <- readr::read_csv(here::here(PATH_DATA_RAW, "SALA_MSD.csv"))
 metadata_SALA1_1152 <- readr::read_csv(here::here(PATH_DATA_RAW, "2025_SALA1_1152_metadata.csv"))
 
-# LDH / TEER — uncomment when data is available
-# LDH_TEER      <- readr::read_csv(here::here(PATH_DATA_RAW, "2023_LDHTEER_MJR1-191_4H.csv"))
-# LDH_TEER$LDH  <- as.numeric(LDH_TEER$LDH)
-
 cat("✓ Raw data loaded\n")
 cat("  MSD rows:", nrow(SALA_highdose),
     "| Metadata rows:", nrow(metadata_SALA1_1152), "\n")
@@ -135,30 +131,152 @@ cat("  EXPOSURE:", paste(levels(SALA_full$EXPOSURE), collapse = " | "), "\n")
 
 # LDH / TEER Analysis
 
-```{r ldh-teer, eval=FALSE}
-# Set eval=TRUE when LDH_TEER data is available
-
-LDH_TEER[LDH_TEER == ""] <- NA
-LDH_TEER_CLEAN <- na.omit(LDH_TEER)
-
-LDH_TEER_AVG <- LDH_TEER_CLEAN %>%
-  dplyr::group_by(PATIENTCODE, CELLTYPE, EXPOSURE, TIMEPOINT,
-                  SEX, GROUP, CONCENTRATION) %>%
-  dplyr::summarize(dplyr::across(c(LDH, TEERPRE, TEERPOST, TEERCHANGE), mean),
-                   .groups = "drop")
-
-LDH_Cytotox <- LDH_TEER_AVG %>%
-  dplyr::group_by(PATIENTCODE) %>%
+```{r ldh-teer, eval=TRUE}
+SALA_TEER <- readr::read_csv(here::here(PATH_DATA_RAW, "SALA_TEER.csv"),
+                              show_col_types = FALSE) %>%
   dplyr::mutate(
-    Cytotox = (LDH - LDH[GROUP == "Control"]) /
-              (LDH[GROUP == "Positive Control"] - LDH[GROUP == "Control"]) * 100
-  ) %>%
-  dplyr::ungroup()
+    TEERCHANGE = as.numeric(TEERCHANGE),
+    LDH = as.numeric(LDH)
+  )
 
-cat("Shapiro-Wilk — Cytotoxicity:\n")
-print(shapiro.test(LDH_Cytotox$Cytotox))
-cat("Shapiro-Wilk — TEER change:\n")
-print(shapiro.test(LDH_Cytotox$TEERCHANGE))
+cat("✓ SALA_TEER loaded\n")
+cat("  Loaded rows:", nrow(SALA_TEER), "\n")
+
+teer_exclusion_reason <- dplyr::case_when(
+  SALA_TEER$EXPOSURE == "Untreated_Control" ~ "Untreated_Control",
+  SALA_TEER$EXPOSURE == "10X Lysis Buffer" ~ "10X Lysis Buffer",
+  stringr::str_detect(SALA_TEER$EXPOSURE, stringr::fixed("+ Paraffin")) ~ "+ Paraffin",
+  !SALA_TEER$EXPOSURE %in% c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES) ~
+    "not PBS/high-dose",
+  TRUE ~ NA_character_
+)
+SALA_TEER$teer_exclusion_reason <- teer_exclusion_reason
+cat("  Excluded rows by reason:\n")
+print(as.data.frame(table(teer_exclusion_reason, useNA = "no")))
+
+SALA_TEER_analyzed <- SALA_TEER %>%
+  dplyr::filter(is.na(teer_exclusion_reason)) %>%
+  dplyr::select(-teer_exclusion_reason) %>%
+  apply_factor_spec() %>%
+  dplyr::mutate(
+    EXPOSURE = factor(EXPOSURE,
+                      levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)),
+    PATIENTCODE = factor(PATIENTCODE)
+  )
+
+cat("  Analyzed rows:", nrow(SALA_TEER_analyzed), "\n")
+
+run_teer_ldh_models <- function(data, response_name, alpha_q = ALPHA_Q) {
+  strata <- tidyr::expand_grid(
+    CELLTYPE = CELLTYPE_LEVELS,
+    HORMONE = HORMONE_LEVELS,
+    SEX = c("All", SEX_LEVELS)
+  )
+
+  results <- purrr::map_dfr(seq_len(nrow(strata)), function(i) {
+    s <- strata[i, ]
+    d <- data %>%
+      dplyr::filter(CELLTYPE == s$CELLTYPE, HORMONE == s$HORMONE)
+    model_data <- if (s$SEX == "All") d else d %>% dplyr::filter(SEX == s$SEX)
+    model_data <- model_data %>%
+      dplyr::mutate(EXPOSURE = droplevels(EXPOSURE))
+
+    if (nrow(model_data) == 0 ||
+        dplyr::n_distinct(model_data$EXPOSURE, na.rm = TRUE) < 2 ||
+        !PBS_LEVEL %in% as.character(model_data$EXPOSURE)) {
+      return(tibble::tibble())
+    }
+
+    fit <- try(
+      exposure_lmer_pairwise(model_data, group = "All",
+                             adjust_method = "fdr",
+                             response_columns = response_name,
+                             ctrl_level = PBS_LEVEL),
+      silent = TRUE
+    )
+    if (inherits(fit, "try-error") || nrow(fit) == 0) {
+      return(tibble::tibble())
+    }
+
+    fit %>%
+      dplyr::mutate(
+        CELLTYPE = s$CELLTYPE,
+        HORMONE = s$HORMONE,
+        SEX = s$SEX,
+        response = response_name,
+        exposure = sub(paste0(" - ", PBS_LEVEL, "$"), "", contrast),
+        p_adj = p.value,
+        p_adjustment_method = "fdr",
+        p_adjustment = paste(
+          "emmeans FDR within each CELLTYPE × HORMONE × SEX model call"
+        ),
+        significant = !is.na(p.value) & p.value < alpha_q
+      )
+  })
+
+  cat("  ", response_name, "analyzed rows:",
+      sum(!is.na(data[[response_name]])), "\n", sep = "")
+  cat("  ", response_name, "significant contrasts:",
+      sum(results$significant, na.rm = TRUE), "\n", sep = "")
+  results
+}
+
+teer_lmer_results <- run_teer_ldh_models(SALA_TEER_analyzed, "TEERCHANGE")
+ldh_lmer_results <- run_teer_ldh_models(SALA_TEER_analyzed, "LDH")
+teer_ldh_lmer_results <- dplyr::bind_rows(teer_lmer_results, ldh_lmer_results)
+save_table(teer_ldh_lmer_results, "TEERCHANGE_LDH_lmer_results.csv")
+
+plot_teer_ldh <- function(data, response_name, title, filename, y_label) {
+  d <- data %>%
+    dplyr::filter(!is.na(.data[[response_name]])) %>%
+    dplyr::mutate(EXPOSURE = factor(EXPOSURE,
+                                    levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)))
+  means <- d %>%
+    dplyr::group_by(CELLTYPE, HORMONE, EXPOSURE) %>%
+    dplyr::summarise(
+      mean_value = mean(.data[[response_name]], na.rm = TRUE),
+      sd_value = sd(.data[[response_name]], na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  p <- ggplot2::ggplot(d, ggplot2::aes(x = EXPOSURE, y = .data[[response_name]])) +
+    ggplot2::geom_boxplot(ggplot2::aes(fill = EXPOSURE),
+                          outlier.shape = NA, alpha = 0.25, na.rm = TRUE) +
+    ggplot2::geom_jitter(ggplot2::aes(color = SEX),
+                         width = 0.12, height = 0, alpha = 0.8, size = 1.8,
+                         na.rm = TRUE) +
+    ggplot2::geom_errorbar(
+      data = means,
+      ggplot2::aes(x = EXPOSURE,
+                   ymin = mean_value - sd_value, ymax = mean_value + sd_value),
+      width = 0.18, inherit.aes = FALSE
+    ) +
+    ggplot2::geom_point(data = means,
+                        ggplot2::aes(x = EXPOSURE, y = mean_value),
+                        size = 2.5, inherit.aes = FALSE) +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+    ggplot2::facet_grid(CELLTYPE ~ HORMONE, drop = FALSE) +
+    ggplot2::scale_fill_manual(values = color_exposure, drop = FALSE) +
+    ggplot2::scale_x_discrete(drop = FALSE) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 30, hjust = 1),
+                   legend.position = "bottom") +
+    ggplot2::labs(title = title, x = NULL, y = y_label,
+                  caption = "Points are individual samples; points and bars show mean ± SD.")
+  save_plot(filename, p, width = 12, height = 8, dpi = 300, bg = "white")
+  p
+}
+
+teerchange_plot <- plot_teer_ldh(
+  SALA_TEER_analyzed, "TEERCHANGE",
+  "TEERCHANGE (POST - PRE) by exposure",
+  "teerchange_boxplot_all.png", "TEERCHANGE"
+)
+ldh_plot <- plot_teer_ldh(
+  SALA_TEER_analyzed, "LDH",
+  "LDH cytotoxicity by exposure",
+  "ldh_boxplot_all.png", "LDH"
+)
 ```
 
 ------------------------------------------------------------------------
