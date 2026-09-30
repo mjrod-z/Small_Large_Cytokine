@@ -136,6 +136,12 @@ SALA_TEER <- readr::read_csv(here::here(PATH_DATA_RAW, "SALA_TEER.csv"),
                               show_col_types = FALSE) %>%
   dplyr::mutate(
     EXPOSURE = stringr::str_replace_all(stringr::str_squish(EXPOSURE), " ", "_"),
+    HORMONE = stringr::str_squish(as.character(HORMONE)),
+    HORMONE = dplyr::case_when(
+      stringr::str_to_upper(HORMONE) == "NONE" ~ "NONE",
+      stringr::str_to_upper(HORMONE) %in% c("E2", "ESTRADIOL") ~ "Estradiol",
+      TRUE ~ HORMONE
+    ),
     TEERCHANGE = as.numeric(TEERCHANGE),
     LDH = as.numeric(LDH) * 100
   )
@@ -260,14 +266,14 @@ build_teer_sig_annotations <- function(results, response_name, alpha_q = ALPHA_Q
 }
 
 plot_teer_ldh <- function(data, response_name, title, filename, y_label,
-                          sig_annotations = NULL) {
+                          sig_annotations = NULL, grid_break = NULL) {
   d <- data %>%
     dplyr::filter(!is.na(.data[[response_name]])) %>%
     dplyr::mutate(
       EXPOSURE = factor(EXPOSURE,
                         levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)),
       CELLTYPE = factor(as.character(CELLTYPE), levels = c("LAE", "SAE")),
-      HORMONE = factor(as.character(HORMONE), levels = c("NONE", "Estradiol")),
+      HORMONE = factor(as.character(HORMONE), levels = HORMONE_LEVELS),
       SEX = factor(as.character(SEX), levels = SEX_LEVELS)
     )
 
@@ -292,7 +298,7 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
     ggnewscale::new_scale_fill() +
     ggplot2::geom_boxplot(ggplot2::aes(fill = EXPOSURE),
                           outlier.shape = NA, alpha = 0.25, na.rm = TRUE) +
-    ggplot2::geom_jitter(ggplot2::aes(color = SEX),
+    ggplot2::geom_jitter(ggplot2::aes(color = SEX, shape = SEX),
                          width = 0.12, height = 0, alpha = 0.8, size = 1.8,
                          na.rm = TRUE) +
     ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
@@ -303,8 +309,15 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
       values = c("M" = SIG_COLOR_M, "F" = SIG_COLOR_F),
       drop = FALSE
     ) +
+    ggplot2::scale_shape_manual(
+      name = "Sex",
+      values = c("M" = 16, "F" = 17),
+      drop = FALSE
+    ) +
     ggplot2::scale_x_discrete(drop = FALSE) +
     ggplot2::scale_y_continuous(
+      breaks = if (is.null(grid_break)) ggplot2::waiver() else
+        scales::breaks_width(grid_break),
       expand = ggplot2::expansion(mult = c(0.02, 0.15))
     ) +
     ggplot2::theme_minimal(base_size = 11) +
@@ -312,7 +325,9 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
       panel.background = ggplot2::element_rect(
         fill = NA, color = "grey35", linewidth = 1.2
       ),
-      panel.grid.major = ggplot2::element_blank(),
+      panel.grid.major.x = ggplot2::element_blank(),
+      panel.grid.major.y = if (is.null(grid_break)) ggplot2::element_blank() else
+        ggplot2::element_line(color = "grey85"),
       panel.grid.minor = ggplot2::element_blank(),
       strip.background = ggplot2::element_rect(
         fill = "grey35", color = "grey35", linewidth = 1.2
@@ -331,7 +346,7 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
       caption = paste0(
         "Points are individual samples; boxplots show median, IQR (box), ",
         "and whiskers extending to 1.5x IQR.\n",
-        "Points: blue = M, purple = F. ",
+        "Points: blue circles = M, purple triangles = F. ",
         "Significance stars: red = significant overall (All sexes pooled), ",
         "blue = significant in Males only, purple = significant in Females ",
         "only (FDR-adjusted p < 0.05 threshold from mixed-model pairwise ",
@@ -390,13 +405,15 @@ teerchange_plot <- plot_teer_ldh(
   SALA_TEER_analyzed, "TEERCHANGE",
   "TEERCHANGE (POST - PRE) by exposure",
   "teerchange_boxplot_all.png", "TEERCHANGE",
-  sig_annotations = build_teer_sig_annotations(teer_ldh_lmer_results, "TEERCHANGE")
+  sig_annotations = build_teer_sig_annotations(teer_ldh_lmer_results, "TEERCHANGE"),
+  grid_break = 100
 )
 ldh_plot <- plot_teer_ldh(
   SALA_TEER_analyzed, "LDH",
   "LDH cytotoxicity by exposure",
   "ldh_boxplot_all.png", "LDH (%)",
-  sig_annotations = build_teer_sig_annotations(teer_ldh_lmer_results, "LDH")
+  sig_annotations = build_teer_sig_annotations(teer_ldh_lmer_results, "LDH"),
+  grid_break = 20
 )
 ```
 
