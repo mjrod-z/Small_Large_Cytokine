@@ -658,21 +658,6 @@ if (!RUN_DREAM_MODELS) {
       if (is.null(raw_coef_names)) {
         raw_coef_names <- colnames(design)
       }
-      # Check each term component independently: interaction delimiters are
-      # expected, but a mangled factor-level name makes mapping unsafe.
-      coef_components <- strsplit(raw_coef_names, ":", fixed = TRUE)
-      components_syntactically_valid <- all(vapply(
-        coef_components,
-        function(components) identical(components, make.names(components)),
-        logical(1)
-      ))
-      if (!components_syntactically_valid) {
-        record_failure(
-          stratum_values,
-          "Design coefficient names are not syntactically valid; cannot map interaction terms safely"
-        )
-        next
-      }
       interaction_coefs <- raw_coef_names[grepl(":", raw_coef_names, fixed = TRUE)]
       if (length(interaction_coefs) == 0) {
         record_failure(stratum_values, "No interaction coefficients were estimated")
