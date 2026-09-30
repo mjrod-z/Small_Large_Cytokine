@@ -658,12 +658,15 @@ if (!RUN_DREAM_MODELS) {
       if (is.null(raw_coef_names)) {
         raw_coef_names <- colnames(design)
       }
-      # Defensive robustness check (requirement: handle coefficient names
-      # robustly with make.names()): our factor levels are simple alphanumeric
-      # strings, so make.names() should be a no-op. If it is not, the mapping
-      # from formula terms to fitted coefficients is not safe, so skip rather
-      # than silently mis-map a contrast.
-      if (!identical(raw_coef_names, make.names(raw_coef_names, unique = TRUE))) {
+      # Check each term component independently: interaction delimiters are
+      # expected, but a mangled factor-level name makes mapping unsafe.
+      coef_components <- strsplit(raw_coef_names, ":", fixed = TRUE)
+      components_syntactically_valid <- all(vapply(
+        coef_components,
+        function(components) identical(components, make.names(components)),
+        logical(1)
+      ))
+      if (!components_syntactically_valid) {
         record_failure(
           stratum_values,
           "Design coefficient names are not syntactically valid; cannot map interaction terms safely"
@@ -793,7 +796,11 @@ if (!RUN_DREAM_MODELS) {
     file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dream_failures.csv")
   )
   save_table(
-    rnaseq_model_results %>% dplyr::filter(significant),
+    if ("significant" %in% names(rnaseq_model_results)) {
+      rnaseq_model_results %>% dplyr::filter(.data$significant)
+    } else {
+      rnaseq_model_results
+    },
     file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_dream_significant_results.csv")
   )
   save_table(
