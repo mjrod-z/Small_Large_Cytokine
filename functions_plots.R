@@ -91,12 +91,15 @@ make_dotplot <- function(df, x_var, title_str,
   )
   
   # Cap dot diameter so dots never overlap when many cytokines are present.
-  # max_dot shrinks proportionally with row count; stays between 2 and 8.
+  # max_dot shrinks proportionally with row count; stays between 3 and 14.
+  # Range is widened (vs. the previous 1-8) and the floor raised so that
+  # differences in effect size are visually exaggerated rather than looking
+  # nearly uniform.
   n_cyt    <- max(1L, length(cyt_levels))
-  max_dot  <- max(2, min(8, 30 / n_cyt))
+  max_dot  <- max(3, min(14, 50 / n_cyt))
   size_scale <- ggplot2::scale_size_continuous(
-    name  = "Effect size\n(sqrt|mean log2FC|)",
-    range = c(1, max_dot), limits = c(0, NA)
+    name  = "Effect size\n(|mean log2FC|)",
+    range = c(1.5, max_dot), limits = c(0, NA)
   )
   
   ref_theme <- ggplot2::theme_minimal(base_size = 11) +
@@ -135,7 +138,7 @@ make_dotplot <- function(df, x_var, title_str,
       color = "none",
       alpha = "none",
       fill  = ggplot2::guide_legend(title = "Direction\n(vs matched PBS)"),
-      size  = ggplot2::guide_legend(title = "Effect size\n(sqrt|mean log2FC|)")
+      size  = ggplot2::guide_legend(title = "Effect size\n(|mean log2FC|)")
     ) +
     ggplot2::facet_grid(rows = ggplot2::vars(CELLTYPE), cols = ggplot2::vars(HORMONE), drop = FALSE) +
     ggplot2::scale_x_discrete(expand = ggplot2::expansion(mult = c(0.8, 0.8)), drop = TRUE) +
