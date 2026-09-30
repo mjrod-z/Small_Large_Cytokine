@@ -135,6 +135,7 @@ cat("  EXPOSURE:", paste(levels(SALA_full$EXPOSURE), collapse = " | "), "\n")
 SALA_TEER <- readr::read_csv(here::here(PATH_DATA_RAW, "SALA_TEER.csv"),
                               show_col_types = FALSE) %>%
   dplyr::mutate(
+    EXPOSURE = stringr::str_replace_all(stringr::str_squish(EXPOSURE), " ", "_"),
     TEERCHANGE = as.numeric(TEERCHANGE),
     LDH = as.numeric(LDH)
   )
@@ -144,8 +145,8 @@ cat("  Loaded rows:", nrow(SALA_TEER), "\n")
 
 teer_exclusion_reason <- dplyr::case_when(
   SALA_TEER$EXPOSURE == "Untreated_Control" ~ "Untreated_Control",
-  SALA_TEER$EXPOSURE == "10X Lysis Buffer" ~ "10X Lysis Buffer",
-  stringr::str_detect(SALA_TEER$EXPOSURE, stringr::fixed("+ Paraffin")) ~ "+ Paraffin",
+  SALA_TEER$EXPOSURE == "10X_Lysis_Buffer" ~ "10X Lysis Buffer",
+  stringr::str_detect(SALA_TEER$EXPOSURE, stringr::fixed("+_Paraffin")) ~ "+ Paraffin",
   !SALA_TEER$EXPOSURE %in% c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES) ~
     "not PBS/high-dose",
   TRUE ~ NA_character_
