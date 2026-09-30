@@ -137,7 +137,7 @@ SALA_TEER <- readr::read_csv(here::here(PATH_DATA_RAW, "SALA_TEER.csv"),
   dplyr::mutate(
     EXPOSURE = stringr::str_replace_all(stringr::str_squish(EXPOSURE), " ", "_"),
     TEERCHANGE = as.numeric(TEERCHANGE),
-    LDH = as.numeric(LDH)
+    LDH = as.numeric(LDH) * 100
   )
 
 cat("✓ SALA_TEER loaded\n")
@@ -263,10 +263,33 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
                           sig_annotations = NULL) {
   d <- data %>%
     dplyr::filter(!is.na(.data[[response_name]])) %>%
-    dplyr::mutate(EXPOSURE = factor(EXPOSURE,
-                                    levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)))
+    dplyr::mutate(
+      EXPOSURE = factor(EXPOSURE,
+                        levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)),
+      CELLTYPE = factor(as.character(CELLTYPE), levels = c("LAE", "SAE")),
+      HORMONE = factor(as.character(HORMONE), levels = c("NONE", "Estradiol")),
+      SEX = factor(as.character(SEX), levels = SEX_LEVELS)
+    )
+
+  bg_df <- tidyr::expand_grid(
+    CELLTYPE = factor(c("LAE", "SAE"), levels = c("LAE", "SAE")),
+    HORMONE = factor(c("NONE", "Estradiol"), levels = c("NONE", "Estradiol"))
+  ) %>%
+    dplyr::mutate(
+      panel_fill = dplyr::if_else(
+        HORMONE == "Estradiol", ESTRADIOL_FILL_DEFAULT, "white"
+      )
+    )
 
   p <- ggplot2::ggplot(d, ggplot2::aes(x = EXPOSURE, y = .data[[response_name]])) +
+    ggplot2::geom_rect(
+      data = bg_df,
+      ggplot2::aes(fill = panel_fill),
+      xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+      inherit.aes = FALSE, show.legend = FALSE
+    ) +
+    ggplot2::scale_fill_identity() +
+    ggnewscale::new_scale_fill() +
     ggplot2::geom_boxplot(ggplot2::aes(fill = EXPOSURE),
                           outlier.shape = NA, alpha = 0.25, na.rm = TRUE) +
     ggplot2::geom_jitter(ggplot2::aes(color = SEX),
@@ -275,18 +298,40 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
     ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
     ggplot2::facet_grid(CELLTYPE ~ HORMONE, drop = FALSE) +
     ggplot2::scale_fill_manual(values = color_exposure, drop = FALSE) +
+    ggplot2::scale_color_manual(
+      name = "Sex",
+      values = c("M" = SIG_COLOR_M, "F" = SIG_COLOR_F),
+      drop = FALSE
+    ) +
     ggplot2::scale_x_discrete(drop = FALSE) +
     ggplot2::scale_y_continuous(
       expand = ggplot2::expansion(mult = c(0.02, 0.15))
     ) +
     ggplot2::theme_minimal(base_size = 11) +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 30, hjust = 1),
-                   legend.position = "bottom") +
+    ggplot2::theme(
+      panel.background = ggplot2::element_rect(
+        fill = NA, color = "grey35", linewidth = 1.2
+      ),
+      panel.grid.major = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      strip.background = ggplot2::element_rect(
+        fill = "grey35", color = "grey35", linewidth = 1.2
+      ),
+      strip.text = ggplot2::element_text(color = "white", face = "bold", size = 11),
+      axis.text.x = ggplot2::element_text(
+        angle = 30, hjust = 1, face = "bold", size = 11
+      ),
+      axis.text.y = ggplot2::element_text(face = "bold", size = 10),
+      axis.title.y = ggplot2::element_text(face = "bold"),
+      plot.title = ggplot2::element_text(face = "bold", size = 13, hjust = 0.5),
+      legend.position = "bottom"
+    ) +
     ggplot2::labs(
       title = title, x = NULL, y = y_label,
       caption = paste0(
         "Points are individual samples; boxplots show median, IQR (box), ",
         "and whiskers extending to 1.5x IQR.\n",
+        "Points: blue = M, purple = F. ",
         "Significance stars: red = significant overall (All sexes pooled), ",
         "blue = significant in Males only, purple = significant in Females ",
         "only (FDR-adjusted p < 0.05 threshold from mixed-model pairwise ",
@@ -350,7 +395,7 @@ teerchange_plot <- plot_teer_ldh(
 ldh_plot <- plot_teer_ldh(
   SALA_TEER_analyzed, "LDH",
   "LDH cytotoxicity by exposure",
-  "ldh_boxplot_all.png", "LDH",
+  "ldh_boxplot_all.png", "LDH (%)",
   sig_annotations = build_teer_sig_annotations(teer_ldh_lmer_results, "LDH")
 )
 ```
