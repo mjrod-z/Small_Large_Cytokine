@@ -49,8 +49,8 @@ extract_block <- function(text, start_anchor, end_anchor) {
 
 helper_source <- extract_block(
   rmd_text,
-  "  observed_factor_levels <- function(data, factor_name) {",
-  "  intersection_patients <- function(group_indices, group_cells, metadata) {"
+  "# BEGIN contrast-weight helpers",
+  "# END contrast-weight helpers"
 )
 
 # Selector constants referenced by the extracted helpers.

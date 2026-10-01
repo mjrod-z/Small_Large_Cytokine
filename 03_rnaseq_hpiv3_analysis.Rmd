@@ -716,6 +716,11 @@ if (!RUN_DREAM_MODELS) {
       n_samples = n_samples
     )
   }
+  # tests/rnaseq_dream_design_sanity_check.R extracts this block verbatim by
+  # anchoring on the comment markers below, so the standalone check stays in
+  # sync with the real implementation. Keep both markers immediately adjacent
+  # to the helper function definitions if this block is edited.
+  # BEGIN contrast-weight helpers
   observed_factor_levels <- function(data, factor_name) {
     intersect(
       RNA_FACTOR_LEVELS[[factor_name]],
@@ -803,6 +808,7 @@ if (!RUN_DREAM_MODELS) {
     }
     list(weights = weights / n_complete_contexts, reason = NULL)
   }
+  # END contrast-weight helpers
   intersection_patients <- function(group_indices, group_cells, metadata) {
     if (length(group_indices) == 0) return(character())
     patient_sets <- lapply(group_indices, function(i) {
@@ -1025,7 +1031,11 @@ if (!RUN_DREAM_MODELS) {
         within_factors_i <- intersect(REPORT_WITHIN, model_factors)
         effect_factors_within <- setdiff(test_factors_i, within_factors_i)
         if (length(within_factors_i) == 0) {
-          message("REPORT_WITHIN factors do not vary within this split for test '", test, "'.")
+          record_failure(
+            test, split_context,
+            "REPORT_WITHIN factors do not vary within this split; no simple-effect contrasts were attempted.",
+            "within"
+          )
         } else if (length(effect_factors_within) == 0) {
           record_failure(
             test, split_context,
@@ -1082,6 +1092,13 @@ if (!RUN_DREAM_MODELS) {
         effect_factors <- spec$effect_factors
         conditions <- spec$conditions
         fit_i <- spec$fit
+        record_contrast_failure <- function(reason, label) {
+          record_failure(
+            test, split_context, reason, label,
+            model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
+            n_samples = fit_i$n_samples
+          )
+        }
         if (length(effect_factors) == 0) next
         effect_levels <- lapply(effect_factors, function(factor_name) {
           observed_factor_levels(model_data, factor_name)
@@ -1106,11 +1123,7 @@ if (!RUN_DREAM_MODELS) {
           )
           contrast_id <- paste(test, split_context, label, sep = " | ")
           if (is.null(weights_result$weights)) {
-            record_failure(
-              test, split_context, weights_result$reason, label,
-              model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
-              n_samples = fit_i$n_samples
-            )
+            record_contrast_failure(weights_result$reason, label)
             next
           }
           used_groups <- which(abs(weights_result$weights) > 1e-12)
@@ -1143,12 +1156,9 @@ if (!RUN_DREAM_MODELS) {
             error = function(e) e
           )
           if (inherits(contrast_matrix, "error")) {
-            record_failure(
-              test, split_context,
+            record_contrast_failure(
               paste0("Contrast is not estimable: ", conditionMessage(contrast_matrix)),
-              label,
-              model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
-              n_samples = fit_i$n_samples
+              label
             )
             next
           }
@@ -1162,12 +1172,9 @@ if (!RUN_DREAM_MODELS) {
             limma::eBayes(fit_L)
           }, error = function(e) e)
           if (inherits(contrast_fit, "error")) {
-            record_failure(
-              test, split_context,
+            record_contrast_failure(
               paste0("Contrast fit failed: ", conditionMessage(contrast_fit)),
-              label,
-              model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
-              n_samples = fit_i$n_samples
+              label
             )
             next
           }
@@ -1179,13 +1186,7 @@ if (!RUN_DREAM_MODELS) {
             error = function(e) e
           )
           if (inherits(top_i, "error")) {
-            record_failure(
-              test, split_context,
-              paste0("topTable failed: ", conditionMessage(top_i)),
-              label,
-              model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
-              n_samples = fit_i$n_samples
-            )
+            record_contrast_failure(paste0("topTable failed: ", conditionMessage(top_i)), label)
             next
           }
           positive_groups <- used_groups[weights_result$weights[used_groups] > 0]
