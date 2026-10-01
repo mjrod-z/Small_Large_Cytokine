@@ -156,7 +156,7 @@ cat("  Exposure modeled rows:", sum(!is.na(hpiv3_exposure_results$p.value)), "\n
 
 # HPIV3 protein-effect heatmap
 
-This report produces a single combined heatmap of modeled protein effects across the infection, sex, and exposure model families. Each model table is normalized to a common schema (missing context columns such as `INFECTION` are filled with `NA_character_` where a model family does not stratify on them) before the tables are combined, the top variable protein effects are scaled per protein, and the result is rendered as a clustered heatmap.
+This report produces a single combined heatmap of modeled protein effects across the infection, sex, and exposure model families. Each model table is normalized to a common schema (missing context columns such as `INFECTION` are filled with `NA_character_` where a model family does not stratify on them) before the tables are combined, the top variable protein effects are scaled per protein, and the result is rendered as a clustered heatmap. Rows are proteins; the long comparison/condition labels are hidden from the columns and summarized instead by a compact top annotation bar denoting each column's analysis type (`Infection`, `Sex`, or `Exposure`).
 
 ```{r hpiv3-heatmap}
 normalize_hpiv3_model_results <- function(df, analysis_type) {
@@ -196,12 +196,12 @@ save_table(hpiv3_heatmap_source, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_protein_e
 if (nrow(hpiv3_heatmap_source) == 0) {
   message("HPIV3 protein-effect heatmap skipped; no modeled contrasts are available.")
 } else {
+  selected_comparisons <- utils::head(unique(hpiv3_heatmap_source$comparison), 24L)
+
   hpiv3_effect_wide <- hpiv3_heatmap_source %>%
     dplyr::select(PROTEIN, comparison, estimate) %>%
     dplyr::distinct() %>%
-    dplyr::filter(comparison %in% utils::head(
-      unique(hpiv3_heatmap_source$comparison), 24L
-    )) %>%
+    dplyr::filter(comparison %in% selected_comparisons) %>%
     tidyr::pivot_wider(
       names_from = comparison,
       values_from = estimate,
@@ -212,6 +212,11 @@ if (nrow(hpiv3_heatmap_source) == 0) {
   rownames(hpiv3_effect_matrix) <- hpiv3_effect_wide$PROTEIN
   finite_effect_rows <- rowSums(is.finite(hpiv3_effect_matrix)) >= 2L
   hpiv3_effect_matrix <- hpiv3_effect_matrix[finite_effect_rows, , drop = FALSE]
+
+  comparison_analysis_type <- hpiv3_heatmap_source %>%
+    dplyr::filter(comparison %in% selected_comparisons) %>%
+    dplyr::distinct(comparison, analysis_type) %>%
+    tibble::deframe()
 
   if (nrow(hpiv3_effect_matrix) >= 2 && ncol(hpiv3_effect_matrix) >= 2) {
     row_means <- rowMeans(hpiv3_effect_matrix, na.rm = TRUE)
@@ -237,24 +242,43 @@ if (nrow(hpiv3_heatmap_source) == 0) {
       hpiv3_effect_matrix_export <- tibble::as_tibble(hpiv3_effect_matrix, rownames = "PROTEIN")
       save_table(hpiv3_effect_matrix_export, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_protein_effect_heatmap_matrix.csv"))
 
+      analysis_type_palette <- c(
+        Infection = "#1B9E77", Sex = "#D95F02", Exposure = "#7570B3"
+      )
+      column_analysis_type <- comparison_analysis_type[colnames(hpiv3_effect_matrix)]
+      annotation_col <- data.frame(
+        `Analysis type` = factor(
+          column_analysis_type,
+          levels = intersect(names(analysis_type_palette), unique(column_analysis_type))
+        ),
+        row.names = colnames(hpiv3_effect_matrix),
+        check.names = FALSE
+      )
+      annotation_colors <- list(
+        `Analysis type` = analysis_type_palette[levels(annotation_col[["Analysis type"]])]
+      )
+
       heatmap_file <- file.path(
         PATH_OUTPUT, HPIV3_OUTPUT_SUBDIR, "hpiv3_protein_effect_heatmap.png"
       )
       dir.create(dirname(heatmap_file), recursive = TRUE, showWarnings = FALSE)
+      heatmap_height <- max(7, nrow(hpiv3_effect_matrix) * 0.22 + 3)
       pheatmap::pheatmap(
         hpiv3_effect_matrix,
         scale = "none",
         color = grDevices::colorRampPalette(c("#2C7BB6", "white", "#D7191C"))(100),
         breaks = seq(-effect_limit, effect_limit, length.out = 101),
         border_color = NA,
-        show_rownames = nrow(hpiv3_effect_matrix) <= 30,
-        show_colnames = TRUE,
-        angle_col = 45,
+        show_rownames = TRUE,
+        show_colnames = FALSE,
+        annotation_col = annotation_col,
+        annotation_colors = annotation_colors,
+        annotation_legend = TRUE,
         clustering_method = "complete",
         main = "Top variable protein effects (first 24 comparisons)",
         filename = heatmap_file,
-        width = 15,
-        height = 10,
+        width = 10,
+        height = heatmap_height,
         silent = TRUE
       )
     }
