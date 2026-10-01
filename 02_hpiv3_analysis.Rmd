@@ -414,6 +414,147 @@ for (row_i in seq_len(nrow(exposure_airway_table))) {
 }
 ```
 
+# HPIV3 volcano plots and protein-effect heatmap
+
+Volcano panels show the modeled protein contrast within each biological stratum. The horizontal axis is the estimated log2 difference, the vertical axis is −log10(FDR), and all volcano panels use the same fixed y-axis range.
+
+```{r hpiv3-volcano-heatmap}
+hpiv3_results_for_plots <- dplyr::bind_rows(
+  hpiv3_model_results %>%
+    dplyr::transmute(
+      analysis_type = "Infection", PROTEIN, contrast, estimate, q.value,
+      significant, AIRWAY, HORMONE, TIMEPOINT, EXPOSURE, SEX, INFECTION
+    ),
+  hpiv3_sex_results %>%
+    dplyr::transmute(
+      analysis_type = "Sex", PROTEIN, contrast, estimate, q.value,
+      significant, AIRWAY, HORMONE, TIMEPOINT, EXPOSURE, SEX, INFECTION
+    ),
+  hpiv3_exposure_results %>%
+    dplyr::transmute(
+      analysis_type = "Exposure", PROTEIN, contrast, estimate, q.value,
+      significant, AIRWAY, HORMONE, TIMEPOINT, EXPOSURE, SEX, INFECTION
+    )
+) %>%
+  dplyr::filter(is.finite(estimate), is.finite(q.value)) %>%
+  dplyr::mutate(
+    comparison_context = paste0(
+      "AIRWAY=", dplyr::coalesce(as.character(AIRWAY), "All"),
+      ", HORMONE=", dplyr::coalesce(as.character(HORMONE), "All"),
+      ", TIMEPOINT=", dplyr::coalesce(as.character(TIMEPOINT), "All"),
+      ", EXPOSURE=", dplyr::coalesce(as.character(EXPOSURE), "All"),
+      ", SEX=", dplyr::coalesce(as.character(SEX), "All"),
+      ", INFECTION=", dplyr::coalesce(as.character(INFECTION), "All")
+    ),
+    comparison = paste(analysis_type, contrast, comparison_context, sep = " | "),
+    log2FC = estimate,
+    `adj.P.Val` = q.value,
+    DEG = dplyr::case_when(
+      significant & estimate > 0 ~ "UP",
+      significant & estimate < 0 ~ "DOWN",
+      TRUE ~ "NO"
+    )
+  ) %>%
+  dplyr::group_by(comparison) %>%
+  dplyr::arrange(q.value, dplyr::desc(abs(log2FC)), .by_group = TRUE) %>%
+  dplyr::mutate(
+    delabel = dplyr::if_else(
+      DEG != "NO" & dplyr::row_number() <= 5L,
+      as.character(PROTEIN),
+      NA_character_
+    )
+  ) %>%
+  dplyr::ungroup()
+
+if (nrow(hpiv3_results_for_plots) == 0) {
+  message("HPIV3 volcano plots and protein-effect heatmap skipped; no modeled contrasts are available.")
+} else {
+  hpiv3_volcano_panels <- utils::head(
+    unique(hpiv3_results_for_plots$comparison), 12L
+  )
+  hpiv3_volcano_data <- hpiv3_results_for_plots %>%
+    dplyr::filter(comparison %in% hpiv3_volcano_panels)
+  p_hpiv3_volcano <- plot_volcano_deg(
+    hpiv3_volcano_data,
+    title = "HPIV3 protein contrast volcano plots",
+    subtitle = sprintf(
+      "FDR < %.3g; first %d comparisons shown",
+      ALPHA_Q, length(hpiv3_volcano_panels)
+    ),
+    y_limits = VOLCANO_Y_LIMITS
+  )
+  print(p_hpiv3_volcano)
+  save_plot(
+    file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_protein_volcano_overview.png"),
+    p_hpiv3_volcano,
+    width = 15,
+    height = max(8, 3.2 * ceiling(length(hpiv3_volcano_panels) / 3))
+  )
+
+  hpiv3_effect_wide <- hpiv3_results_for_plots %>%
+    dplyr::select(PROTEIN, comparison, estimate) %>%
+    dplyr::distinct() %>%
+    dplyr::filter(comparison %in% utils::head(
+      unique(hpiv3_results_for_plots$comparison), 24L
+    )) %>%
+    tidyr::pivot_wider(
+      names_from = comparison,
+      values_from = estimate,
+      values_fn = mean
+    )
+  hpiv3_effect_matrix <- as.matrix(hpiv3_effect_wide[, -1, drop = FALSE])
+  storage.mode(hpiv3_effect_matrix) <- "numeric"
+  rownames(hpiv3_effect_matrix) <- hpiv3_effect_wide$PROTEIN
+  finite_effect_rows <- rowSums(is.finite(hpiv3_effect_matrix)) >= 2L
+  hpiv3_effect_matrix <- hpiv3_effect_matrix[finite_effect_rows, , drop = FALSE]
+
+  if (nrow(hpiv3_effect_matrix) >= 2 && ncol(hpiv3_effect_matrix) >= 2) {
+    row_means <- rowMeans(hpiv3_effect_matrix, na.rm = TRUE)
+    missing_effects <- which(!is.finite(hpiv3_effect_matrix), arr.ind = TRUE)
+    if (nrow(missing_effects) > 0) {
+      hpiv3_effect_matrix[missing_effects] <-
+        row_means[missing_effects[, "row"]]
+    }
+    effect_variance <- apply(hpiv3_effect_matrix, 1, stats::var)
+    variable_effect_rows <- which(is.finite(effect_variance) & effect_variance > 0)
+    if (length(variable_effect_rows) < 2) {
+      message("HPIV3 protein-effect heatmap skipped; no variable protein effects remain.")
+    } else {
+      top_effect_rows <- variable_effect_rows[
+        order(effect_variance[variable_effect_rows], decreasing = TRUE)
+      ]
+      top_effect_rows <- utils::head(top_effect_rows, 50L)
+      hpiv3_effect_matrix <- hpiv3_effect_matrix[top_effect_rows, , drop = FALSE]
+      hpiv3_effect_matrix <- t(scale(t(hpiv3_effect_matrix)))
+      effect_limit <- max(abs(hpiv3_effect_matrix), na.rm = TRUE)
+      if (!is.finite(effect_limit) || effect_limit == 0) effect_limit <- 1
+      heatmap_file <- file.path(
+        PATH_OUTPUT, HPIV3_OUTPUT_SUBDIR, "hpiv3_protein_effect_heatmap.png"
+      )
+      dir.create(dirname(heatmap_file), recursive = TRUE, showWarnings = FALSE)
+      pheatmap::pheatmap(
+        hpiv3_effect_matrix,
+        scale = "none",
+        color = grDevices::colorRampPalette(c("#2C7BB6", "white", "#D7191C"))(100),
+        breaks = seq(-effect_limit, effect_limit, length.out = 101),
+        border_color = NA,
+        show_rownames = nrow(hpiv3_effect_matrix) <= 30,
+        show_colnames = TRUE,
+        angle_col = 45,
+        clustering_method = "complete",
+        main = "Top variable protein effects (first 24 comparisons)",
+        filename = heatmap_file,
+        width = 15,
+        height = 10,
+        silent = TRUE
+      )
+    }
+  } else {
+    message("HPIV3 protein-effect heatmap skipped; at least two proteins and comparisons are needed.")
+  }
+}
+```
+
 # Unique/shared significant proteins across all tested strata
 
 This section exports **three complete all-strata analyses** from existing model-result tables (no model re-fitting):
