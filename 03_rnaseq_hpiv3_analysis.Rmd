@@ -644,17 +644,17 @@ if (!vst_available) {
 }
 ```
 
-# DREAM/voom interaction differential expression
+# DREAM/voom explicit-effects differential expression
 
 This section is deliberately off by default (`RUN_DREAM_MODELS <- FALSE`). Edit the **ANALYSIS SELECTOR** chunk near the top, not this modeling code. `SUBSET` selects samples, `TESTS` chooses main effects or interactions, `SPLIT_BY` fits separate models (default `NULL`, one joint model), and `REPORT_WITHIN` requests simple effects. The previous `RUN_DREAM_FAMILY` / `RUN_DREAM_STRATUM` controls and stratified families have been replaced by these selectors.
 
-The model combines only factors that vary in each selected split into a sanitized `GROUP` factor, then fits `~ 0 + GROUP + (1 | PATIENTCODE)` using raw counts, split-specific CPM/total-count filtering, TMM normalization, `variancePartition::voomWithDreamWeights()`, and `variancePartition::dream()`. `makeContrastsDream()` generates equal-weight average main effects and difference-of-differences interaction contrasts across the observed cells; `EXPOSURE` uses the named pairs in `EXPOSURE_CONTRASTS`. P-values are adjusted separately for each contrast.
+The model is built from the explicit `TESTS` entries rather than from a single saturated interaction of every varying factor. For each `TESTS` entry, the factor(s) named in that entry (a single factor for a main effect, or a colon-separated set for an explicitly requested interaction) are combined into a small, test-scoped `GROUP` factor using only the combinations actually observed in the data (`drop = TRUE`), so a missing cell removes only that cell's level instead of requiring every cross-product combination to exist. Every other factor that varies in the split is added to the fixed-effect formula as a plain additive adjustment term (for example `~ 0 + GROUP + EXPOSURE + (1 | PATIENTCODE)` when testing `HORMONE` while `EXPOSURE` varies but is not itself under test). Additive terms adjust the estimate without requiring their cells to be crossed with the tested factor, so a main effect such as `HORMONE=E2-NONE` remains estimable even when, say, `EXPOSURE=PEAT` has no `HORMONE=E2` samples. `REPORT_WITHIN` simple effects add the conditioning factor into the test's own `GROUP` scope (so the interaction needed to tell the conditioned levels apart is explicitly, and only, fit for that request) instead of broadening every other covariate. Raw counts, split-specific CPM/total-count filtering, TMM normalization, `variancePartition::voomWithDreamWeights()`, and `variancePartition::dream()` are otherwise unchanged. `makeContrastsDream()` builds each contrast directly from the test-scoped `GROUP` cells actually present; `EXPOSURE` uses the named pairs in `EXPOSURE_CONTRASTS`. P-values are adjusted separately for each contrast.
 
 AIRWAY is a mostly within-patient (paired) comparison: 10 of 12 patients contribute both airways, while two contribute only one. SEX is between-patient because each patient has one sex; SEX main effects therefore compare patients, while interactions with within-patient factors compare those within-patient responses across sexes. Infection contrasts in SAE males rely on only three patients (DD001V, DD019V, DD020V); DD007T and DD050S have only uninfected SAE samples. These low-n results, including SAE-male infection tests, are exploratory and explicitly flagged. Patient identifiers retain their original case.
 
 ## Primary and secondary interaction tests
 
-The tests are exactly those selected in `TESTS`: a single factor requests a main effect; colon-separated factors request a difference-of-differences interaction of the selected order. Main effects are averaged equally over other observed factor cells. Exposure effects use `EXPOSURE_CONTRASTS` (default `PEAT-PBS`, `PINE-PBS`, and `PEAT-PINE`). `REPORT_WITHIN` conditions selected tests on each observed level of the named factor(s), yielding simple-effect contrasts. The example selector entries show the infection, exposure, hormone, sex, and airway questions supported by this design; select both infection levels to run infection comparisons.
+The tests are exactly those selected in `TESTS`: a single factor requests a main effect, fit additively against the other varying factors; colon-separated factors request an explicit, proper interaction/difference-of-differences test, with the full crossing of just those named factors fit directly (no other varying factor is automatically crossed in). Interactions among varying factors are never fit unless a `TESTS` entry (or a `REPORT_WITHIN` request, see below) explicitly asks for them. Exposure effects use `EXPOSURE_CONTRASTS` (default `PEAT-PBS`, `PINE-PBS`, and `PEAT-PINE`). `REPORT_WITHIN` conditions a test on each observed level of the named factor(s): if the conditioning factor is already part of the test's own interaction, the existing fit supplies the simple effects directly; otherwise a second, explicitly-augmented fit is built that crosses just the test factor(s) with the conditioning factor(s), and only that fit (not the unconditioned main-effect fit) requires those specific cells. The example selector entries show the infection, exposure, hormone, sex, and airway questions supported by this design; select both infection levels to run infection comparisons.
 
 `SPLIT_BY = NULL` preserves the joint model and AIRWAY pairing by default. Add split factors only when separate fits are desired; any factor that is fixed by a split cannot itself be estimated as a within-split effect. The analysis does not fit the former AIRWAY/SEX/exposure-stratified families or separate combined-sex sanity-check families.
 
@@ -664,7 +664,7 @@ The former combined-sex sanity-check families have been removed. Select SEX in `
 
 ## Failure handling
 
-An individual contrast is skipped and recorded if its required cells are missing, its design is not estimable, or the model fit fails. Fit errors are captured in the failures table, which is always exported with a stable set of columns, even when it has no rows. Per-contrast results include the number of patients represented in every cell used, patients per arm when applicable, and `exploratory = TRUE` when that complete-case patient count is below `MIN_PATIENTS_CONFIDENT`.
+An individual contrast is skipped and recorded if its required cells are missing, its design is not estimable, or the model fit fails. A `TESTS` main effect only fails this way when the tested factor itself (or an adjustment factor it is confounded with) is non-estimable; it is not rejected merely because some other factor's cells are unbalanced with respect to it. An explicitly requested interaction (or a `REPORT_WITHIN`-augmented fit) is skipped only when its own required crossed cells are genuinely absent or collinear. Fit errors are captured in the failures table, which is always exported with a stable set of columns, even when it has no rows. Both the results and failures tables record the fitted fixed-effect formula (`model_formula`), the terms used (`model_terms`), and the sample count for the model (`n_samples`), in addition to the number of patients represented in every cell used, patients per arm when applicable, and `exploratory = TRUE` when that complete-case patient count is below `MIN_PATIENTS_CONFIDENT`.
 
 ```{r dream-models}
 rnaseq_model_results <- tibble::tibble(
@@ -674,12 +674,14 @@ rnaseq_model_results <- tibble::tibble(
   adj.P.Val = double(), q.value = double(), significant = logical(),
   deg_class = character(), n_patients_contrast = integer(),
   n_patients_arm1 = integer(), n_patients_arm2 = integer(),
-  exploratory = logical()
+  exploratory = logical(), model_formula = character(),
+  model_terms = character(), n_samples = integer()
 )
 rnaseq_model_failures <- tibble::tibble(
   analysis = character(), test = character(), contrast_id = character(),
   contrast_label = character(), split_values = character(),
-  failure_reason = character()
+  failure_reason = character(), model_formula = character(),
+  model_terms = character(), n_samples = integer()
 )
 
 if (!RUN_DREAM_MODELS) {
@@ -698,14 +700,20 @@ if (!RUN_DREAM_MODELS) {
 
   result_rows <- list()
   failure_rows <- list()
-  record_failure <- function(test, context, reason, label = "") {
+  record_failure <- function(test, context, reason, label = "",
+                             model_formula = NA_character_,
+                             model_terms = NA_character_,
+                             n_samples = NA_integer_) {
     failure_rows[[length(failure_rows) + 1L]] <<- tibble::tibble(
       analysis = test,
       test = test,
       contrast_id = paste(test, context, label, sep = " | "),
       contrast_label = label,
       split_values = context,
-      failure_reason = reason
+      failure_reason = reason,
+      model_formula = model_formula,
+      model_terms = model_terms,
+      n_samples = n_samples
     )
   }
   observed_factor_levels <- function(data, factor_name) {
@@ -862,22 +870,6 @@ if (!RUN_DREAM_MODELS) {
         levels = observed_factor_levels(model_data, factor_name)
       )
     }
-    group_raw <- if (length(model_factors) == 1) {
-      interaction(model_data[[model_factors]], drop = TRUE, sep = "_")
-    } else {
-      do.call(
-        interaction,
-        c(model_data[model_factors], list(drop = TRUE, lex.order = TRUE, sep = "_"))
-      )
-    }
-    group_levels <- levels(group_raw)
-    safe_group_levels <- make.names(group_levels, unique = TRUE)
-    group_name_map <- stats::setNames(safe_group_levels, group_levels)
-    model_data$GROUP <- factor(
-      unname(group_name_map[as.character(group_raw)]),
-      levels = safe_group_levels
-    )
-    group_cells <- unique(model_data[, c(model_factors, "GROUP"), drop = FALSE])
 
     split_counts <- count_matrix[, model_data$SAMPLENAME, drop = FALSE]
     cpm_split <- sweep(split_counts, 2, colSums(split_counts) / 1e6, "/")
@@ -902,29 +894,102 @@ if (!RUN_DREAM_MODELS) {
       }
       next
     }
-    full_formula <- stats::as.formula("~ 0 + GROUP + (1 | PATIENTCODE)")
-    design <- stats::model.matrix(~ 0 + GROUP, data = model_data)
-    if (qr(design)$rank < ncol(design)) {
+
+    dge_attempt <- tryCatch({
+      dge_i <- edgeR::DGEList(counts = split_counts[keep_genes, , drop = FALSE])
+      edgeR::calcNormFactors(dge_i, method = "TMM")
+    }, error = function(e) e)
+    if (inherits(dge_attempt, "error")) {
       for (test in VALID_TESTS) {
-        record_failure(test, split_context, "Fixed-effect GROUP design matrix is rank-deficient.")
+        record_failure(test, split_context,
+                       paste0("TMM normalization failed: ", conditionMessage(dge_attempt)))
       }
       next
     }
-    group_coef_map <- stats::setNames(colnames(design), levels(model_data$GROUP))
-    voom_i <- NULL
-    fit_attempt <- tryCatch({
-      dge_i <- edgeR::DGEList(counts = split_counts[keep_genes, , drop = FALSE])
-      dge_i <- edgeR::calcNormFactors(dge_i, method = "TMM")
-      voom_i <<- variancePartition::voomWithDreamWeights(
-        dge_i, full_formula, data = model_data
-      )
-      variancePartition::dream(voom_i, full_formula, data = model_data)
-    }, error = function(e) e)
-    if (inherits(fit_attempt, "error")) {
-      for (test in VALID_TESTS) {
-        record_failure(test, split_context, conditionMessage(fit_attempt))
+    dge_split <- dge_attempt
+
+    # Each distinct combination of explicitly-tested (and, when requested,
+    # REPORT_WITHIN-conditioned) factors gets its own test-scoped GROUP
+    # factor built only from the combinations actually observed
+    # (`drop = TRUE`). Every other factor that varies in this split is added
+    # to the formula as a plain additive adjustment term, so a main effect
+    # remains estimable even when some unrelated factor's cells are
+    # unbalanced with respect to it. Fits are cached by their factor set so
+    # repeated TESTS/REPORT_WITHIN combinations reuse the same voom/dream fit.
+    fit_cache <- list()
+    get_fit <- function(core_factors) {
+      cache_key <- paste(sort(core_factors), collapse = "|")
+      if (!is.null(fit_cache[[cache_key]])) {
+        return(fit_cache[[cache_key]])
       }
-      next
+      other_terms <- setdiff(model_factors, core_factors)
+      group_col <- paste0("GROUP__", paste(sort(core_factors), collapse = "_"))
+      group_raw <- if (length(core_factors) == 1) {
+        interaction(model_data[[core_factors]], drop = TRUE, sep = "_")
+      } else {
+        do.call(
+          interaction,
+          c(model_data[core_factors], list(drop = TRUE, lex.order = TRUE, sep = "_"))
+        )
+      }
+      group_levels <- levels(group_raw)
+      safe_group_levels <- make.names(group_levels, unique = TRUE)
+      group_name_map <- stats::setNames(safe_group_levels, group_levels)
+      model_data[[group_col]] <<- factor(
+        unname(group_name_map[as.character(group_raw)]),
+        levels = safe_group_levels
+      )
+      group_cells <- unique(model_data[, c(core_factors, group_col), drop = FALSE])
+      names(group_cells)[names(group_cells) == group_col] <- "GROUP"
+
+      term_labels <- paste(c(paste(core_factors, collapse = ":"), other_terms), collapse = " + ")
+      fixed_formula <- stats::reformulate(c(group_col, other_terms), intercept = FALSE)
+      design <- stats::model.matrix(fixed_formula, data = model_data)
+      result <- if (qr(design)$rank < ncol(design)) {
+        list(
+          ok = FALSE,
+          reason = paste0(
+            "Fixed-effect design is rank-deficient for terms [", term_labels,
+            "]; the requested factor combination is not estimable in this split."
+          ),
+          formula_label = paste(deparse(fixed_formula), collapse = " "),
+          term_labels = term_labels
+        )
+      } else {
+        group_coef_map <- stats::setNames(colnames(design), levels(model_data[[group_col]]))
+        full_formula <- stats::as.formula(
+          paste(paste(deparse(fixed_formula), collapse = " "), "+ (1 | PATIENTCODE)")
+        )
+        fit_attempt <- tryCatch({
+          voom_i <- variancePartition::voomWithDreamWeights(
+            dge_split, full_formula, data = model_data
+          )
+          variancePartition::dream(voom_i, full_formula, data = model_data)
+          voom_i
+        }, error = function(e) e)
+        if (inherits(fit_attempt, "error")) {
+          list(
+            ok = FALSE,
+            reason = conditionMessage(fit_attempt),
+            formula_label = paste(deparse(full_formula), collapse = " "),
+            term_labels = term_labels
+          )
+        } else {
+          list(
+            ok = TRUE,
+            core_factors = core_factors,
+            group_cells = group_cells,
+            group_coef_map = group_coef_map,
+            voom_i = fit_attempt,
+            full_formula = full_formula,
+            formula_label = paste(deparse(full_formula), collapse = " "),
+            term_labels = term_labels,
+            n_samples = nrow(model_data)
+          )
+        }
+      }
+      fit_cache[[cache_key]] <<- result
+      result
     }
 
     for (test in VALID_TESTS) {
@@ -937,36 +1002,75 @@ if (!RUN_DREAM_MODELS) {
         )
         next
       }
+
+      baseline_fit <- get_fit(test_factors_i)
+      if (!baseline_fit$ok) {
+        record_failure(
+          test, split_context, baseline_fit$reason, "",
+          model_formula = baseline_fit$formula_label,
+          model_terms = baseline_fit$term_labels
+        )
+        next
+      }
+
       contrast_specs <- list(list(
         effect_factors = test_factors_i,
         conditions = character(),
-        simple_effect = FALSE
+        fit = baseline_fit
       ))
       if (length(REPORT_WITHIN) > 0) {
-        effect_factors_within <- setdiff(test_factors_i, REPORT_WITHIN)
-        if (length(effect_factors_within) == 0) {
+        within_factors_i <- intersect(REPORT_WITHIN, model_factors)
+        effect_factors_within <- setdiff(test_factors_i, within_factors_i)
+        if (length(within_factors_i) == 0) {
+          message("REPORT_WITHIN factors do not vary within this split for test '", test, "'.")
+        } else if (length(effect_factors_within) == 0) {
           record_failure(
             test, split_context,
             "REPORT_WITHIN conditions every test factor; no simple-effect contrast remains."
           )
         } else {
-          within_levels <- lapply(REPORT_WITHIN, function(factor_name) {
-            unique(stats::na.omit(as.character(model_data[[factor_name]])))
-          })
-          names(within_levels) <- REPORT_WITHIN
-          within_grid <- expand.grid(
-            within_levels, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE
-          )
-          for (within_i in seq_len(nrow(within_grid))) {
-            conditions <- stats::setNames(
-              as.character(unlist(within_grid[within_i, , drop = FALSE])),
-              names(within_grid)
+          # If the REPORT_WITHIN factor(s) are already part of this test's own
+          # explicit interaction, the baseline fit already contains the
+          # crossing needed for simple effects. Otherwise, build one
+          # additional fit that explicitly crosses just the test factor(s)
+          # with the requested conditioning factor(s); only that augmented
+          # fit (not the unconditioned main-effect fit above) requires those
+          # specific cells to exist.
+          augmentation_factors <- setdiff(within_factors_i, test_factors_i)
+          within_fit <- if (length(augmentation_factors) == 0) {
+            baseline_fit
+          } else {
+            get_fit(union(test_factors_i, within_factors_i))
+          }
+          if (!within_fit$ok) {
+            record_failure(
+              test, split_context,
+              paste0("REPORT_WITHIN simple effects require [",
+                     paste(union(test_factors_i, within_factors_i), collapse = ", "),
+                     "] to be jointly estimable: ", within_fit$reason),
+              "within",
+              model_formula = within_fit$formula_label,
+              model_terms = within_fit$term_labels
             )
-            contrast_specs[[length(contrast_specs) + 1L]] <- list(
-              effect_factors = effect_factors_within,
-              conditions = conditions,
-              simple_effect = TRUE
+          } else {
+            within_levels <- lapply(within_factors_i, function(factor_name) {
+              observed_factor_levels(model_data, factor_name)
+            })
+            names(within_levels) <- within_factors_i
+            within_grid <- expand.grid(
+              within_levels, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE
             )
+            for (within_i in seq_len(nrow(within_grid))) {
+              conditions <- stats::setNames(
+                as.character(unlist(within_grid[within_i, , drop = FALSE])),
+                names(within_grid)
+              )
+              contrast_specs[[length(contrast_specs) + 1L]] <- list(
+                effect_factors = effect_factors_within,
+                conditions = conditions,
+                fit = within_fit
+              )
+            }
           }
         }
       }
@@ -974,6 +1078,7 @@ if (!RUN_DREAM_MODELS) {
       for (spec in contrast_specs) {
         effect_factors <- spec$effect_factors
         conditions <- spec$conditions
+        fit_i <- spec$fit
         if (length(effect_factors) == 0) next
         effect_levels <- lapply(effect_factors, function(factor_name) {
           observed_factor_levels(model_data, factor_name)
@@ -994,11 +1099,15 @@ if (!RUN_DREAM_MODELS) {
           })
           label <- contrast_label_for(effect_factors, vectors, conditions)
           weights_result <- build_contrast_weights(
-            effect_factors, vectors, conditions, model_factors, group_cells
+            effect_factors, vectors, conditions, fit_i$core_factors, fit_i$group_cells
           )
           contrast_id <- paste(test, split_context, label, sep = " | ")
           if (is.null(weights_result$weights)) {
-            record_failure(test, split_context, weights_result$reason, label)
+            record_failure(
+              test, split_context, weights_result$reason, label,
+              model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
+              n_samples = fit_i$n_samples
+            )
             next
           }
           used_groups <- which(abs(weights_result$weights) > 1e-12)
@@ -1006,7 +1115,7 @@ if (!RUN_DREAM_MODELS) {
             coefficient <- weights_result$weights[[group_i]]
             paste0(
               format(abs(coefficient), scientific = FALSE, trim = TRUE),
-              "*", group_coef_map[as.character(group_cells$GROUP[[group_i]])]
+              "*", fit_i$group_coef_map[as.character(fit_i$group_cells$GROUP[[group_i]])]
             )
           }, character(1))
           signs <- ifelse(weights_result$weights[used_groups] < 0, "-", "+")
@@ -1024,7 +1133,7 @@ if (!RUN_DREAM_MODELS) {
           )
           contrast_matrix <- tryCatch(
             variancePartition::makeContrastsDream(
-              full_formula,
+              fit_i$full_formula,
               model_data,
               contrasts = stats::setNames(contrast_expression, "selected_contrast")
             ),
@@ -1034,7 +1143,9 @@ if (!RUN_DREAM_MODELS) {
             record_failure(
               test, split_context,
               paste0("Contrast is not estimable: ", conditionMessage(contrast_matrix)),
-              label
+              label,
+              model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
+              n_samples = fit_i$n_samples
             )
             next
           }
@@ -1043,7 +1154,7 @@ if (!RUN_DREAM_MODELS) {
           # so the contrast matrix must instead be passed via dream()'s L= argument.
           contrast_fit <- tryCatch({
             fit_L <- variancePartition::dream(
-              voom_i, full_formula, data = model_data, L = contrast_matrix
+              fit_i$voom_i, fit_i$full_formula, data = model_data, L = contrast_matrix
             )
             limma::eBayes(fit_L)
           }, error = function(e) e)
@@ -1051,7 +1162,9 @@ if (!RUN_DREAM_MODELS) {
             record_failure(
               test, split_context,
               paste0("Contrast fit failed: ", conditionMessage(contrast_fit)),
-              label
+              label,
+              model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
+              n_samples = fit_i$n_samples
             )
             next
           }
@@ -1066,29 +1179,31 @@ if (!RUN_DREAM_MODELS) {
             record_failure(
               test, split_context,
               paste0("topTable failed: ", conditionMessage(top_i)),
-              label
+              label,
+              model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
+              n_samples = fit_i$n_samples
             )
             next
           }
           positive_groups <- used_groups[weights_result$weights[used_groups] > 0]
           negative_groups <- used_groups[weights_result$weights[used_groups] < 0]
-          support_by_sex <- patients_by_sex(used_groups, group_cells, model_data)
-          if ("SEX" %in% effect_factors && "SEX" %in% model_factors) {
+          support_by_sex <- patients_by_sex(used_groups, fit_i$group_cells, model_data)
+          if ("SEX" %in% effect_factors && "SEX" %in% fit_i$core_factors) {
             n_patients_contrast <- min(lengths(support_by_sex))
             sex_effect_i <- match("SEX", effect_factors)
             sex_levels_i <- names(vectors[[sex_effect_i]])
             arm1_groups <- used_groups[
-              as.character(group_cells$SEX[used_groups]) == sex_levels_i[[1]]
+              as.character(fit_i$group_cells$SEX[used_groups]) == sex_levels_i[[1]]
             ]
             arm2_groups <- used_groups[
-              as.character(group_cells$SEX[used_groups]) == sex_levels_i[[2]]
+              as.character(fit_i$group_cells$SEX[used_groups]) == sex_levels_i[[2]]
             ]
-            arm1_patients <- intersection_patients(arm1_groups, group_cells, model_data)
-            arm2_patients <- intersection_patients(arm2_groups, group_cells, model_data)
+            arm1_patients <- intersection_patients(arm1_groups, fit_i$group_cells, model_data)
+            arm2_patients <- intersection_patients(arm2_groups, fit_i$group_cells, model_data)
           } else {
             n_patients_contrast <- length(unique(unlist(support_by_sex, use.names = FALSE)))
-            arm1_by_sex <- patients_by_sex(positive_groups, group_cells, model_data)
-            arm2_by_sex <- patients_by_sex(negative_groups, group_cells, model_data)
+            arm1_by_sex <- patients_by_sex(positive_groups, fit_i$group_cells, model_data)
+            arm2_by_sex <- patients_by_sex(negative_groups, fit_i$group_cells, model_data)
             arm1_patients <- unique(unlist(arm1_by_sex, use.names = FALSE))
             arm2_patients <- unique(unlist(arm2_by_sex, use.names = FALSE))
           }
@@ -1119,7 +1234,10 @@ if (!RUN_DREAM_MODELS) {
               } else {
                 NA_integer_
               },
-              exploratory = .data$n_patients_contrast < MIN_PATIENTS_CONFIDENT
+              exploratory = .data$n_patients_contrast < MIN_PATIENTS_CONFIDENT,
+              model_formula = fit_i$formula_label,
+              model_terms = fit_i$term_labels,
+              n_samples = fit_i$n_samples
             )
         }
       }
@@ -1135,14 +1253,16 @@ if (!RUN_DREAM_MODELS) {
       adj.P.Val = double(), q.value = double(), significant = logical(),
       deg_class = character(), n_patients_contrast = integer(),
       n_patients_arm1 = integer(), n_patients_arm2 = integer(),
-      exploratory = logical()
+      exploratory = logical(), model_formula = character(),
+      model_terms = character(), n_samples = integer()
     )
   }
   if (nrow(rnaseq_model_failures) == 0) {
     rnaseq_model_failures <- tibble::tibble(
       analysis = character(), test = character(), contrast_id = character(),
       contrast_label = character(), split_values = character(),
-      failure_reason = character()
+      failure_reason = character(), model_formula = character(),
+      model_terms = character(), n_samples = integer()
     )
   }
   save_table(
