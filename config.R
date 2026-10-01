@@ -14,6 +14,8 @@ PATH_OUTPUT_REPORT  <- PATH_OUTPUT
 # ── Analysis constants ────────────────────────────────────────────────────────
 ZERO_CUTOFF       <- 0.30
 PSEUDOCOUNT       <- 1e-6
+# ALPHA_Q is the single global BH-FDR (Benjamini-Hochberg adjusted p-value)
+# significance threshold used across all analyses, including RNA-seq.
 ALPHA_Q           <- 0.05
 TREND_ALPHA       <- 0.20
 PBS_LEVEL         <- "PBS_Control"  # Changed from "PBS Control"
@@ -35,9 +37,12 @@ EXPOSURE_COLORS_LIGHT <- c(
 )
 
 # ── RNA-seq constants ─────────────────────────────────────────────────────────
-ADJ_P_CUTOFF            <- 0.05
+# A DEG is called significant when BH-FDR (ADJ_P_CUTOFF, derived from the
+# global ALPHA_Q) is below threshold AND the absolute log2 fold-change is at
+# least LOG2FC_CUTOFF. Both constants must stay in sync with ALPHA_Q so the
+# RNA-seq report, tables, and volcano plots all apply the same rule.
+ADJ_P_CUTOFF            <- ALPHA_Q
 LOG2FC_CUTOFF           <- 1.0
-FDR_THRESHOLD           <- 0.25
 DREAM_N_CORES           <- 4
 GENE_BACKGROUND_THRESHOLD <- 10
 

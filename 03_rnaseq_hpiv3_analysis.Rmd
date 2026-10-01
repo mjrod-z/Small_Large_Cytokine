@@ -68,6 +68,9 @@ RNA_METADATA_FILE <- here::here(PATH_DATA_RAW, "HPIV3_metadata.csv")
 RNA_CPM_THRESHOLD <- 1
 RNA_MIN_SAMPLE_FRACTION <- 0.5
 RNA_MIN_TOTAL_COUNT <- GENE_BACKGROUND_THRESHOLD
+# A DEG is significant iff BH-FDR (RNA_ADJ_P_CUTOFF) < threshold AND
+# |log2FC| >= RNA_LOG2FC_CUTOFF; both values are derived from the global
+# config constants (ADJ_P_CUTOFF == ALPHA_Q) so the whole report agrees.
 RNA_ADJ_P_CUTOFF <- ADJ_P_CUTOFF
 RNA_LOG2FC_CUTOFF <- LOG2FC_CUTOFF
 RUN_NORMALIZATION <- TRUE
@@ -676,7 +679,8 @@ rnaseq_model_results <- tibble::tibble(
   analysis = character(), test = character(), contrast_id = character(),
   contrast_label = character(), split_values = character(), GENEID = character(),
   logFC = double(), AveExpr = double(), t = double(), P.Value = double(),
-  adj.P.Val = double(), q.value = double(), significant = logical(),
+  adj.P.Val = double(), q.value = double(), fdr_significant = logical(),
+  significant = logical(),
   deg_class = character(), n_patients_contrast = integer(),
   n_patients_arm1 = integer(), n_patients_arm2 = integer(),
   exploratory = logical(), model_formula = character(),
@@ -1225,8 +1229,11 @@ if (!RUN_DREAM_MODELS) {
               contrast_label = label,
               split_values = split_context,
               q.value = .data$adj.P.Val,
-              significant = !is.na(.data$q.value) &
+              # fdr_significant: BH-FDR only (for backward-compatible reporting).
+              fdr_significant = !is.na(.data$q.value) &
                 .data$q.value < RNA_ADJ_P_CUTOFF,
+              # significant: full DEG rule used everywhere else (FDR AND effect size).
+              significant = fdr_significant & abs(.data$logFC) >= RNA_LOG2FC_CUTOFF,
               deg_class = dplyr::case_when(
                 significant & .data$logFC >= RNA_LOG2FC_CUTOFF ~ "Positive",
                 significant & .data$logFC <= -RNA_LOG2FC_CUTOFF ~ "Negative",
@@ -1259,7 +1266,8 @@ if (!RUN_DREAM_MODELS) {
       analysis = character(), test = character(), contrast_id = character(),
       contrast_label = character(), split_values = character(), GENEID = character(),
       logFC = double(), AveExpr = double(), t = double(), P.Value = double(),
-      adj.P.Val = double(), q.value = double(), significant = logical(),
+      adj.P.Val = double(), q.value = double(), fdr_significant = logical(),
+      significant = logical(),
       deg_class = character(), n_patients_contrast = integer(),
       n_patients_arm1 = integer(), n_patients_arm2 = integer(),
       exploratory = logical(), model_formula = character(),
@@ -1302,7 +1310,7 @@ if (nrow(rnaseq_model_results) == 0) {
       dplyr::arrange(test, contrast_id, q.value, GENEID) %>%
       dplyr::select(
         analysis, test, contrast_id, contrast_label, split_values, GENEID,
-        logFC, AveExpr, t, P.Value, q.value, significant, deg_class,
+        logFC, AveExpr, t, P.Value, q.value, fdr_significant, significant, deg_class,
         n_patients_contrast, exploratory
       ) %>%
       utils::head(20),
@@ -1343,6 +1351,11 @@ if (nrow(rnaseq_model_results) == 0) {
       linetype = "dashed",
       color = "grey50"
     ) +
+    ggplot2::geom_hline(
+      yintercept = -log10(RNA_ADJ_P_CUTOFF),
+      linetype = "dashed",
+      color = "grey50"
+    ) +
     ggplot2::scale_color_manual(values = c(
       "Negative effect" = "#2C7BB6",
       "Not significant" = "grey75",
@@ -1353,7 +1366,10 @@ if (nrow(rnaseq_model_results) == 0) {
     ggplot2::theme(legend.position = "bottom") +
     ggplot2::labs(
       title = "HPIV3 RNA-seq DREAM/voom contrast volcano plots",
-      subtitle = paste("First", length(volcano_panels), "selected contrasts"),
+      subtitle = sprintf(
+        "Significant: BH FDR < %.3g and |log2FC| >= %.1f; first %d selected contrasts",
+        RNA_ADJ_P_CUTOFF, RNA_LOG2FC_CUTOFF, length(volcano_panels)
+      ),
       x = "Contrast log2 fold-change",
       y = "−log10 adjusted p-value",
       color = NULL
