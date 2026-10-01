@@ -25,6 +25,78 @@ safe_name <- function(x) {
   x
 }
 
+plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
+                             subtitle = NULL, x_limits = c(-10, 10),
+                             y_limits = VOLCANO_Y_LIMITS) {
+  required_cols <- c("log2FC", "adj.P.Val", "DEG", "delabel", facet_by)
+  missing_cols <- setdiff(required_cols, names(data))
+  if (length(missing_cols) > 0) {
+    stop("Volcano data is missing required columns: ",
+         paste(missing_cols, collapse = ", "))
+  }
+  if (length(y_limits) != 2 || any(!is.finite(y_limits)) ||
+      y_limits[[1]] >= y_limits[[2]]) {
+    stop("`y_limits` must be a finite, increasing pair.")
+  }
+
+  data <- as.data.frame(data)
+  data$neg_log10_adj <- -log10(pmax(
+    as.numeric(data$adj.P.Val), .Machine$double.xmin
+  ))
+  data$DEG <- factor(data$DEG, levels = c("DOWN", "NO", "UP"))
+  label_data <- data[!is.na(data$delabel) & nzchar(as.character(data$delabel)), , drop = FALSE]
+
+  ggplot2::ggplot(
+    data,
+    ggplot2::aes(x = log2FC, y = neg_log10_adj, color = DEG)
+  ) +
+    ggplot2::geom_vline(
+      xintercept = c(-LOG2FC_CUTOFF, LOG2FC_CUTOFF),
+      color = "grey50", linetype = "dashed", linewidth = 0.5
+    ) +
+    ggplot2::geom_hline(
+      yintercept = -log10(ADJ_P_CUTOFF),
+      color = "grey50", linetype = "dashed", linewidth = 0.5
+    ) +
+    ggplot2::geom_point(size = 1.5, alpha = 0.7, na.rm = TRUE) +
+    ggrepel::geom_text_repel(
+      data = label_data,
+      ggplot2::aes(label = delabel),
+      size = 3,
+      max.overlaps = 20,
+      fontface = "bold",
+      box.padding = 0.4,
+      segment.color = "grey40",
+      show.legend = FALSE
+    ) +
+    ggplot2::scale_color_manual(
+      values = c("DOWN" = "#00AFBB", "NO" = "grey75", "UP" = "#bb0c00"),
+      labels = c("DOWN" = "Downregulated", "NO" = "Not significant",
+                 "UP" = "Upregulated"),
+      drop = FALSE
+    ) +
+    ggplot2::coord_cartesian(xlim = x_limits, ylim = y_limits) +
+    ggplot2::facet_wrap(stats::as.formula(paste("~", facet_by)), scales = "fixed") +
+    ggplot2::labs(
+      x = expression("log"[2] * "fold change"),
+      y = expression("-log"[10] * "adjusted p-value"),
+      title = title,
+      subtitle = subtitle,
+      color = NULL
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      strip.text = ggplot2::element_text(size = 10, face = "bold"),
+      plot.title = ggplot2::element_text(hjust = 0.5, face = "bold"),
+      panel.border = ggplot2::element_rect(
+        color = "grey40", fill = NA, linewidth = 0.4
+      ),
+      panel.grid.minor = ggplot2::element_blank(),
+      legend.position = "bottom",
+      plot.background = ggplot2::element_rect(fill = "white", color = NA)
+    )
+}
+
 sig_label_from_q <- function(q, alpha_q = ALPHA_Q) {
   dplyr::case_when(
     is.na(q)   ~ "",
