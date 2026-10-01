@@ -1300,8 +1300,10 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
           HORMONE = "All",
           TIMEPOINT = as.character(timepoint_i),
           EXPOSURE = as.character(exposure_i),
+          INFECTION = "All",
           SEX = sex_group,
           PROTEIN = protein,
+          comparison = "HORMONE",
           contrast = paste(case_level, "-", control_level),
           n_samples = n_obs,
           n_none = n_none,
@@ -1392,8 +1394,8 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
         contrast <- tryCatch(
           {
             emm <- emmeans::emmeans(fit, ~ HORMONE, weights = "equal")
-            levels <- emm@levels[["HORMONE"]]
-            ctrl_idx <- match(control_level, levels)
+            hormone_levels <- levels(emm)[["HORMONE"]]
+            ctrl_idx <- match(control_level, hormone_levels)
             if (is.na(ctrl_idx)) stop("Control level '", control_level, "' not found in HORMONE results.")
             emmeans::contrast(emm, method = "trt.vs.ctrl", ref = ctrl_idx, adjust = "none")
           },
@@ -1457,7 +1459,8 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
                                       min_total_nonmissing = 3L) {
   stopifnot(is.data.frame(data))
   protein_cols <- intersect(protein_cols, names(data))
-  model_data <- data %>% dplyr::filter(as.character(SEX) != "All")
+  model_data <- data %>%
+    dplyr::filter(is.na(SEX) | as.character(SEX) != "All")
   pooled_data <- model_data %>% dplyr::mutate(SEX = "All")
   model_data <- dplyr::bind_rows(model_data, pooled_data)
   strata <- model_data %>% dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION)

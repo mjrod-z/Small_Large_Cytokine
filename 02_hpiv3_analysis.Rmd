@@ -60,8 +60,9 @@ QC and modeling rules:
 - Hormone levels are kept as `NONE` and `E2`.
 - Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum.
 - Infection effects are modeled on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE` within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × SEX` strata, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
+- Hormone effects are modeled as `E2` versus `NONE` within `AIRWAY × TIMEPOINT × EXPOSURE × SEX` strata, pooling infection status and using the same random-intercept fallback.
 - Sex effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × INFECTION` strata.
-- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata.
+- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata, including pooled `SEX = "All"` results.
 
 # Load and prepare HPIV3 data
 
@@ -149,9 +150,204 @@ hpiv3_exposure_results <- fit_hpiv3_exposure_models(
 )
 save_table(hpiv3_exposure_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_model_results.csv"))
 
+hpiv3_hormone_results <- fit_hpiv3_hormone_models(
+  hpiv3_data,
+  hpiv3_proteins,
+  protein_status = hpiv3_protein_status,
+  pseudocount = HPIV3_PSEUDOCOUNT,
+  alpha_q = ALPHA_Q
+)
+save_table(hpiv3_hormone_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_hormone_model_results.csv"))
+
 cat("✓ Non-infection modeling complete\n")
 cat("  Sex modeled rows     :", sum(!is.na(hpiv3_sex_results$p.value)), "\n")
 cat("  Exposure modeled rows:", sum(!is.na(hpiv3_exposure_results$p.value)), "\n")
+cat("  Hormone modeled rows :", sum(!is.na(hpiv3_hormone_results$p.value)), "\n")
+```
+
+# Ranked protein effect comparisons
+
+Ranked bars show estimated log2 differences directly: red indicates an increase
+in the named comparison, blue indicates a decrease, and lighter shades indicate
+non-significant estimates. Each plot ranks proteins by effect within each panel;
+the report saves comparison tables and PNGs under
+`output/hpiv3/ranked_bars/`.
+
+```{r hpiv3-ranked-bar-helpers}
+hpiv3_ranked_exposure_results <- hpiv3_exposure_results %>%
+  dplyr::filter(
+    comparison == "EXPOSURE",
+    !is.na(contrast),
+    grepl("PBS_Control", contrast)
+  ) %>%
+  dplyr::mutate(
+    contrast_left = sub(" - .*", "", contrast),
+    contrast_right = sub("^.* - ", "", contrast),
+    target_exposure = dplyr::if_else(
+      contrast_left == "PBS_Control",
+      contrast_right,
+      contrast_left
+    ),
+    pbs_is_first = contrast_left == "PBS_Control"
+  ) %>%
+  dplyr::filter(grepl("^(Peat|Pine)(_|$)", target_exposure, ignore.case = TRUE)) %>%
+  dplyr::mutate(
+    estimate = dplyr::if_else(pbs_is_first, -estimate, estimate),
+    contrast = paste(target_exposure, "-", "PBS_Control")
+  ) %>%
+  dplyr::select(-contrast_left, -contrast_right, -pbs_is_first)
+
+save_table(
+  hpiv3_ranked_exposure_results,
+  file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_ranked_exposure_model_results.csv")
+)
+
+hpiv3_ranked_exposure_levels <- sort(unique(hpiv3_ranked_exposure_results$target_exposure))
+hpiv3_ranked_exposure_levels <- hpiv3_ranked_exposure_levels[
+  grepl("^(Peat|Pine)(_|$)", hpiv3_ranked_exposure_levels, ignore.case = TRUE)
+]
+hpiv3_ranked_target_exposures <- sort(unique(as.character(hpiv3_data$EXPOSURE)))
+hpiv3_ranked_target_exposures <- hpiv3_ranked_target_exposures[
+  !is.na(hpiv3_ranked_target_exposures) &
+    (grepl("^(Peat|Pine)(_|$)", hpiv3_ranked_target_exposures, ignore.case = TRUE) |
+    hpiv3_ranked_target_exposures == PBS_LEVEL
+    )
+]
+hpiv3_ranked_sex_labels <- c(All = "All", M = "Males", F = "Females")
+
+save_hpiv3_ranked_comparisons <- function(
+    results, model_type, target_column, target_levels, category_label) {
+  if (!target_column %in% names(results) || !"SEX" %in% names(results)) {
+    stop("Ranked comparison results must include `", target_column, "` and `SEX`.")
+  }
+  available <- results %>%
+    dplyr::filter(
+      SEX %in% names(hpiv3_ranked_sex_labels),
+      as.character(.data[[target_column]]) %in% target_levels,
+      is.finite(estimate)
+    )
+  comparison_groups <- available %>%
+    dplyr::distinct(SEX, target_value = .data[[target_column]]) %>%
+    dplyr::arrange(target_value, factor(SEX, levels = c("All", "M", "F")))
+  output_index <- vector("list", nrow(comparison_groups))
+
+  for (group_index in seq_len(nrow(comparison_groups))) {
+    sex_value <- as.character(comparison_groups$SEX[[group_index]])
+    target_value <- as.character(comparison_groups$target_value[[group_index]])
+    sex_label <- unname(hpiv3_ranked_sex_labels[[sex_value]])
+    chart_filters <- stats::setNames(
+      list(sex_value, target_value),
+      c("SEX", target_column)
+    )
+    plot_title <- switch(
+      category_label,
+      exposure = paste("Exposure effect:", target_value, "vs PBS_Control —", sex_label),
+      hormone = paste("Hormone effect (E2 vs NONE),", target_value, "—", sex_label),
+      infection = paste("Infection effect (HPIV3 vs NONE),", target_value, "—", sex_label)
+    )
+    chart <- plot_hpiv3_ranked_bars(
+      results,
+      model_type = model_type,
+      filters = chart_filters,
+      title = plot_title
+    )
+    output_file <- file.path(
+      HPIV3_OUTPUT_SUBDIR,
+      "ranked_bars",
+      paste0(
+        "hpiv3_ranked_", category_label, "_",
+        safe_name(target_value), "_sex_", tolower(sex_value), ".png"
+      )
+    )
+    save_plot(output_file, chart, width = 12, height = 9, dpi = 300, bg = "white")
+    print(chart)
+
+    output_index[[group_index]] <- tibble::tibble(
+      comparison = category_label,
+      target = target_value,
+      SEX = sex_value,
+      sex_label = sex_label,
+      output_file = output_file,
+      n_modeled_proteins = nrow(
+        available %>%
+          dplyr::filter(
+            SEX == sex_value,
+            as.character(.data[[target_column]]) == target_value
+          )
+      )
+    )
+  }
+  dplyr::bind_rows(output_index)
+}
+
+hpiv3_ranked_bar_plot_index <- tibble::tibble(
+ comparison = character(),
+ target = character(),
+ SEX = character(),
+ sex_label = character(),
+ output_file = character(),
+ n_modeled_proteins = integer()
+)
+```
+
+## Peat and Pine versus PBS
+
+The exposure comparison table reports Peat/Pine minus PBS, so positive and
+negative bars consistently mean higher and lower abundance under the named
+exposure, respectively. Comparisons are available for pooled samples, males,
+and females.
+
+```{r hpiv3-ranked-exposure-bars, fig.width=12, fig.height=9}
+hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
+ hpiv3_ranked_bar_plot_index,
+ save_hpiv3_ranked_comparisons(
+   hpiv3_ranked_exposure_results,
+   "exposure",
+   "target_exposure",
+   hpiv3_ranked_exposure_levels,
+   "exposure"
+ )
+)
+```
+
+## E2 versus NONE within each exposure
+
+These hormone comparisons are fitted within each airway, timepoint, exposure,
+and sex group, with infection status pooled.
+
+```{r hpiv3-ranked-hormone-bars, fig.width=12, fig.height=9}
+hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
+ hpiv3_ranked_bar_plot_index,
+ save_hpiv3_ranked_comparisons(
+   hpiv3_hormone_results,
+   "hormone",
+   "EXPOSURE",
+   hpiv3_ranked_target_exposures,
+   "hormone"
+ )
+)
+```
+
+## HPIV3 versus NONE within each exposure
+
+These infection comparisons are fitted within each airway, hormone,
+timepoint, exposure, and sex group.
+
+```{r hpiv3-ranked-infection-bars, fig.width=12, fig.height=9}
+hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
+ hpiv3_ranked_bar_plot_index,
+ save_hpiv3_ranked_comparisons(
+   hpiv3_model_results,
+   "infection",
+   "EXPOSURE",
+   hpiv3_ranked_target_exposures,
+   "infection"
+ )
+)
+save_table(
+ hpiv3_ranked_bar_plot_index,
+ file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_ranked_bar_plot_index.csv")
+)
 ```
 
 # HPIV3 abundance heatmaps
@@ -378,6 +574,10 @@ cat("  - hpiv3_protein_status.csv\n")
 cat("  - hpiv3_all_protein_model_results.csv\n")
 cat("  - hpiv3_sex_model_results.csv\n")
 cat("  - hpiv3_exposure_model_results.csv\n")
+cat("  - hpiv3_hormone_model_results.csv\n")
+cat("  - hpiv3_ranked_exposure_model_results.csv\n")
+cat("  - hpiv3_ranked_bar_plot_index.csv\n")
+cat("  - ranked_bars/hpiv3_ranked_<comparison>_<target>_sex_<group>.png\n")
 cat("  - hpiv3_abundance_heatmap_source.csv\n")
 cat("  - hpiv3_abundance_heatmap_matrix_<AIRWAY>_<TIMEPOINT>.csv\n")
 cat("  - hpiv3_abundance_heatmap_<AIRWAY>_<TIMEPOINT>.png\n")

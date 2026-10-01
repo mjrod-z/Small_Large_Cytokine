@@ -785,8 +785,14 @@ plot_hpiv3_ranked_bars <- function(model_results,
   model_type <- match.arg(model_type)
   stopifnot(is.data.frame(model_results), is.list(filters))
   if (!is.null(top_n) &&
-      (length(top_n) != 1L || is.na(top_n) || top_n < 1L || top_n != as.integer(top_n))) {
+      (length(top_n) != 1L || !is.numeric(top_n) || !is.finite(top_n) || top_n < 1L ||
+       top_n != as.integer(top_n))) {
     stop("`top_n` must be NULL or a positive integer.")
+  }
+  required_columns <- c("PROTEIN", "estimate", "significant")
+  missing_columns <- setdiff(required_columns, names(model_results))
+  if (length(missing_columns) > 0L) {
+    stop("Model results are missing required columns: ", paste(missing_columns, collapse = ", "))
   }
 
   plot_df <- model_results
@@ -831,17 +837,57 @@ plot_hpiv3_ranked_bars <- function(model_results,
         )
     )
   }
-  if (anyDuplicated(as.character(plot_df$PROTEIN))) {
-    stop("Filters must select at most one model result per protein.")
-  }
-  if (!is.null(top_n) && nrow(plot_df) > top_n) {
+  context_cols <- intersect(
+    c("AIRWAY", "HORMONE", "TIMEPOINT", "EXPOSURE", "INFECTION", "SEX", "contrast"),
+    names(plot_df)
+  )
+  panel_cols <- context_cols[vapply(
+    context_cols,
+    function(column) length(unique(as.character(plot_df[[column]]))) > 1L,
+    logical(1)
+  )]
+  if (length(panel_cols) > 0L) {
+    plot_df$panel <- do.call(
+      interaction,
+      c(
+        unname(as.list(plot_df[, panel_cols, drop = FALSE])),
+        list(sep = " | ", drop = TRUE, lex.order = TRUE)
+      )
+    )
+    panel_key <- as.character(plot_df$panel)
+    plot_df$protein_panel <- paste(as.character(plot_df$PROTEIN), panel_key, sep = "\u241f")
     plot_df <- plot_df[
-      order(abs(as.numeric(plot_df$estimate)), decreasing = TRUE)[seq_len(top_n)],
+      order(panel_key, as.numeric(plot_df$estimate)),
       ,
       drop = FALSE
     ]
+    plot_df$protein_panel <- factor(
+      plot_df$protein_panel,
+      levels = unique(plot_df$protein_panel)
+    )
+  } else {
+    if (anyDuplicated(as.character(plot_df$PROTEIN))) {
+      stop("Filters must select at most one model result per protein and comparison.")
+    }
+    plot_df <- plot_df[order(as.numeric(plot_df$estimate)), , drop = FALSE]
+    plot_df$PROTEIN <- factor(
+      as.character(plot_df$PROTEIN),
+      levels = as.character(plot_df$PROTEIN)
+    )
   }
-  plot_df <- plot_df[order(as.numeric(plot_df$estimate)), , drop = FALSE]
+  if (!is.null(top_n) && nrow(plot_df) > top_n) {
+    if (length(panel_cols) == 0L) {
+      plot_df <- plot_df[
+        order(abs(as.numeric(plot_df$estimate)), decreasing = TRUE)[seq_len(top_n)],
+        ,
+        drop = FALSE
+      ]
+    } else {
+      plot_df <- dplyr::group_by(plot_df, panel) %>%
+        dplyr::slice_max(order_by = abs(estimate), n = top_n, with_ties = FALSE) %>%
+        dplyr::ungroup()
+    }
+  }
   plot_df$direction <- dplyr::case_when(
     !is.na(plot_df$significant) & plot_df$significant & plot_df$estimate > 0 ~ "Higher, significant",
     !is.na(plot_df$significant) & plot_df$significant & plot_df$estimate < 0 ~ "Lower, significant",
@@ -849,15 +895,12 @@ plot_hpiv3_ranked_bars <- function(model_results,
     plot_df$estimate < 0 ~ "Lower, not significant",
     TRUE ~ "No change"
   )
-  plot_df$PROTEIN <- factor(
-    as.character(plot_df$PROTEIN),
-    levels = as.character(plot_df$PROTEIN)
-  )
   plot_title <- if (is.null(title)) paste("HPIV3", model_type, "ranked effects") else title
 
-  ggplot2::ggplot(
+  y_mapping <- if (length(panel_cols) > 0L) "protein_panel" else "PROTEIN"
+  p <- ggplot2::ggplot(
     plot_df,
-    ggplot2::aes(x = estimate, y = PROTEIN, fill = direction)
+    ggplot2::aes(x = estimate, y = .data[[y_mapping]], fill = direction)
   ) +
     ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "grey55") +
     ggplot2::geom_col(width = 0.75) +
@@ -870,6 +913,13 @@ plot_hpiv3_ranked_bars <- function(model_results,
         "No change" = "grey70"
       ),
       drop = FALSE
+    ) +
+    ggplot2::scale_y_discrete(
+      labels = if (length(panel_cols) > 0L) {
+        function(labels) sub("\u241f.*$", "", labels)
+      } else {
+        identity
+      }
     ) +
     ggplot2::coord_flip() +
     ggplot2::theme_minimal(base_size = 11) +
@@ -885,6 +935,10 @@ plot_hpiv3_ranked_bars <- function(model_results,
       x = "Estimated log2 difference (contrast)",
       y = "Protein"
     )
+  if (length(panel_cols) > 0L) {
+    p <- p + ggplot2::facet_wrap(~ panel, scales = "free_y")
+  }
+  p
 }
 
 plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
