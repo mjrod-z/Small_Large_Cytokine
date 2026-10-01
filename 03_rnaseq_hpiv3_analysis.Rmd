@@ -1367,7 +1367,7 @@ if (nrow(rnaseq_model_results) == 0) {
     ggplot2::labs(
       title = "HPIV3 RNA-seq DREAM/voom contrast volcano plots",
       subtitle = sprintf(
-        "Significant: BH FDR < %.3g and |log2FC| >= %.2g; first %d selected contrasts",
+        "Significant: BH FDR < %.3g and |log2FC| >= %.1f; first %d selected contrasts",
         RNA_ADJ_P_CUTOFF, RNA_LOG2FC_CUTOFF, length(volcano_panels)
       ),
       x = "Contrast log2 fold-change",

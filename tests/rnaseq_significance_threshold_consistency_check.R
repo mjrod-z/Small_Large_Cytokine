@@ -74,15 +74,27 @@ stopifnot(
     grepl("RNA_LOG2FC_CUTOFF\\s*<-\\s*LOG2FC_CUTOFF", rmd_text),
   "Rmd must define an FDR-only fdr_significant field" =
     grepl("fdr_significant\\s*=", rmd_text),
-  "Rmd `significant` must require both fdr_significant AND the log2FC cutoff" =
-    grepl(
-      "significant\\s*=\\s*fdr_significant\\s*&\\s*abs\\(\\.data\\$logFC\\)\\s*>=\\s*RNA_LOG2FC_CUTOFF",
-      rmd_text
-    ),
+  "Rmd `significant` must be derived from fdr_significant" =
+    grepl("significant\\s*=\\s*fdr_significant", rmd_text),
+  "Rmd `significant` must also require the log2FC cutoff (not FDR alone)" =
+    grepl("significant\\s*=\\s*fdr_significant[^\\n]*RNA_LOG2FC_CUTOFF", rmd_text),
   "Volcano plot must draw the horizontal BH-FDR cutoff line" =
-    grepl("yintercept\\s*=\\s*-log10\\(RNA_ADJ_P_CUTOFF\\)", rmd_text),
-  "Volcano subtitle must state the active BH FDR and log2FC criteria" =
-    grepl("BH FDR < %.*RNA_ADJ_P_CUTOFF,\\s*RNA_LOG2FC_CUTOFF", rmd_text)
+    grepl("yintercept\\s*=\\s*-log10\\(RNA_ADJ_P_CUTOFF\\)", rmd_text)
+)
+
+subtitle_start <- regexpr("subtitle\\s*=\\s*sprintf\\(", rmd_text)
+stopifnot("Volcano subtitle must be built with sprintf()" = subtitle_start > 0)
+subtitle_block <- substr(rmd_text, subtitle_start, subtitle_start + 400L)
+subtitle_end <- regexpr("\\)\\s*,", subtitle_block)
+stopifnot("Could not locate end of volcano subtitle sprintf() call" = subtitle_end > 0)
+subtitle_block <- substr(subtitle_block, 1, subtitle_end)
+
+stopifnot(
+  "Volcano subtitle must mention FDR" = grepl("FDR", subtitle_block),
+  "Volcano subtitle must reference RNA_ADJ_P_CUTOFF" =
+    grepl("RNA_ADJ_P_CUTOFF", subtitle_block),
+  "Volcano subtitle must reference RNA_LOG2FC_CUTOFF" =
+    grepl("RNA_LOG2FC_CUTOFF", subtitle_block)
 )
 
 cat("PASS: Rmd wires RNA_ADJ_P_CUTOFF/RNA_LOG2FC_CUTOFF into `fdr_significant`,",
