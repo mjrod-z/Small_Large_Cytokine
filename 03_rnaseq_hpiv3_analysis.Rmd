@@ -956,7 +956,10 @@ if (!RUN_DREAM_MODELS) {
           term_labels = term_labels
         )
       } else {
-        group_coef_map <- stats::setNames(colnames(design), levels(model_data[[group_col]]))
+        group_levels_i <- levels(model_data[[group_col]])
+        group_design_cols <- paste0(group_col, group_levels_i)
+        stopifnot(all(group_design_cols %in% colnames(design)))
+        group_coef_map <- stats::setNames(group_design_cols, group_levels_i)
         full_formula <- stats::as.formula(
           paste(paste(deparse(fixed_formula), collapse = " "), "+ (1 | PATIENTCODE)")
         )
