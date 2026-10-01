@@ -911,10 +911,11 @@ if (!RUN_DREAM_MODELS) {
       next
     }
     group_coef_map <- stats::setNames(colnames(design), levels(model_data$GROUP))
+    voom_i <- NULL
     fit_attempt <- tryCatch({
       dge_i <- edgeR::DGEList(counts = split_counts[keep_genes, , drop = FALSE])
       dge_i <- edgeR::calcNormFactors(dge_i, method = "TMM")
-      voom_i <- variancePartition::voomWithDreamWeights(
+      voom_i <<- variancePartition::voomWithDreamWeights(
         dge_i, full_formula, data = model_data
       )
       variancePartition::dream(voom_i, full_formula, data = model_data)
@@ -1037,10 +1038,15 @@ if (!RUN_DREAM_MODELS) {
             )
             next
           }
-          contrast_fit <- tryCatch(
-            limma::eBayes(limma::contrasts.fit(fit_attempt, contrast_matrix)),
-            error = function(e) e
-          )
+          # dream() mixed-model fits are not compatible with limma::contrasts.fit()
+          # (its coefficient covariance structure doesn't conform to a plain lm fit),
+          # so the contrast matrix must instead be passed via dream()'s L= argument.
+          contrast_fit <- tryCatch({
+            fit_L <- variancePartition::dream(
+              voom_i, full_formula, data = model_data, L = contrast_matrix
+            )
+            limma::eBayes(fit_L)
+          }, error = function(e) e)
           if (inherits(contrast_fit, "error")) {
             record_failure(
               test, split_context,
