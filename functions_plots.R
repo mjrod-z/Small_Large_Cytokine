@@ -776,6 +776,117 @@ plot_gsea_barplot <- function(gsea_data, n_top = 12, facet_by = "sample_name",
 }
 
 
+plot_hpiv3_ranked_bars <- function(model_results,
+                                   model_type = c("infection", "hormone", "exposure"),
+                                   contrast = NULL,
+                                   filters = list(),
+                                   top_n = 20L,
+                                   title = NULL) {
+  model_type <- match.arg(model_type)
+  stopifnot(is.data.frame(model_results), is.list(filters))
+  if (!is.null(top_n) &&
+      (length(top_n) != 1L || is.na(top_n) || top_n < 1L || top_n != as.integer(top_n))) {
+    stop("`top_n` must be NULL or a positive integer.")
+  }
+
+  plot_df <- model_results
+  if (model_type == "exposure") {
+    if (!"comparison" %in% names(plot_df)) {
+      stop("Exposure model results must include a `comparison` column.")
+    }
+    plot_df <- plot_df[as.character(plot_df$comparison) == "EXPOSURE", , drop = FALSE]
+  } else {
+    expected_contrast <- if (model_type == "hormone") "E2 - NONE" else "HPIV3 - NONE"
+    if (is.null(contrast)) contrast <- expected_contrast
+  }
+  if (!is.null(contrast)) {
+    if (!"contrast" %in% names(plot_df)) {
+      stop("Model results must include a `contrast` column.")
+    }
+    plot_df <- plot_df[as.character(plot_df$contrast) %in% as.character(contrast), , drop = FALSE]
+  }
+
+  for (column in names(filters)) {
+    if (!column %in% names(plot_df)) {
+      stop("Unknown model-result filter column: ", column)
+    }
+    values <- filters[[column]]
+    keep <- as.character(plot_df[[column]]) %in% as.character(values)
+    if (anyNA(values)) keep <- keep | is.na(plot_df[[column]])
+    plot_df <- plot_df[keep, , drop = FALSE]
+  }
+
+  plot_df <- plot_df[
+    is.finite(as.numeric(plot_df$estimate)),
+    ,
+    drop = FALSE
+  ]
+  if (nrow(plot_df) == 0L) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = if (is.null(title)) paste("HPIV3", model_type, "ranked effects") else title,
+          subtitle = "No modeled results match the requested filters"
+        )
+    )
+  }
+  if (anyDuplicated(as.character(plot_df$PROTEIN))) {
+    stop("Filters must select at most one model result per protein.")
+  }
+  if (!is.null(top_n) && nrow(plot_df) > top_n) {
+    plot_df <- plot_df[
+      order(abs(as.numeric(plot_df$estimate)), decreasing = TRUE)[seq_len(top_n)],
+      ,
+      drop = FALSE
+    ]
+  }
+  plot_df <- plot_df[order(as.numeric(plot_df$estimate)), , drop = FALSE]
+  plot_df$direction <- dplyr::case_when(
+    !is.na(plot_df$significant) & plot_df$significant & plot_df$estimate > 0 ~ "Higher, significant",
+    !is.na(plot_df$significant) & plot_df$significant & plot_df$estimate < 0 ~ "Lower, significant",
+    plot_df$estimate > 0 ~ "Higher, not significant",
+    plot_df$estimate < 0 ~ "Lower, not significant",
+    TRUE ~ "No change"
+  )
+  plot_df$PROTEIN <- factor(
+    as.character(plot_df$PROTEIN),
+    levels = as.character(plot_df$PROTEIN)
+  )
+  plot_title <- if (is.null(title)) paste("HPIV3", model_type, "ranked effects") else title
+
+  ggplot2::ggplot(
+    plot_df,
+    ggplot2::aes(x = estimate, y = PROTEIN, fill = direction)
+  ) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "grey55") +
+    ggplot2::geom_col(width = 0.75) +
+    ggplot2::scale_fill_manual(
+      values = c(
+        "Higher, significant" = "#B2182B",
+        "Lower, significant" = "#2166AC",
+        "Higher, not significant" = "#F4A6A6",
+        "Lower, not significant" = "#92C5DE",
+        "No change" = "grey70"
+      ),
+      drop = FALSE
+    ) +
+    ggplot2::coord_flip() +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.grid.major.y = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      axis.text.y = ggplot2::element_text(size = 8),
+      legend.title = ggplot2::element_blank()
+    ) +
+    ggplot2::labs(
+      title = plot_title,
+      subtitle = paste0("Bars ranked by estimated effect; significant at q < ", ALPHA_Q),
+      x = "Estimated log2 difference (contrast)",
+      y = "Protein"
+    )
+}
+
 plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
   if (!is.null(airway) && length(airway) != 1) {
     stop("`airway` must be NULL or a single value.")
