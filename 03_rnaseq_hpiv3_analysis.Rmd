@@ -93,17 +93,6 @@ cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
 - **Differential expression:** DREAM/voom is disabled by default (`RUN_DREAM_MODELS <- FALSE`). When enabled, selector-defined main effects and interactions become contrasts from one combined-group model, `~ 0 + GROUP + (1 | PATIENTCODE)`. AIRWAY is mostly paired within patients; SEX is between patients, so SEX main effects compare patients rather than paired samples. SAE male infection comparisons use only three infected/uninfected-comparable patients and, like any contrast supported by fewer than `MIN_PATIENTS_CONFIDENT` patients, are flagged exploratory.
 - **Outputs:** DREAM tables and selector configuration are written below `output/rna_seq/` with selector-specific filename prefixes. There is no dose-response analysis: PEAT and PINE are single exposure levels compared with PBS.
 
-## Selected tests and comparisons
-
-The table below reflects the validated `TESTS` selector after sample filtering. Main-effect contrasts are adjusted for the other varying factors; interactions test only the explicitly selected factor combination. `REPORT_WITHIN` adds the requested simple-effect conditions.
-
-```{r selector-summary}
-knitr::kable(
-  rnaseq_analysis_selector_summary,
-  caption = "RNA-seq tests and comparisons selected for this analysis"
-)
-```
-
 # Data contract and QC rules
 
 Required inputs use repository conventions: `data/raw/HPIV3_RNA_data.csv` has `GENEID` in its first column and one raw-count column per sample; sample column names are treated as `SAMPLEID` values exactly as written, with no underscore splitting or timepoint suffix parsing. The required `data/raw/HPIV3_metadata.csv` has one row per `SAMPLEID` and the columns `SAMPLEID`, `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and `SEX`. Optional metadata columns `AGE`, `RACE`, and `SMOKER` are retained when present.
@@ -479,6 +468,20 @@ rnaseq_analysis_selector_summary <- tibble::tibble(
 selected_metadata <- selected_metadata %>%
   dplyr::arrange(match(SAMPLENAME, colnames(count_matrix_all)))
 count_matrix <- count_matrix_all[, selected_metadata$SAMPLENAME, drop = FALSE]
+```
+
+## Selected tests and comparisons
+
+The table below reflects the validated `TESTS` selector after sample filtering.
+Main-effect contrasts are adjusted for the other varying factors; interactions
+test only the explicitly selected factor combination. `REPORT_WITHIN` adds the
+requested simple-effect conditions.
+
+```{r selector-summary}
+knitr::kable(
+  rnaseq_analysis_selector_summary,
+  caption = "RNA-seq tests and comparisons selected for this analysis"
+)
 ```
 
 ```{r save-analysis-ready-data}
