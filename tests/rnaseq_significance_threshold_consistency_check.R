@@ -32,6 +32,12 @@ stopifnot(
   "Cannot locate 03_rnaseq_hpiv3_analysis.Rmd; run this script from the repository root (or tests/)." =
     !is.na(rmd_path)
 )
+candidate_plot_paths <- c("functions_plots.R", file.path("..", "functions_plots.R"))
+plot_path <- candidate_plot_paths[file.exists(candidate_plot_paths)][1]
+stopifnot(
+    "Cannot locate functions_plots.R; run this script from the repository root (or tests/)." =
+      !is.na(plot_path)
+)
 
 # ── 1. config.R: single canonical BH-FDR cutoff ──────────────────────────────
 config_env <- new.env()
@@ -66,6 +72,7 @@ cat("PASS: config.R exposes a single canonical ALPHA_Q/ADJ_P_CUTOFF pair and",
 
 # ── 2. Rmd: significant/deg_class rule combines FDR AND effect size ─────────
 rmd_text <- paste(readLines(rmd_path, warn = FALSE), collapse = "\n")
+plot_text <- paste(readLines(plot_path, warn = FALSE), collapse = "\n")
 
 stopifnot(
   "Rmd must derive RNA_ADJ_P_CUTOFF from the global ADJ_P_CUTOFF" =
@@ -78,8 +85,12 @@ stopifnot(
     grepl("significant\\s*=\\s*fdr_significant", rmd_text),
   "Rmd `significant` must also require the log2FC cutoff (not FDR alone)" =
     grepl("significant\\s*=\\s*fdr_significant[^\\n]*RNA_LOG2FC_CUTOFF", rmd_text),
-  "Volcano plot must draw the horizontal BH-FDR cutoff line" =
-    grepl("yintercept\\s*=\\s*-log10\\(RNA_ADJ_P_CUTOFF\\)", rmd_text)
+  "Shared volcano helper must draw the horizontal BH-FDR cutoff line" =
+    grepl("yintercept\\s*=\\s*-log10\\(ADJ_P_CUTOFF\\)", plot_text),
+  "Shared volcano helper must use fixed facet y scales" =
+    grepl("facet_wrap\\([^\\n]*scales\\s*=\\s*\"fixed\"", plot_text),
+  "Shared volcano y-axis range must be configured globally" =
+    grepl("VOLCANO_Y_LIMITS\\s*<-\\s*c\\(0,\\s*50\\)", config_text)
 )
 
 subtitle_start <- regexpr("subtitle\\s*=\\s*sprintf\\(", rmd_text)
@@ -97,9 +108,9 @@ stopifnot(
     grepl("RNA_LOG2FC_CUTOFF", subtitle_block)
 )
 
-cat("PASS: Rmd wires RNA_ADJ_P_CUTOFF/RNA_LOG2FC_CUTOFF into `fdr_significant`,",
-    "the combined `significant` rule, and the volcano plot's threshold line",
-    "and subtitle.\n")
+cat("PASS: Rmd wires RNA_ADJ_P_CUTOFF/RNA_LOG2FC_CUTOFF into `fdr_significant`",
+    "and the combined `significant` rule; the shared volcano helper applies the",
+    "global FDR threshold and fixed y-axis range.\n")
 
 # ── 3. Reproduce the mutate() rule on synthetic data with base R ────────────
 # Mirrors (without requiring dplyr) the logic at the `dream-models` chunk:

@@ -2,7 +2,7 @@
 
 required_pkgs <- c(
   "here", "dplyr", "tidyr", "readr", "stringr",
-  "purrr", "tibble", "ggplot2", "ggnewscale", "ggpattern",
+  "purrr", "tibble", "ggplot2", "ggrepel", "pheatmap", "ggnewscale", "ggpattern",
   "ggupset", "rvest", "lme4", "emmeans", "ARTool"
 )
 

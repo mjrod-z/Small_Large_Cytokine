@@ -93,6 +93,17 @@ cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
 - **Differential expression:** DREAM/voom is disabled by default (`RUN_DREAM_MODELS <- FALSE`). When enabled, selector-defined main effects and interactions become contrasts from one combined-group model, `~ 0 + GROUP + (1 | PATIENTCODE)`. AIRWAY is mostly paired within patients; SEX is between patients, so SEX main effects compare patients rather than paired samples. SAE male infection comparisons use only three infected/uninfected-comparable patients and, like any contrast supported by fewer than `MIN_PATIENTS_CONFIDENT` patients, are flagged exploratory.
 - **Outputs:** DREAM tables and selector configuration are written below `output/rna_seq/` with selector-specific filename prefixes. There is no dose-response analysis: PEAT and PINE are single exposure levels compared with PBS.
 
+## Selected tests and comparisons
+
+The table below reflects the validated `TESTS` selector after sample filtering. Main-effect contrasts are adjusted for the other varying factors; interactions test only the explicitly selected factor combination. `REPORT_WITHIN` adds the requested simple-effect conditions.
+
+```{r selector-summary}
+knitr::kable(
+  rnaseq_analysis_selector_summary,
+  caption = "RNA-seq tests and comparisons selected for this analysis"
+)
+```
+
 # Data contract and QC rules
 
 Required inputs use repository conventions: `data/raw/HPIV3_RNA_data.csv` has `GENEID` in its first column and one raw-count column per sample; sample column names are treated as `SAMPLEID` values exactly as written, with no underscore splitting or timepoint suffix parsing. The required `data/raw/HPIV3_metadata.csv` has one row per `SAMPLEID` and the columns `SAMPLEID`, `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and `SEX`. Optional metadata columns `AGE`, `RACE`, and `SMOKER` are retained when present.
@@ -425,6 +436,45 @@ rnaseq_selector_config <- tibble::tibble(
     as.character(MIN_PATIENTS_CONFIDENT)
   )
 )
+selector_comparison_description <- function(test) {
+  factors_i <- strsplit(test, ":", fixed = TRUE)[[1]]
+  if (length(factors_i) > 1) {
+    interaction_note <- "estimable contrasts across observed joint factor levels"
+    if ("EXPOSURE" %in% factors_i) {
+      interaction_note <- paste0(
+        interaction_note, "; exposure pairs: ",
+        paste(EXPOSURE_CONTRASTS, collapse = ", ")
+      )
+    }
+    return(interaction_note)
+  }
+  factor_i <- factors_i[[1]]
+  observed_levels <- intersect(
+    RNA_FACTOR_LEVELS[[factor_i]],
+    unique(stats::na.omit(as.character(selected_metadata[[factor_i]])))
+  )
+  if (factor_i == "EXPOSURE") {
+    return(paste(EXPOSURE_CONTRASTS, collapse = ", "))
+  }
+  if (length(observed_levels) < 2) {
+    return("no varying levels remain after sample selection")
+  }
+  paste0(paste(observed_levels[-1], collapse = " / "), " vs ", observed_levels[[1]])
+}
+rnaseq_analysis_selector_summary <- tibble::tibble(
+  test = VALID_TESTS,
+  factors = vapply(
+    VALID_TESTS,
+    function(test) paste(strsplit(test, ":", fixed = TRUE)[[1]], collapse = " × "),
+    character(1)
+  ),
+  test_type = ifelse(
+    grepl(":", VALID_TESTS, fixed = TRUE),
+    "Explicit interaction",
+    "Main effect (adjusted for other varying factors)"
+  ),
+  comparisons = vapply(VALID_TESTS, selector_comparison_description, character(1))
+)
 
 selected_metadata <- selected_metadata %>%
   dplyr::arrange(match(SAMPLENAME, colnames(count_matrix_all)))
@@ -604,6 +654,47 @@ if (!RUN_NORMALIZATION) {
     tibble::tibble(SAMPLENAME = names(size_factors), size_factor = as.numeric(size_factors)),
     file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_tmm_size_factors.csv")
   )
+}
+```
+
+```{r vst-heatmap}
+if (!vst_available) {
+  message("RNA-seq heatmap skipped because VST values are unavailable.")
+} else {
+  gene_variance <- apply(vst_matrix, 1, stats::var, na.rm = TRUE)
+  variable_gene_indices <- which(is.finite(gene_variance) & gene_variance > 0)
+  if (length(variable_gene_indices) < 2 || ncol(vst_matrix) < 2) {
+    message("RNA-seq heatmap skipped; at least two variable genes and samples are needed.")
+  } else {
+    top_gene_indices <- variable_gene_indices[
+      order(gene_variance[variable_gene_indices], decreasing = TRUE)
+    ]
+    top_gene_indices <- utils::head(top_gene_indices, 50L)
+    sample_annotation <- selected_metadata %>%
+      dplyr::select(SAMPLENAME, INFECTION, AIRWAY, SEX, HORMONE, EXPOSURE) %>%
+      as.data.frame()
+    rownames(sample_annotation) <- sample_annotation$SAMPLENAME
+    sample_annotation$SAMPLENAME <- NULL
+    sample_annotation <- sample_annotation[
+      colnames(vst_matrix), , drop = FALSE
+    ]
+    heatmap_file <- file.path(
+      PATH_OUTPUT, RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_vst_heatmap.png"
+    )
+    dir.create(dirname(heatmap_file), recursive = TRUE, showWarnings = FALSE)
+    pheatmap::pheatmap(
+      vst_matrix[top_gene_indices, , drop = FALSE],
+      scale = "row",
+      annotation_col = sample_annotation,
+      show_rownames = length(top_gene_indices) <= 30,
+      show_colnames = ncol(vst_matrix) <= 40,
+      clustering_method = "complete",
+      filename = heatmap_file,
+      width = 14,
+      height = 10,
+      silent = TRUE
+    )
+  }
 }
 ```
 
@@ -1328,51 +1419,40 @@ Volcano and unique/shared-gene overlap outputs use the selector-driven contrasts
 if (nrow(rnaseq_model_results) == 0) {
   message("No DREAM contrast results are available for volcano and gene-overlap outputs.")
 } else {
-  volcano_data <- rnaseq_model_results %>%
-    dplyr::mutate(
-      neg_log10_q = -log10(pmax(q.value, .Machine$double.xmin)),
-      volcano_class = dplyr::case_when(
-        significant & logFC >= RNA_LOG2FC_CUTOFF ~ "Positive effect",
-        significant & logFC <= -RNA_LOG2FC_CUTOFF ~ "Negative effect",
-        TRUE ~ "Not significant"
-      ),
-      plot_panel = contrast_id
-    )
-  volcano_panels <- utils::head(unique(volcano_data$plot_panel), MAX_VOLCANO_PANELS)
-  volcano_plot_data <- volcano_data %>%
-    dplyr::filter(plot_panel %in% volcano_panels)
-  p_volcano <- ggplot2::ggplot(
-    volcano_plot_data,
-    ggplot2::aes(x = logFC, y = neg_log10_q, color = volcano_class)
-  ) +
-    ggplot2::geom_point(alpha = 0.55, size = 1) +
-    ggplot2::geom_vline(
-      xintercept = c(-RNA_LOG2FC_CUTOFF, RNA_LOG2FC_CUTOFF),
-      linetype = "dashed",
-      color = "grey50"
-    ) +
-    ggplot2::geom_hline(
-      yintercept = -log10(RNA_ADJ_P_CUTOFF),
-      linetype = "dashed",
-      color = "grey50"
-    ) +
-    ggplot2::scale_color_manual(values = c(
-      "Negative effect" = "#2C7BB6",
-      "Not significant" = "grey75",
-      "Positive effect" = "#D7191C"
-    )) +
-    ggplot2::facet_wrap(~ plot_panel, scales = "free_y") +
-    ggplot2::theme_minimal(base_size = 10) +
-    ggplot2::theme(legend.position = "bottom") +
-    ggplot2::labs(
+    volcano_data <- rnaseq_model_results %>%
+      dplyr::mutate(
+        comparison = paste0(
+          "Test: ", test, " | ", contrast_label, " | split: ", split_values
+        ),
+        log2FC = logFC,
+        `adj.P.Val` = q.value,
+        DEG = dplyr::case_when(
+          significant & logFC >= RNA_LOG2FC_CUTOFF ~ "UP",
+          significant & logFC <= -RNA_LOG2FC_CUTOFF ~ "DOWN",
+          TRUE ~ "NO"
+        )
+      ) %>%
+      dplyr::group_by(comparison) %>%
+      dplyr::arrange(q.value, dplyr::desc(abs(log2FC)), .by_group = TRUE) %>%
+      dplyr::mutate(
+        delabel = dplyr::if_else(
+          DEG != "NO" & dplyr::row_number() <= 5L,
+          as.character(GENEID),
+          NA_character_
+        )
+      ) %>%
+      dplyr::ungroup()
+    volcano_panels <- utils::head(unique(volcano_data$comparison), MAX_VOLCANO_PANELS)
+    volcano_plot_data <- volcano_data %>%
+      dplyr::filter(comparison %in% volcano_panels)
+    p_volcano <- plot_volcano_deg(
+      volcano_plot_data,
       title = "HPIV3 RNA-seq DREAM/voom contrast volcano plots",
       subtitle = sprintf(
-        "Significant: BH FDR < %.3g and |log2FC| >= %.1f; first %d selected contrasts",
+        "BH FDR < %.3g and |log2FC| >= %.1f; first %d selected comparisons",
         RNA_ADJ_P_CUTOFF, RNA_LOG2FC_CUTOFF, length(volcano_panels)
       ),
-      x = "Contrast log2 fold-change",
-      y = "−log10 adjusted p-value",
-      color = NULL
+      y_limits = VOLCANO_Y_LIMITS
     )
   print(p_volcano)
   save_plot(

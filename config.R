@@ -43,6 +43,7 @@ EXPOSURE_COLORS_LIGHT <- c(
 # RNA-seq report, tables, and volcano plots all apply the same rule.
 ADJ_P_CUTOFF            <- ALPHA_Q
 LOG2FC_CUTOFF           <- 1.0
+VOLCANO_Y_LIMITS        <- c(0, 50)
 DREAM_N_CORES           <- 4
 GENE_BACKGROUND_THRESHOLD <- 10
 
