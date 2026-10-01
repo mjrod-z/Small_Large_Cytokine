@@ -1231,6 +1231,226 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
     dplyr::ungroup()
 }
 
+fit_hpiv3_hormone_models <- function(data, protein_cols,
+                                    protein_status = NULL,
+                                    pseudocount = PSEUDOCOUNT,
+                                    alpha_q = ALPHA_Q,
+                                    min_nonmissing_per_group = 2L,
+                                    min_total_nonmissing = 3L,
+                                    control_level = "NONE",
+                                    case_level = "E2") {
+  stopifnot(is.data.frame(data))
+  protein_cols <- intersect(protein_cols, names(data))
+  strata <- data %>% dplyr::distinct(AIRWAY, TIMEPOINT, EXPOSURE)
+  sex_groups <- c("All", intersect(c("F", "M"), unique(as.character(data$SEX))))
+
+  if (is.null(protein_status)) {
+    protein_status <- tibble::tibble(
+      PROTEIN = protein_cols,
+      included = TRUE,
+      exclusion_reason = NA_character_
+    )
+  }
+  protein_status <- protein_status %>%
+    dplyr::select(PROTEIN, included, exclusion_reason)
+
+  results <- list()
+  idx <- 1L
+
+  for (row_idx in seq_len(nrow(strata))) {
+    airway_i <- strata$AIRWAY[[row_idx]]
+    timepoint_i <- strata$TIMEPOINT[[row_idx]]
+    exposure_i <- strata$EXPOSURE[[row_idx]]
+
+    stratum_data <- data %>%
+      dplyr::filter(
+        AIRWAY == airway_i,
+        TIMEPOINT == timepoint_i,
+        EXPOSURE == exposure_i
+      )
+
+    for (sex_group in sex_groups) {
+      sex_data <- if (sex_group == "All") {
+        stratum_data
+      } else {
+        stratum_data %>% dplyr::filter(as.character(SEX) == sex_group)
+      }
+
+      for (protein in protein_cols) {
+        protein_rule <- protein_status %>% dplyr::filter(PROTEIN == protein)
+        included <- if (nrow(protein_rule) == 1) isTRUE(protein_rule$included[[1]]) else TRUE
+        exclusion_reason <- if (nrow(protein_rule) == 1) protein_rule$exclusion_reason[[1]] else NA_character_
+
+        dat <- sex_data %>%
+          dplyr::transmute(
+            PATIENTCODE = PATIENTCODE,
+            HORMONE = factor(as.character(HORMONE), levels = c(control_level, case_level)),
+            VALUE = .data[[protein]]
+          ) %>%
+          dplyr::filter(!is.na(PATIENTCODE), !is.na(HORMONE), !is.na(VALUE))
+
+        n_obs <- nrow(dat)
+        n_none <- sum(dat$HORMONE == control_level)
+        n_e2 <- sum(dat$HORMONE == case_level)
+        n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
+        repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
+
+        result_row <- tibble::tibble(
+          AIRWAY = as.character(airway_i),
+          HORMONE = "All",
+          TIMEPOINT = as.character(timepoint_i),
+          EXPOSURE = as.character(exposure_i),
+          INFECTION = "All",
+          SEX = sex_group,
+          PROTEIN = protein,
+          comparison = "HORMONE",
+          contrast = paste(case_level, "-", control_level),
+          n_samples = n_obs,
+          n_none = n_none,
+          n_e2 = n_e2,
+          n_donors = n_donors,
+          used_random_intercept = FALSE,
+          model_type = NA_character_,
+          model_status = "skipped",
+          failure_reason = NA_character_,
+          estimate = NA_real_,
+          SE = NA_real_,
+          p.value = NA_real_,
+          singular_fit = NA
+        )
+
+        if (!included) {
+          result_row$failure_reason <- exclusion_reason
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+        if (n_obs < min_total_nonmissing) {
+          result_row$failure_reason <- paste0(
+            "fewer than ", min_total_nonmissing, " non-missing observations"
+          )
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+        if (n_none < min_nonmissing_per_group || n_e2 < min_nonmissing_per_group) {
+          result_row$failure_reason <- paste0(
+            "insufficient per-hormone observations (NONE=", n_none, ", E2=", n_e2, ")"
+          )
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+
+        dat <- dat %>% dplyr::mutate(log2_value = log2(as.numeric(VALUE) + pseudocount))
+        fit <- NULL
+        used_lmer <- FALSE
+        singular_fit <- FALSE
+        lmer_error <- NA_character_
+        lm_error <- NA_character_
+
+        if (n_donors >= 2 && repeated_donor) {
+          fit <- tryCatch(
+            lme4::lmer(log2_value ~ HORMONE + (1 | PATIENTCODE), data = dat),
+            error = function(e) {
+              lmer_error <<- conditionMessage(e)
+              NULL
+            }
+          )
+          if (!is.null(fit)) {
+            singular_fit <- isTRUE(tryCatch(lme4::isSingular(fit), error = function(...) FALSE))
+            if (!singular_fit) used_lmer <- TRUE
+          }
+        }
+
+        if (!used_lmer) {
+          fit <- tryCatch(
+            stats::lm(log2_value ~ HORMONE, data = dat),
+            error = function(e) {
+              lm_error <<- conditionMessage(e)
+              NULL
+            }
+          )
+          if (is.null(fit)) {
+            base_reason <- if (singular_fit) {
+              "singular mixed model and fallback linear model failed"
+            } else {
+              "model fitting failed"
+            }
+            detail_reason <- if (!is.na(lm_error) && nzchar(lm_error)) lm_error else lmer_error
+            result_row$failure_reason <- if (is.na(detail_reason) || !nzchar(detail_reason)) {
+              base_reason
+            } else {
+              paste0(base_reason, ": ", detail_reason)
+            }
+            result_row$singular_fit <- singular_fit
+            results[[idx]] <- result_row
+            idx <- idx + 1L
+            next
+          }
+        }
+
+        contrast_error <- NA_character_
+        contrast <- tryCatch(
+          {
+            emm <- emmeans::emmeans(fit, ~ HORMONE, weights = "equal")
+            hormone_levels <- levels(emm)[["HORMONE"]]
+            ctrl_idx <- match(control_level, hormone_levels)
+            if (is.na(ctrl_idx)) stop("Control level '", control_level, "' not found in HORMONE results.")
+            emmeans::contrast(emm, method = "trt.vs.ctrl", ref = ctrl_idx, adjust = "none")
+          },
+          error = function(e) {
+            contrast_error <<- conditionMessage(e)
+            NULL
+          }
+        )
+        if (is.null(contrast)) {
+          result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
+            "emmeans contrast failed"
+          } else {
+            paste0("emmeans contrast failed: ", contrast_error)
+          }
+          result_row$singular_fit <- singular_fit
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+
+        stats_row <- as.data.frame(summary(contrast))
+        result_row$used_random_intercept <- used_lmer
+        result_row$model_type <- if (used_lmer) "lmer" else "lm"
+        result_row$model_status <- if (used_lmer) "modeled" else "modeled_fallback"
+        result_row$failure_reason <- if (!used_lmer && singular_fit) {
+          "singular mixed model; used linear-model fallback"
+        } else if (!used_lmer && !(n_donors >= 2 && repeated_donor)) {
+          "random intercept unsupported; used linear-model fallback"
+        } else {
+          NA_character_
+        }
+        result_row$estimate <- stats_row$estimate[[1]]
+        result_row$SE <- stats_row$SE[[1]]
+        result_row$p.value <- stats_row$p.value[[1]]
+        result_row$singular_fit <- singular_fit
+        results[[idx]] <- result_row
+        idx <- idx + 1L
+      }
+    }
+  }
+
+  dplyr::bind_rows(results) %>%
+    dplyr::group_by(AIRWAY, TIMEPOINT, EXPOSURE, SEX) %>%
+    dplyr::mutate(
+      q.value = {
+        q_vals <- rep(NA_real_, dplyr::n())
+        keep <- which(!is.na(p.value))
+        if (length(keep) > 0) q_vals[keep] <- p.adjust(p.value[keep], method = "fdr")
+        q_vals
+      },
+      significant = !is.na(q.value) & q.value < alpha_q
+    ) %>%
+    dplyr::ungroup()
+}
+
 fit_hpiv3_exposure_models <- function(data, protein_cols,
                                       protein_status = NULL,
                                       pseudocount = PSEUDOCOUNT,
@@ -1239,7 +1459,11 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
                                       min_total_nonmissing = 3L) {
   stopifnot(is.data.frame(data))
   protein_cols <- intersect(protein_cols, names(data))
-  strata <- data %>% dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION)
+  model_data <- data %>%
+    dplyr::filter(is.na(SEX) | as.character(SEX) != "All")
+  pooled_data <- model_data %>% dplyr::mutate(SEX = "All")
+  model_data <- dplyr::bind_rows(model_data, pooled_data)
+  strata <- model_data %>% dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION)
 
   if (is.null(protein_status)) {
     protein_status <- tibble::tibble(
@@ -1261,7 +1485,7 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
     sex_i <- strata$SEX[[row_idx]]
     infection_i <- strata$INFECTION[[row_idx]]
 
-    stratum_data <- data %>%
+    stratum_data <- model_data %>%
       dplyr::filter(
         AIRWAY == airway_i,
         HORMONE == hormone_i,
