@@ -1002,6 +1002,136 @@ plot_hpiv3_ranked_bars <- function(model_results,
   p
 }
 
+plot_hpiv3_volcano <- function(model_results,
+                                model_type = c("infection", "hormone", "exposure"),
+                                contrast = NULL,
+                                filters = list(),
+                                label_significant = TRUE,
+                                title = NULL) {
+  model_type <- match.arg(model_type)
+  stopifnot(is.data.frame(model_results), is.list(filters))
+
+  required_columns <- c("PROTEIN", "estimate", "p.value", "significant")
+  missing_columns <- setdiff(required_columns, names(model_results))
+  if (length(missing_columns) > 0L) {
+    stop("Model results are missing required columns: ", paste(missing_columns, collapse = ", "))
+  }
+
+  plot_df <- model_results
+  if (model_type == "exposure") {
+    if (!"comparison" %in% names(plot_df)) {
+      stop("Exposure model results must include a `comparison` column.")
+    }
+    plot_df <- plot_df[as.character(plot_df$comparison) == "EXPOSURE", , drop = FALSE]
+  } else {
+    expected_contrast <- if (model_type == "hormone") "E2 - NONE" else "HPIV3 - NONE"
+    if (is.null(contrast)) contrast <- expected_contrast
+  }
+  if (!is.null(contrast)) {
+    if (!"contrast" %in% names(plot_df)) {
+      stop("Model results must include a `contrast` column.")
+    }
+    plot_df <- plot_df[as.character(plot_df$contrast) %in% as.character(contrast), , drop = FALSE]
+  }
+
+  for (column in names(filters)) {
+    if (!column %in% names(plot_df)) {
+      stop("Unknown model-result filter column: ", column)
+    }
+    values <- filters[[column]]
+    keep <- as.character(plot_df[[column]]) %in% as.character(values)
+    if (anyNA(values)) keep <- keep | is.na(plot_df[[column]])
+    plot_df <- plot_df[keep, , drop = FALSE]
+  }
+
+  plot_df <- plot_df[
+    is.finite(as.numeric(plot_df$estimate)) & is.finite(as.numeric(plot_df$p.value)),
+    ,
+    drop = FALSE
+  ]
+  plot_title <- if (is.null(title)) paste("HPIV3", model_type, "volcano") else title
+  if (nrow(plot_df) == 0L) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = plot_title,
+          subtitle = "No modeled results match the requested filters"
+        )
+    )
+  }
+
+  context_cols <- intersect(
+    c("AIRWAY", "HORMONE", "TIMEPOINT", "EXPOSURE", "INFECTION", "SEX", "contrast"),
+    names(plot_df)
+  )
+  panel_cols <- context_cols[vapply(
+    context_cols,
+    function(column) length(unique(as.character(plot_df[[column]]))) > 1L,
+    logical(1)
+  )]
+  if (length(panel_cols) > 0L) {
+    plot_df$panel <- do.call(
+      interaction,
+      c(
+        unname(as.list(plot_df[, panel_cols, drop = FALSE])),
+        list(sep = " | ", drop = TRUE, lex.order = TRUE)
+      )
+    )
+  }
+
+  plot_df$neg_log10_p <- -log10(as.numeric(plot_df$p.value))
+  plot_df$direction <- dplyr::case_when(
+    !is.na(plot_df$significant) & plot_df$significant & plot_df$estimate > 0 ~ "Higher, significant",
+    !is.na(plot_df$significant) & plot_df$significant & plot_df$estimate < 0 ~ "Lower, significant",
+    TRUE ~ "Not significant"
+  )
+
+  p <- ggplot2::ggplot(
+    plot_df,
+    ggplot2::aes(x = estimate, y = neg_log10_p, color = direction)
+  ) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "grey55") +
+    ggplot2::geom_point(alpha = 0.8, size = 2) +
+    ggplot2::scale_color_manual(
+      values = c(
+        "Higher, significant" = UP_COLOR_DEFAULT,
+        "Lower, significant" = DOWN_COLOR_DEFAULT,
+        "Not significant" = "grey70"
+      ),
+      drop = FALSE
+    ) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.grid.minor = ggplot2::element_blank(),
+      legend.title = ggplot2::element_blank()
+    ) +
+    ggplot2::labs(
+      title = plot_title,
+      subtitle = paste0("Points colored by significance; significant at q < ", ALPHA_Q),
+      x = "Estimated log2 difference (contrast)",
+      y = expression(-log[10]("p-value"))
+    )
+
+  if (isTRUE(label_significant)) {
+    label_df <- plot_df[!is.na(plot_df$significant) & plot_df$significant, , drop = FALSE]
+    if (nrow(label_df) > 0L) {
+      p <- p + ggrepel::geom_text_repel(
+        data = label_df,
+        ggplot2::aes(label = PROTEIN),
+        size = 3,
+        max.overlaps = 30,
+        show.legend = FALSE
+      )
+    }
+  }
+
+  if (length(panel_cols) > 0L) {
+    p <- p + ggplot2::facet_wrap(~ panel, scales = "free")
+  }
+  p
+}
+
 plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
   if (!is.null(airway) && length(airway) != 1) {
     stop("`airway` must be NULL or a single value.")
