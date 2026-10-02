@@ -101,6 +101,12 @@ stopifnot(
       grepl('"Higher, significant" = UP_COLOR_DEFAULT', plots_text, fixed = TRUE) &&
       grepl('"Lower, significant" = DOWN_COLOR_DEFAULT', plots_text, fixed = TRUE) &&
       grepl("ggrepel::geom_text_repel", plots_text),
+  "HPIV3 volcano plots must mirror the reference threshold lines, UP/DOWN corner counts, and bordered theme" =
+    grepl("xintercept = c(-LOG2FC_CUTOFF, LOG2FC_CUTOFF)", plots_text, fixed = TRUE) &&
+      grepl("yintercept = -log10(ADJ_P_CUTOFF)", plots_text, fixed = TRUE) &&
+      grepl('paste0("UP: ", n_up)', plots_text, fixed = TRUE) &&
+      grepl('paste0("DOWN: ", n_down)', plots_text, fixed = TRUE) &&
+      grepl("panel.border = ggplot2::element_rect(", plots_text, fixed = TRUE),
   "Plot helpers must define shared title-wrapping and short dimension-tag utilities" =
     grepl("wrap_plot_text <- function", plots_text, fixed = TRUE) &&
       grepl("hpiv3_title_theme <- function", plots_text, fixed = TRUE) &&
