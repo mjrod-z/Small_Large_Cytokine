@@ -37,7 +37,83 @@ stopifnot(
   "Cannot locate 03_rnaseq_hpiv3_analysis.Rmd; run this script from the repository root (or tests/)." =
     !is.na(rmd_path)
 )
-rmd_text <- paste(readLines(rmd_path, warn = FALSE), collapse = "\n")
+rmd_lines <- readLines(rmd_path, warn = FALSE)
+rmd_text <- paste(rmd_lines, collapse = "\n")
+
+selector_start <- match("```{r analysis-selector}", rmd_lines)
+selector_end <- if (is.na(selector_start)) {
+  NA_integer_
+} else {
+  closing_fences <- which(seq_along(rmd_lines) > selector_start & rmd_lines == "```")
+  if (length(closing_fences) == 0) NA_integer_ else closing_fences[[1]]
+}
+stopifnot(
+  "Cannot locate the analysis-selector chunk in the Rmd" =
+    !is.na(selector_start) && !is.na(selector_end)
+)
+selector_env <- new.env(parent = globalenv())
+eval(parse(text = rmd_lines[seq.int(selector_start + 1L, selector_end - 1L)]),
+     envir = selector_env)
+
+expected_family_specs <- list(
+  EXPOSURE = list(
+    infection_levels = "NONE",
+    tests = "EXPOSURE",
+    report_within = character()
+  ),
+  EXPOSURE_INFECTED = list(
+    infection_levels = "HPIV3",
+    tests = "EXPOSURE",
+    report_within = character()
+  ),
+  HORMONE = list(
+    infection_levels = "NONE",
+    tests = "HORMONE",
+    report_within = "EXPOSURE"
+  ),
+  INFECTION = list(
+    infection_levels = c("NONE", "HPIV3"),
+    tests = "INFECTION",
+    report_within = "EXPOSURE"
+  )
+)
+stopifnot(
+  "Selector must define all four expected families" =
+    identical(selector_env$RNA_FAMILIES, names(expected_family_specs)),
+  "Family specs must preserve existing behavior and restrict EXPOSURE_INFECTED to HPIV3" =
+    all(vapply(names(expected_family_specs), function(family) {
+      identical(selector_env$family_spec(family), expected_family_specs[[family]])
+    }, logical(1))),
+  "Exposure contrasts must remain the same three pairwise comparisons" =
+    identical(selector_env$EXPOSURE_CONTRASTS,
+              c("PEAT-PBS", "PINE-PBS", "PEAT-PINE"))
+)
+
+campaign_specs <- selector_env$RNA_CAMPAIGN_SPECS
+expected_spec_keys <- as.vector(outer(
+  selector_env$RNA_AIRWAY_LEVELS,
+  selector_env$RNA_SEX_STRATA,
+  paste,
+  sep = "_"
+))
+expected_spec_keys <- unlist(lapply(names(expected_family_specs), function(family) {
+  paste(expected_spec_keys, family, sep = "_")
+}), use.names = FALSE)
+actual_spec_keys <- vapply(campaign_specs, `[[`, character(1), "spec_tag")
+stopifnot(
+  "Campaign grid must contain one spec per airway, sex stratum, and family" =
+    length(campaign_specs) == 24L &&
+    setequal(actual_spec_keys, expected_spec_keys),
+  "Every EXPOSURE_INFECTED spec must select HPIV3 and use exposure contrasts" =
+    all(vapply(Filter(function(spec) spec$FAMILY == "EXPOSURE_INFECTED",
+                      campaign_specs), function(spec) {
+      identical(spec$SUBSET$INFECTION, "HPIV3") &&
+        identical(spec$TESTS, "EXPOSURE") &&
+        identical(spec$REPORT_WITHIN, character()) &&
+        identical(spec$EXPOSURE_CONTRASTS,
+                  c("PEAT-PBS", "PINE-PBS", "PEAT-PINE"))
+    }, logical(1)))
+)
 
 extract_block <- function(text, start_anchor, end_anchor) {
   start_i <- regexpr(start_anchor, text, fixed = TRUE)
