@@ -158,6 +158,145 @@ plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
     )
 }
 
+plot_hpiv3_rnaseq_sex_comparison <- function(
+    data, airway, family, contrast_labels = NULL, top_n = 30L) {
+  airway_value <- airway
+  family_value <- family
+  required_cols <- c(
+    "GENEID", "logFC", "significant", "sex_stratum", "airway", "family",
+    "contrast_label"
+  )
+  missing_cols <- setdiff(required_cols, names(data))
+  if (length(missing_cols) > 0) {
+    stop(
+      "RNA-seq results are missing required columns: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  }
+  if (length(top_n) != 1L || is.na(top_n) || top_n < 1 || top_n != floor(top_n)) {
+    stop("`top_n` must be a positive integer.")
+  }
+
+  empty_plot <- function(reason) {
+    ggplot2::ggplot() +
+      ggplot2::theme_void() +
+      ggplot2::labs(
+        title = paste("Sex comparison:", airway, family),
+        subtitle = reason
+      )
+  }
+
+  selected <- data %>%
+    dplyr::filter(
+      .data$airway == .env$airway_value,
+      .data$family == .env$family_value,
+      .data$sex_stratum %in% c("M", "F"),
+      !is.na(.data$GENEID),
+      !is.na(.data$contrast_label),
+      is.finite(.data$logFC)
+    )
+  if (!is.null(contrast_labels)) {
+    selected <- selected %>%
+      dplyr::filter(.data$contrast_label %in% contrast_labels)
+  }
+
+  if (!all(c("M", "F") %in% unique(as.character(selected$sex_stratum)))) {
+    return(empty_plot("Male and female results are not both available."))
+  }
+
+  paired <- selected %>%
+    dplyr::group_by(.data$contrast_label, .data$GENEID, .data$sex_stratum) %>%
+    dplyr::summarise(
+      logFC = dplyr::first(.data$logFC),
+      significant = any(.data$significant %in% TRUE),
+      .groups = "drop"
+    ) %>%
+    tidyr::pivot_wider(
+      names_from = sex_stratum,
+      values_from = c(logFC, significant),
+      names_glue = "{.value}_{sex_stratum}"
+    )
+  required_pair_cols <- c("logFC_M", "logFC_F", "significant_M", "significant_F")
+  if (!all(required_pair_cols %in% names(paired))) {
+    return(empty_plot("Male and female results could not be paired."))
+  }
+
+  paired <- paired %>%
+    dplyr::filter(is.finite(.data$logFC_M), is.finite(.data$logFC_F)) %>%
+    dplyr::mutate(combined_abs_effect = abs(.data$logFC_M) + abs(.data$logFC_F)) %>%
+    dplyr::group_by(.data$contrast_label) %>%
+    dplyr::arrange(dplyr::desc(.data$combined_abs_effect), .by_group = TRUE) %>%
+    dplyr::mutate(effect_rank = dplyr::row_number()) %>%
+    dplyr::filter(.data$effect_rank <= top_n) %>%
+    dplyr::ungroup()
+
+  eligible_contrasts <- paired %>%
+    dplyr::count(.data$contrast_label, name = "n_genes") %>%
+    dplyr::filter(.data$n_genes >= 2L) %>%
+    dplyr::pull(contrast_label)
+  paired <- paired %>%
+    dplyr::filter(.data$contrast_label %in% eligible_contrasts)
+  if (nrow(paired) == 0) {
+    return(empty_plot("Fewer than two genes have paired male and female effects."))
+  }
+
+  gene_order <- paired %>%
+    dplyr::group_by(.data$GENEID) %>%
+    dplyr::summarise(
+      combined_abs_effect = max(.data$combined_abs_effect),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(.data$combined_abs_effect) %>%
+    dplyr::pull(GENEID)
+  paired$GENEID <- factor(paired$GENEID, levels = gene_order)
+
+  sex_data <- dplyr::bind_rows(
+    paired %>%
+      dplyr::transmute(
+        contrast_label, GENEID, sex = "M", logFC = logFC_M,
+        significant = significant_M
+      ),
+    paired %>%
+      dplyr::transmute(
+        contrast_label, GENEID, sex = "F", logFC = logFC_F,
+        significant = significant_F
+      )
+  )
+
+  ggplot2::ggplot(sex_data, ggplot2::aes(x = .data$logFC, y = .data$GENEID)) +
+    ggplot2::geom_segment(
+      data = paired,
+      ggplot2::aes(
+        x = .data$logFC_M, xend = .data$logFC_F,
+        y = .data$GENEID, yend = .data$GENEID
+      ),
+      inherit.aes = FALSE,
+      color = "grey75"
+    ) +
+    ggplot2::geom_vline(xintercept = 0, color = "grey50", linetype = "dashed") +
+    ggplot2::geom_point(ggplot2::aes(color = .data$sex, alpha = .data$significant), size = 2) +
+    ggplot2::scale_color_manual(values = c("M" = "#2C7BB6", "F" = "#D7191C")) +
+    ggplot2::scale_alpha_manual(
+      values = c("FALSE" = 0.4, "TRUE" = 1),
+      na.value = 0.4
+    ) +
+    ggplot2::facet_wrap(ggplot2::vars(contrast_label), scales = "free_y") +
+    ggplot2::labs(
+      title = paste("Male vs female RNA-seq effects:", airway, family),
+      subtitle = paste("Top", top_n, "paired genes per contrast; opaque points meet the DEG rule"),
+      x = expression("log"[2] * " fold change"),
+      y = "Gene",
+      color = "Sex",
+      alpha = "Significant"
+    ) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      strip.text = ggplot2::element_text(face = "bold"),
+      panel.grid.minor = ggplot2::element_blank(),
+      legend.position = "bottom"
+    )
+}
+
 sig_label_from_q <- function(q, alpha_q = ALPHA_Q) {
   dplyr::case_when(
     is.na(q)   ~ "",

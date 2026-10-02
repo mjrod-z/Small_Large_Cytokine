@@ -1761,3 +1761,154 @@ if (nrow(rnaseq_model_results) == 0) {
   }
 }
 ```
+
+# Sex-stratified effect comparisons
+
+The paired effect plots below compare male and female log2 fold changes for the
+same genes within each observed contrast. Connecting segments make direction
+and magnitude differences easy to compare; point opacity marks genes meeting
+the report's combined significance and effect-size rule. Up to 30 genes with
+the largest combined absolute male/female effect are shown per contrast.
+
+```{r sex-comparison-plots}
+if (nrow(rnaseq_model_results) == 0) {
+  message("No DREAM contrast results are available for sex-comparison plots.")
+} else {
+  paired_gene_counts <- rnaseq_model_results %>%
+    dplyr::filter(.data$sex_stratum %in% c("M", "F")) %>%
+    dplyr::group_by(.data$airway, .data$family, .data$contrast_label, .data$GENEID) %>%
+    dplyr::summarise(
+      has_male = any(.data$sex_stratum == "M"),
+      has_female = any(.data$sex_stratum == "F"),
+      .groups = "drop"
+    ) %>%
+    dplyr::filter(.data$has_male, .data$has_female) %>%
+    dplyr::count(.data$airway, .data$family, .data$contrast_label, name = "n_paired_genes") %>%
+    dplyr::filter(.data$n_paired_genes >= 2L)
+
+  sex_comparison_keys <- paired_gene_counts %>%
+    dplyr::distinct(.data$airway, .data$family) %>%
+    dplyr::arrange(.data$airway, .data$family)
+
+  for (key_i in seq_len(nrow(sex_comparison_keys))) {
+    airway_i <- sex_comparison_keys$airway[[key_i]]
+    family_i <- sex_comparison_keys$family[[key_i]]
+    contrast_labels_i <- paired_gene_counts %>%
+      dplyr::filter(.data$airway == airway_i, .data$family == family_i) %>%
+      dplyr::pull(contrast_label)
+    p_sex_comparison <- plot_hpiv3_rnaseq_sex_comparison(
+      rnaseq_model_results,
+      airway = airway_i,
+      family = family_i,
+      contrast_labels = contrast_labels_i
+    )
+    print(p_sex_comparison)
+    save_plot(
+      file.path(
+        RNA_OUTPUT_SUBDIR,
+        paste0(
+          "sex_comparison_", safe_name(airway_i), "_", safe_name(family_i), ".png"
+        )
+      ),
+      p_sex_comparison,
+      width = 14,
+      height = 9
+    )
+  }
+}
+```
+
+# Full gene-by-contrast profile matrix
+
+The exported `hpiv3_rnaseq_full_gene_contrast_profile.csv` contains one row per
+gene observed in `rnaseq_model_results`, including genes that are not
+significant. Each condition column is named
+`AIRWAY__FAMILY__SEX_STRATUM__contrast_label` (for example,
+`LAE__INFECTION__M__INFECTION=HPIV3-NONE | within EXPOSURE=PBS`) and contains
+the signed `logFC`; `NA` means that gene was not tested in that condition.
+Columns are ordered by airway, family, sex stratum, and contrast label.
+`GENEID` is the available gene identifier in the model results; no
+gene-description field is provided there.
+
+This wide matrix is designed for downstream filtering and export rather than a
+single heatmap, since it can contain many genes and condition columns. The
+summary below reports total, significant-up, significant-down, and
+not-significant genes for each modeled condition. Filter columns by their
+prefixes to select an airway, family, or sex stratum, and compare the resulting
+logFC values across contrasts; significance counts use the report's combined
+FDR and effect-size rule.
+
+```{r full-gene-contrast-profile}
+profile_path <- file.path(
+  RNA_OUTPUT_SUBDIR,
+  "hpiv3_rnaseq_full_gene_contrast_profile.csv"
+)
+
+if (nrow(rnaseq_model_results) == 0) {
+  rnaseq_full_gene_contrast_profile <- tibble::tibble(GENEID = character())
+  rnaseq_profile_summary <- tibble::tibble(
+    airway = character(), family = character(), sex_stratum = character(),
+    contrast_label = character(), n_genes = integer(),
+    n_significant_up = integer(), n_significant_down = integer(),
+    n_not_significant = integer()
+  )
+} else {
+  profile_condition_columns <- c(
+    "airway", "family", "sex_stratum", "contrast_label"
+  )
+  profile_condition_map <- rnaseq_model_results %>%
+    dplyr::distinct(dplyr::across(dplyr::all_of(profile_condition_columns))) %>%
+    dplyr::arrange(
+      .data$airway, .data$family, .data$sex_stratum, .data$contrast_label
+    ) %>%
+    dplyr::mutate(
+      profile_column = paste(
+        .data$airway, .data$family, .data$sex_stratum, .data$contrast_label,
+        sep = "__"
+      )
+    )
+
+  rnaseq_full_gene_contrast_profile <- rnaseq_model_results %>%
+    dplyr::select(
+      GENEID, dplyr::all_of(profile_condition_columns), logFC
+    ) %>%
+    dplyr::inner_join(profile_condition_map, by = profile_condition_columns) %>%
+    dplyr::group_by(.data$GENEID, .data$profile_column) %>%
+    dplyr::summarise(logFC = dplyr::first(.data$logFC), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = profile_column, values_from = logFC) %>%
+    dplyr::arrange(.data$GENEID) %>%
+    dplyr::select(
+      GENEID, dplyr::all_of(profile_condition_map$profile_column)
+    )
+
+  rnaseq_profile_summary <- rnaseq_model_results %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(profile_condition_columns))) %>%
+    dplyr::summarise(
+      n_genes = dplyr::n_distinct(.data$GENEID),
+      n_significant_up = sum(
+        .data$significant %in% TRUE & .data$logFC > 0, na.rm = TRUE
+      ),
+      n_significant_down = sum(
+        .data$significant %in% TRUE & .data$logFC < 0, na.rm = TRUE
+      ),
+      n_not_significant = sum(!(.data$significant %in% TRUE), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(
+      .data$airway, .data$family, .data$sex_stratum, .data$contrast_label
+    )
+}
+
+save_table(rnaseq_full_gene_contrast_profile, profile_path)
+if (nrow(rnaseq_profile_summary) > 0) {
+  knitr::kable(
+    rnaseq_profile_summary,
+    caption = paste(
+      "Gene counts by RNA-seq condition.",
+      "Up/down counts require significance and the report's logFC cutoff."
+    )
+  )
+} else {
+  message("No modeled conditions are available for the profile summary.")
+}
+```
