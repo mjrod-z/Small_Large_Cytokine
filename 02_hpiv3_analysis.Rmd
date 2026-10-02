@@ -60,9 +60,9 @@ QC and modeling rules:
 - Hormone levels are kept as `NONE` and `E2`.
 - Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum.
 - Infection effects are modeled on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE` within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × SEX` strata, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
-- Hormone effects are modeled as `E2` versus `NONE` within `AIRWAY × TIMEPOINT × EXPOSURE × SEX` strata, pooling infection status and using the same random-intercept fallback.
+- Hormone effects are modeled as `E2` versus `NONE` within `AIRWAY × TIMEPOINT × EXPOSURE × INFECTION × SEX` strata, using the same random-intercept fallback.
 - Sex effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × INFECTION` strata.
-- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata, including pooled `SEX = "All"` results.
+- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata, including pooled `SEX = "All"` results; only Peat-vs-PBS and Pine-vs-PBS contrasts are tested.
 
 # Load and prepare HPIV3 data
 
@@ -231,24 +231,66 @@ save_hpiv3_ranked_comparisons <- function(
       as.character(.data[[target_column]]) %in% target_levels,
       is.finite(estimate)
     )
+  dimension_columns <- intersect(
+    c("AIRWAY", "HORMONE", "TIMEPOINT", "INFECTION"),
+    names(available)
+  )
   comparison_groups <- available %>%
-    dplyr::distinct(SEX, target_value = .data[[target_column]]) %>%
-    dplyr::arrange(target_value, factor(SEX, levels = c("All", "M", "F")))
+    dplyr::distinct(
+      dplyr::across(dplyr::all_of(c(dimension_columns, "SEX"))),
+      target_value = .data[[target_column]]
+    ) %>%
+    dplyr::arrange(
+      dplyr::across(dplyr::all_of(dimension_columns)),
+      target_value,
+      factor(SEX, levels = c("All", "M", "F"))
+    )
   output_index <- vector("list", nrow(comparison_groups))
 
   for (group_index in seq_len(nrow(comparison_groups))) {
-    sex_value <- as.character(comparison_groups$SEX[[group_index]])
+    group_values <- comparison_groups[group_index, , drop = FALSE]
+    sex_value <- as.character(group_values$SEX[[1]])
     target_value <- as.character(comparison_groups$target_value[[group_index]])
     sex_label <- unname(hpiv3_ranked_sex_labels[[sex_value]])
-    chart_filters <- stats::setNames(
-      list(sex_value, target_value),
-      c("SEX", target_column)
+    chart_filters <- as.list(group_values[1, dimension_columns, drop = FALSE])
+    chart_filters$SEX <- sex_value
+    chart_filters[[target_column]] <- target_value
+    group_data <- available
+    for (filter_column in names(chart_filters)) {
+      filter_value <- as.character(chart_filters[[filter_column]])
+      if (is.na(filter_value)) {
+        group_data <- group_data %>%
+          dplyr::filter(is.na(.data[[filter_column]]))
+      } else {
+        group_data <- group_data %>%
+          dplyr::filter(as.character(.data[[filter_column]]) == filter_value)
+      }
+    }
+    dimension_label <- paste(
+      paste(dimension_columns, vapply(
+        dimension_columns,
+        function(column) as.character(group_values[[column]][[1]]),
+        character(1)
+      ), sep = "="),
+      collapse = " | "
+    )
+    dimension_filename <- paste(
+      paste(
+        tolower(dimension_columns),
+        vapply(
+          dimension_columns,
+          function(column) tolower(safe_name(as.character(group_values[[column]][[1]]))),
+          character(1)
+        ),
+        sep = "-"
+      ),
+      collapse = "_"
     )
     plot_title <- switch(
       category_label,
-      exposure = paste("Exposure effect:", target_value, "vs PBS_Control —", sex_label),
-      hormone = paste("Hormone effect (E2 vs NONE),", target_value, "—", sex_label),
-      infection = paste("Infection effect (HPIV3 vs NONE),", target_value, "—", sex_label)
+      exposure = paste("Exposure effect:", target_value, "vs PBS_Control —", dimension_label, "|", sex_label),
+      hormone = paste("Hormone effect (E2 vs NONE),", target_value, "—", dimension_label, "|", sex_label),
+      infection = paste("Infection effect (HPIV3 vs NONE),", target_value, "—", dimension_label, "|", sex_label)
     )
     chart <- plot_hpiv3_ranked_bars(
       results,
@@ -261,7 +303,8 @@ save_hpiv3_ranked_comparisons <- function(
       "ranked_bars",
       paste0(
         "hpiv3_ranked_", category_label, "_",
-        safe_name(target_value), "_sex_", tolower(sex_value), ".png"
+        safe_name(target_value), "_", dimension_filename,
+        "_sex-", tolower(sex_value), ".png"
       )
     )
     save_plot(output_file, chart, width = 12, height = 9, dpi = 300, bg = "white")
@@ -278,7 +321,8 @@ save_hpiv3_ranked_comparisons <- function(
       "volcano",
       paste0(
         "hpiv3_volcano_", category_label, "_",
-        safe_name(target_value), "_sex_", tolower(sex_value), ".png"
+        safe_name(target_value), "_", dimension_filename,
+        "_sex-", tolower(sex_value), ".png"
       )
     )
     save_plot(volcano_file, volcano_chart, width = 9, height = 7, dpi = 300, bg = "white")
@@ -287,16 +331,14 @@ save_hpiv3_ranked_comparisons <- function(
     output_index[[group_index]] <- tibble::tibble(
       comparison = category_label,
       target = target_value,
+      AIRWAY = if ("AIRWAY" %in% dimension_columns) as.character(group_values$AIRWAY[[1]]) else NA_character_,
+      HORMONE = if ("HORMONE" %in% dimension_columns) as.character(group_values$HORMONE[[1]]) else NA_character_,
+      TIMEPOINT = if ("TIMEPOINT" %in% dimension_columns) as.character(group_values$TIMEPOINT[[1]]) else NA_character_,
+      INFECTION = if ("INFECTION" %in% dimension_columns) as.character(group_values$INFECTION[[1]]) else NA_character_,
       SEX = sex_value,
       sex_label = sex_label,
       output_file = output_file,
-      n_modeled_proteins = nrow(
-        available %>%
-          dplyr::filter(
-            SEX == sex_value,
-            as.character(.data[[target_column]]) == target_value
-          )
-      )
+      n_modeled_proteins = nrow(group_data)
     )
   }
   dplyr::bind_rows(output_index)
@@ -305,6 +347,10 @@ save_hpiv3_ranked_comparisons <- function(
 hpiv3_ranked_bar_plot_index <- tibble::tibble(
  comparison = character(),
  target = character(),
+ AIRWAY = character(),
+ HORMONE = character(),
+ TIMEPOINT = character(),
+ INFECTION = character(),
  SEX = character(),
  sex_label = character(),
  output_file = character(),
@@ -314,10 +360,10 @@ hpiv3_ranked_bar_plot_index <- tibble::tibble(
 
 ## Peat and Pine versus PBS
 
-The exposure comparison table reports Peat/Pine minus PBS, so positive and
-negative bars consistently mean higher and lower abundance under the named
-exposure, respectively. Comparisons are available for pooled samples, males,
-and females.
+Exposure comparisons are referenced to PBS within each airway, hormone,
+infection, and sex stratum. The table reports Peat/Pine minus PBS, so positive
+and negative bars consistently mean higher and lower abundance under the
+named exposure, respectively.
 
 ```{r hpiv3-ranked-exposure-bars, fig.width=12, fig.height=9}
 hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
@@ -334,8 +380,9 @@ hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
 
 ## E2 versus NONE within each exposure
 
-These hormone comparisons are fitted within each airway, timepoint, exposure,
-and sex group, with infection status pooled.
+These hormone comparisons are fitted separately within each airway, timepoint,
+exposure, infection, and sex group. Each ranked-bar and volcano output records
+the infection stratum in its title and filename.
 
 ```{r hpiv3-ranked-hormone-bars, fig.width=12, fig.height=9}
 hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
@@ -370,6 +417,137 @@ save_table(
  hpiv3_ranked_bar_plot_index,
  file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_ranked_bar_plot_index.csv")
 )
+```
+
+# Infection-stratified exposure overlaps
+
+Each Euler plot compares significant PBS-referenced exposure responses between
+uninfected (`NONE`) and HPIV3-infected samples within one airway, hormone,
+timepoint, and sex stratum. Shared proteins suggest a response present in both
+baseline and infected settings; proteins unique to HPIV3 may reflect
+infection-specific priming, while proteins unique to `NONE` may represent
+baseline-only responses. Membership CSVs list the proteins and their infection
+set membership for auditability. Sets are skipped when either infection group
+has fewer than two significant modeled proteins or lacks modeled results.
+Euler membership is based on significance regardless of direction; the CSV
+also records each group's estimated direction and adjusted p-value.
+
+```{r hpiv3-exposure-euler}
+filter_hpiv3_values <- function(data, filters) {
+ for (column in names(filters)) {
+   value <- as.character(filters[[column]])
+   if (is.na(value)) {
+     data <- data %>% dplyr::filter(is.na(.data[[column]]))
+   } else {
+     data <- data %>% dplyr::filter(as.character(.data[[column]]) == value)
+   }
+ }
+ data
+}
+
+hpiv3_euler_strata <- hpiv3_ranked_exposure_results %>%
+ dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT, SEX, target_exposure) %>%
+ dplyr::arrange(AIRWAY, HORMONE, TIMEPOINT, SEX, target_exposure)
+
+for (euler_index in seq_len(nrow(hpiv3_euler_strata))) {
+ euler_key <- hpiv3_euler_strata[euler_index, , drop = FALSE]
+ euler_filters <- as.list(euler_key[1, , drop = FALSE])
+ euler_results <- filter_hpiv3_values(
+   hpiv3_ranked_exposure_results,
+   euler_filters
+ )
+ modeled_euler_results <- euler_results %>%
+   dplyr::filter(
+     model_status %in% c("modeled", "modeled_fallback"),
+     !is.na(p.value)
+   )
+ modeled_infections <- unique(as.character(modeled_euler_results$INFECTION))
+ significant_counts <- modeled_euler_results %>%
+   dplyr::filter(significant %in% TRUE) %>%
+   dplyr::group_by(INFECTION) %>%
+   dplyr::summarise(n_proteins = dplyr::n_distinct(PROTEIN), .groups = "drop")
+ significant_counts <- stats::setNames(
+   significant_counts$n_proteins,
+   as.character(significant_counts$INFECTION)
+ )
+ n_none <- if ("NONE" %in% names(significant_counts)) significant_counts[["NONE"]] else 0L
+ n_hpiv3 <- if ("HPIV3" %in% names(significant_counts)) significant_counts[["HPIV3"]] else 0L
+ exposure_slug <- if (grepl("^Peat", euler_key$target_exposure[[1]], ignore.case = TRUE)) {
+   "peat"
+ } else {
+   "pine"
+ }
+ euler_label <- paste(
+   euler_key$target_exposure[[1]], "vs PBS_Control |",
+   "AIRWAY =", euler_key$AIRWAY[[1]],
+   "| HORMONE =", euler_key$HORMONE[[1]],
+   "| TIMEPOINT =", euler_key$TIMEPOINT[[1]],
+   "| SEX =", euler_key$SEX[[1]]
+ )
+ euler_stem <- paste0(
+   "hpiv3_euler_", exposure_slug,
+   "_airway-", tolower(safe_name(as.character(euler_key$AIRWAY[[1]]))),
+   "_hormone-", tolower(safe_name(as.character(euler_key$HORMONE[[1]]))),
+   "_sex-", tolower(safe_name(as.character(euler_key$SEX[[1]]))),
+   "_timepoint-", tolower(safe_name(as.character(euler_key$TIMEPOINT[[1]])))
+ )
+
+ if (!all(c("NONE", "HPIV3") %in% modeled_infections)) {
+   message(
+     "Protein Euler plot skipped for ", euler_label,
+     ": one infection stratum has no modeled results."
+   )
+   next
+ }
+ if (n_none < 2L || n_hpiv3 < 2L) {
+   message(
+     "Protein Euler plot skipped for ", euler_label,
+     ": at least two significant proteins per infection stratum are required ",
+     "(NONE=", n_none, ", HPIV3=", n_hpiv3, ")."
+   )
+   next
+ }
+
+ euler_summary <- summarize_unique_significant_proteins(
+   modeled_euler_results,
+   group_var = "INFECTION",
+   group_levels = c("NONE", "HPIV3"),
+   filters = as.list(euler_key[1, , drop = FALSE])
+ )
+ euler_membership <- euler_summary$membership_long %>%
+   dplyr::left_join(
+     modeled_euler_results %>%
+       dplyr::select(PROTEIN, INFECTION, contrast, estimate, q.value),
+     by = c("PROTEIN", "sig_group" = "INFECTION")
+   ) %>%
+   dplyr::mutate(
+     AIRWAY = euler_key$AIRWAY[[1]],
+     HORMONE = euler_key$HORMONE[[1]],
+     TIMEPOINT = euler_key$TIMEPOINT[[1]],
+     SEX = euler_key$SEX[[1]],
+     target_exposure = euler_key$target_exposure[[1]],
+     effect_direction = dplyr::case_when(
+       estimate > 0 ~ "UP",
+       estimate < 0 ~ "DOWN",
+       TRUE ~ NA_character_
+     )
+   )
+ save_table(
+   euler_membership,
+   file.path(HPIV3_OUTPUT_SUBDIR, "euler", paste0(euler_stem, "_membership.csv"))
+ )
+ euler_plot <- plot_unique_protein_euler(
+   euler_summary,
+   title_str = paste("Significant protein overlap:", euler_label)
+ )
+ print(euler_plot)
+ save_plot(
+   file.path(HPIV3_OUTPUT_SUBDIR, "euler", paste0(euler_stem, ".png")),
+   euler_plot,
+   width = 10,
+   height = 8
+ )
+}
 ```
 
 # HPIV3 abundance heatmaps
@@ -599,8 +777,10 @@ cat("  - hpiv3_exposure_model_results.csv\n")
 cat("  - hpiv3_hormone_model_results.csv\n")
 cat("  - hpiv3_ranked_exposure_model_results.csv\n")
 cat("  - hpiv3_ranked_bar_plot_index.csv\n")
-cat("  - ranked_bars/hpiv3_ranked_<comparison>_<target>_sex_<group>.png\n")
-cat("  - volcano/hpiv3_volcano_<comparison>_<target>_sex_<group>.png\n")
+cat("  - ranked_bars/hpiv3_ranked_<comparison>_<target>_airway-*_hormone-*_timepoint-*_infection-*_sex-*.png\n")
+cat("  - volcano/hpiv3_volcano_<comparison>_<target>_airway-*_hormone-*_timepoint-*_infection-*_sex-*.png\n")
+cat("  - euler/hpiv3_euler_<exposure>_airway-*_hormone-*_sex-*_timepoint-*.png\n")
+cat("  - euler/hpiv3_euler_<exposure>_airway-*_hormone-*_sex-*_timepoint-*_membership.csv\n")
 cat("  - hpiv3_abundance_heatmap_source.csv\n")
 cat("  - hpiv3_abundance_heatmap_matrix_<AIRWAY>_<TIMEPOINT>.csv\n")
 cat("  - hpiv3_abundance_heatmap_<AIRWAY>_<TIMEPOINT>.png\n")

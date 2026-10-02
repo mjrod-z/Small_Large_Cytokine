@@ -1241,7 +1241,7 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
                                     case_level = "E2") {
   stopifnot(is.data.frame(data))
   protein_cols <- intersect(protein_cols, names(data))
-  strata <- data %>% dplyr::distinct(AIRWAY, TIMEPOINT, EXPOSURE)
+  strata <- data %>% dplyr::distinct(AIRWAY, TIMEPOINT, EXPOSURE, INFECTION)
   sex_groups <- c("All", intersect(c("F", "M"), unique(as.character(data$SEX))))
 
   if (is.null(protein_status)) {
@@ -1261,12 +1261,14 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
     airway_i <- strata$AIRWAY[[row_idx]]
     timepoint_i <- strata$TIMEPOINT[[row_idx]]
     exposure_i <- strata$EXPOSURE[[row_idx]]
+    infection_i <- strata$INFECTION[[row_idx]]
 
     stratum_data <- data %>%
       dplyr::filter(
         AIRWAY == airway_i,
         TIMEPOINT == timepoint_i,
-        EXPOSURE == exposure_i
+        EXPOSURE == exposure_i,
+        INFECTION == infection_i
       )
 
     for (sex_group in sex_groups) {
@@ -1300,7 +1302,7 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
           HORMONE = "All",
           TIMEPOINT = as.character(timepoint_i),
           EXPOSURE = as.character(exposure_i),
-          INFECTION = "All",
+          INFECTION = as.character(infection_i),
           SEX = sex_group,
           PROTEIN = protein,
           comparison = "HORMONE",
@@ -1438,7 +1440,7 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
   }
 
   dplyr::bind_rows(results) %>%
-    dplyr::group_by(AIRWAY, TIMEPOINT, EXPOSURE, SEX) %>%
+    dplyr::group_by(AIRWAY, TIMEPOINT, EXPOSURE, SEX, INFECTION) %>%
     dplyr::mutate(
       q.value = {
         q_vals <- rep(NA_real_, dplyr::n())
@@ -1633,7 +1635,17 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       contrast <- tryCatch(
         {
           emm <- emmeans::emmeans(fit, ~ EXPOSURE, weights = "equal")
-          emmeans::contrast(emm, method = "pairwise", adjust = "none")
+          exposure_levels <- levels(emm)[["EXPOSURE"]]
+          pbs_idx <- match("PBS_Control", exposure_levels)
+          if (is.na(pbs_idx)) {
+            stop("PBS_Control not found in EXPOSURE levels")
+          }
+          emmeans::contrast(
+            emm,
+            method = "trt.vs.ctrl",
+            ref = pbs_idx,
+            adjust = "none"
+          )
         },
         error = function(e) {
           contrast_error <<- conditionMessage(e)
@@ -1655,7 +1667,7 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
 
       stats_rows <- as.data.frame(summary(contrast))
       if (nrow(stats_rows) == 0) {
-        result_row$failure_reason <- "no pairwise exposure contrasts available"
+        result_row$failure_reason <- "no PBS-referenced exposure contrasts available"
         result_row$singular_fit <- singular_fit
         results[[idx]] <- result_row
         idx <- idx + 1L

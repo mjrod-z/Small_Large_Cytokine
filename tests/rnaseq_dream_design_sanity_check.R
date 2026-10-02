@@ -61,11 +61,6 @@ expected_family_specs <- list(
     tests = "EXPOSURE",
     report_within = character()
   ),
-  EXPOSURE_INFECTED = list(
-    infection_levels = "HPIV3",
-    tests = "EXPOSURE",
-    report_within = character()
-  ),
   HORMONE = list(
     infection_levels = "NONE",
     tests = "HORMONE",
@@ -75,18 +70,29 @@ expected_family_specs <- list(
     infection_levels = c("NONE", "HPIV3"),
     tests = "INFECTION",
     report_within = "EXPOSURE"
+  ),
+  EXPOSURE_INFECTED = list(
+    infection_levels = "HPIV3",
+    tests = "EXPOSURE",
+    report_within = character()
+  ),
+  HORMONE_INFECTED = list(
+    infection_levels = "HPIV3",
+    tests = "HORMONE",
+    report_within = "EXPOSURE"
   )
 )
 stopifnot(
-  "Selector must define all four expected families" =
+  "Selector must define all five expected families" =
     identical(selector_env$RNA_FAMILIES, names(expected_family_specs)),
-  "Family specs must preserve existing behavior and restrict EXPOSURE_INFECTED to HPIV3" =
+  "Family specs must preserve behavior and restrict infected families to HPIV3" =
     all(vapply(names(expected_family_specs), function(family) {
       identical(selector_env$family_spec(family), expected_family_specs[[family]])
     }, logical(1))),
-  "Exposure contrasts must remain the same three pairwise comparisons" =
+  "Exposure contrasts must include only PBS-referenced comparisons" =
     identical(selector_env$EXPOSURE_CONTRASTS,
-              c("PEAT-PBS", "PINE-PBS", "PEAT-PINE"))
+              c("PEAT-PBS", "PINE-PBS")) &&
+      !grepl("PEAT-PINE", rmd_text, fixed = TRUE)
 )
 
 campaign_specs <- selector_env$RNA_CAMPAIGN_SPECS
@@ -102,7 +108,7 @@ expected_spec_keys <- unlist(lapply(names(expected_family_specs), function(famil
 actual_spec_keys <- vapply(campaign_specs, `[[`, character(1), "spec_tag")
 stopifnot(
   "Campaign grid must contain one spec per airway, sex stratum, and family" =
-    length(campaign_specs) == 24L &&
+    length(campaign_specs) == 30L &&
     setequal(actual_spec_keys, expected_spec_keys),
   "Every EXPOSURE_INFECTED spec must select HPIV3 and use exposure contrasts" =
     all(vapply(Filter(function(spec) spec$FAMILY == "EXPOSURE_INFECTED",
@@ -111,7 +117,16 @@ stopifnot(
         identical(spec$TESTS, "EXPOSURE") &&
         identical(spec$REPORT_WITHIN, character()) &&
         identical(spec$EXPOSURE_CONTRASTS,
-                  c("PEAT-PBS", "PINE-PBS", "PEAT-PINE"))
+                c("PEAT-PBS", "PINE-PBS"))
+    }, logical(1)))
+)
+stopifnot(
+  "Every HORMONE_INFECTED spec must select HPIV3 and report exposure-specific hormone effects" =
+    all(vapply(Filter(function(spec) spec$FAMILY == "HORMONE_INFECTED",
+                    campaign_specs), function(spec) {
+      identical(spec$SUBSET$INFECTION, "HPIV3") &&
+      identical(spec$TESTS, "HORMONE") &&
+      identical(spec$REPORT_WITHIN, "EXPOSURE")
     }, logical(1)))
 )
 
@@ -133,7 +148,7 @@ helper_source <- extract_block(
 RNA_HORMONE_LEVELS <- c("NONE", "E2")
 RNA_EXPOSURE_LEVELS <- c("PBS", "PEAT", "PINE")
 RNA_FACTOR_LEVELS <- list(HORMONE = RNA_HORMONE_LEVELS, EXPOSURE = RNA_EXPOSURE_LEVELS)
-EXPOSURE_CONTRASTS <- c("PEAT-PBS", "PINE-PBS", "PEAT-PINE")
+EXPOSURE_CONTRASTS <- c("PEAT-PBS", "PINE-PBS")
 
 eval(parse(text = helper_source), envir = globalenv())
 stopifnot(

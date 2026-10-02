@@ -40,10 +40,10 @@ set.seed(4454)
 # spec's samples to one sex so SEX drops out of the design entirely.
 #
 # FAMILY defines which effect is tested and which samples are included:
-#   - "EXPOSURE"  : PEAT vs PBS, PINE vs PBS, PEAT vs PINE, within uninfected
+#   - "EXPOSURE"  : PEAT vs PBS and PINE vs PBS within uninfected
 #                   (INFECTION = NONE) samples. PBS is the reference EXPOSURE
 #                   level (donor-matched via the (1 | PATIENTCODE) term).
-#   - "EXPOSURE_INFECTED": PEAT vs PBS, PINE vs PBS, PEAT vs PINE, within
+#   - "EXPOSURE_INFECTED": PEAT vs PBS and PINE vs PBS within
 #                   HPIV3-infected (72H) samples only. Tests whether
 #                   pre-exposure (washed off before infection) influenced
 #                   the transcriptional response to infection. This is a
@@ -56,12 +56,15 @@ set.seed(4454)
 #                   ordinary EXPOSURE level here (not excluded), so the
 #                   HORMONE effect can be seen on its own in PBS as well as
 #                   in PEAT/PINE. Restricted to uninfected samples.
+#   - "HORMONE_INFECTED": E2 vs NONE, reported separately within EACH EXPOSURE
+#                   level actually observed (PBS, PEAT, PINE), restricted to
+#                   HPIV3-infected samples.
 #   - "INFECTION" : HPIV3 vs NONE, reported separately within EACH EXPOSURE
 #                   level actually observed (PBS, PEAT, PINE), again with
 #                   PBS included as its own EXPOSURE stratum.
 RUN_RNASEQ_CAMPAIGN <- TRUE
 RUN_DREAM_MODELS <- RUN_RNASEQ_CAMPAIGN  # legacy alias used in report text below
-EXPOSURE_CONTRASTS <- c("PEAT-PBS", "PINE-PBS", "PEAT-PINE")
+EXPOSURE_CONTRASTS <- c("PEAT-PBS", "PINE-PBS")
 MIN_PATIENTS_CONFIDENT <- 4L
 MAX_VOLCANO_PANELS <- 24L
 
@@ -71,7 +74,7 @@ RNA_EXPOSURE_LEVELS <- c("PBS", "PEAT", "PINE")
 RNA_SEX_LEVELS <- c("M", "F")
 RNA_AIRWAY_LEVELS <- c("LAE", "SAE")
 RNA_SEX_STRATA <- c("All", "M", "F")
-RNA_FAMILIES <- c("EXPOSURE", "EXPOSURE_INFECTED", "HORMONE", "INFECTION")
+RNA_FAMILIES <- c("EXPOSURE", "HORMONE", "INFECTION", "EXPOSURE_INFECTED", "HORMONE_INFECTED")
 
 family_spec <- function(family) {
   switch(
@@ -88,6 +91,11 @@ family_spec <- function(family) {
     ),
     HORMONE = list(
       infection_levels = "NONE",
+      tests = "HORMONE",
+      report_within = "EXPOSURE"
+    ),
+    HORMONE_INFECTED = list(
+      infection_levels = "HPIV3",
       tests = "HORMONE",
       report_within = "EXPOSURE"
     ),
@@ -167,7 +175,7 @@ cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
 - **Sample selection:** retain samples with matched metadata and a non-zero library size (global QC, no family/airway/sex restriction yet). Unmatched IDs and per-sample library sizes/gene detection are reported; no minimum library-size threshold is applied.
 - **No timepoint factor:** this dataset has no `TIMEPOINT` column. Sample column names in the count matrix are treated as sample IDs as-is; they are never split at underscores or used to infer a timepoint.
 - **Input/QC checks:** require unique, non-empty gene and sample IDs; finite, non-negative integer raw counts; unique metadata `SAMPLEID`s; and recognized infection (`NONE`/`HPIV3`), hormone (`NONE`/`E2`), and exposure (`PBS`/`PEAT`/`PINE`) labels. Required metadata fields are `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and `SEX`; `AGE`, `RACE`, and `SMOKER` are optional.
-- **Campaign specs:** the modeling campaign (`RNA_CAMPAIGN_SPECS`, defined in the analysis-selector chunk) fits one DREAM/voom model per (AIRWAY, SEX stratum, FAMILY) combination: AIRWAY ∈ {LAE, SAE} is always a hard sample-selection filter (LAE and SAE are never pooled into one model); SEX stratum ∈ {All, M, F}; FAMILY ∈ {EXPOSURE, EXPOSURE_INFECTED, HORMONE, INFECTION}. EXPOSURE tests PEAT/PINE vs PBS in uninfected samples; EXPOSURE_INFECTED tests the same exposure contrasts within HPIV3-infected samples only, as a simple effect rather than a formal EXPOSURE:INFECTION interaction; HORMONE and INFECTION are each reported *within* every observed EXPOSURE level (PBS, PEAT, PINE), so PBS is treated as an ordinary EXPOSURE stratum rather than excluded.
+- **Campaign specs:** the modeling campaign (`RNA_CAMPAIGN_SPECS`, defined in the analysis-selector chunk) fits one DREAM/voom model per (AIRWAY, SEX stratum, FAMILY) combination: AIRWAY ∈ {LAE, SAE} is always a hard sample-selection filter (LAE and SAE are never pooled into one model); SEX stratum ∈ {All, M, F}; FAMILY ∈ {EXPOSURE, HORMONE, INFECTION, EXPOSURE_INFECTED, HORMONE_INFECTED}. EXPOSURE tests PEAT/PINE vs PBS in uninfected samples; EXPOSURE_INFECTED tests the same PBS-referenced contrasts within HPIV3-infected samples only, as a simple effect rather than a formal EXPOSURE:INFECTION interaction. HORMONE tests E2 vs NONE in uninfected samples and HORMONE_INFECTED repeats this within HPIV3-infected samples; both are reported *within* every observed EXPOSURE level (PBS, PEAT, PINE).
 - **Gene filtering:** each spec independently retains genes with at least `RNA_MIN_TOTAL_COUNT` total raw counts across that spec's selected samples and CPM ≥ `RNA_CPM_THRESHOLD` in at least `RNA_MIN_SAMPLE_FRACTION` of samples in at least one observed `HORMONE` stratum within that spec (AIRWAY is already fixed per spec).
 - **Normalization/QC:** by default, edgeR TMM factors are calculated on the filtered raw-count matrix. Effective library sizes are scaled to geometric mean 1 and used to produce normalized counts and blind DESeq2 VST values (`blind = TRUE`). Size factors, both matrices, and a VST PCA faceted by `AIRWAY` (when possible) are exported for the full retained dataset. Set `RUN_NORMALIZATION <- FALSE` to skip; if a required Bioconductor package is unavailable, normalization/VST and dependent plots are skipped with a message.
 - **Differential expression:** DREAM/voom runs by default (`RUN_RNASEQ_CAMPAIGN <- TRUE`). Each spec's main effect or simple-effect (`REPORT_WITHIN`) contrasts come from its own `~ 0 + GROUP + (1 | PATIENTCODE)` model, fit only on that spec's AIRWAY/SEX/INFECTION-restricted samples. SAE male infection comparisons use only three infected/uninfected-comparable patients and, like any contrast supported by fewer than `MIN_PATIENTS_CONFIDENT` patients, are flagged exploratory.
@@ -177,7 +185,7 @@ cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
 
 Required inputs use repository conventions: `data/raw/HPIV3_RNA_data.csv` has `GENEID` in its first column and one raw-count column per sample; sample column names are treated as `SAMPLEID` values exactly as written, with no underscore splitting or timepoint suffix parsing. The required `data/raw/HPIV3_metadata.csv` has one row per `SAMPLEID` and the columns `SAMPLEID`, `AIRWAY`, `PATIENTCODE`, `EXPOSURE`, `HORMONE`, `INFECTION`, and `SEX`. Optional metadata columns `AGE`, `RACE`, and `SMOKER` are retained when present.
 
-The report rejects malformed or duplicate gene/sample identifiers, non-finite, negative, or non-integer raw counts, duplicate metadata IDs, and unexpected infection, hormone, or exposure labels. Count sample IDs are matched to metadata as-is (no suffix splitting). Unmatched IDs are exported and count samples without metadata are excluded. Zero-library samples are excluded.
+The report rejects malformed or duplicate gene/sample identifiers, non-finite, negative, or non-integer raw counts, duplicate metadata IDs, and unexpected infection, hormone, or exposure labels. Count sample IDs are matched to metadata as-is (no suffix splitting). Unmatched IDs are exported and count samples without metadata are excluded. Zero-library samples are excluded. Exposure effects are anchored to PBS separately in uninfected and infected families, with only Peat-vs-PBS and Pine-vs-PBS tested.
 
 Genes must have at least `RNA_MIN_TOTAL_COUNT` total counts and CPM ≥ `RNA_CPM_THRESHOLD` in at least `RNA_MIN_SAMPLE_FRACTION` of samples in one or more observed `AIRWAY × HORMONE` strata. The report records the per-stratum and per-gene filtering decisions. Infection, sex, exposure, airway, and hormone dimensions are reported from the matched RNA-seq sample metadata; no protein-only fields and no timepoint field are required.
 
@@ -462,9 +470,7 @@ validate_rnaseq_spec <- function(spec, sample_metadata, count_matrix_all) {
       anyNA(EXPOSURE_CONTRASTS) || anyDuplicated(EXPOSURE_CONTRASTS)) {
     stop("EXPOSURE_CONTRASTS must be a non-empty vector of unique exposure pairs.")
   }
-  valid_exposure_pairs <- unique(c(
-    "PEAT-PBS", "PINE-PBS", "PEAT-PINE", "PBS-PEAT", "PBS-PINE", "PINE-PEAT"
-  ))
+  valid_exposure_pairs <- c("PEAT-PBS", "PINE-PBS")
   if (any(!EXPOSURE_CONTRASTS %in% valid_exposure_pairs)) {
     stop(
       "Unrecognized EXPOSURE_CONTRASTS value(s): ",
@@ -877,14 +883,14 @@ Each spec is modeled from its own explicit `TESTS` entry (a single factor, main-
 - **AIRWAY and SEX stratum are always SUBSET filters, never SPLIT_BY/additive covariates.** Every spec's samples are restricted to one AIRWAY (LAE or SAE) before any gene filtering, normalization, or model fitting happens, so LAE and SAE are never combined in one model. SEX stratum "All" pools both sexes (SEX becomes a plain additive adjustment term if it still varies in that spec); "M" and "F" strata restrict to one sex so SEX drops out of the design entirely.
 - **GROUP scope.** For each spec's `TESTS` entry, the tested factor is combined into a small, test-scoped `GROUP` factor using only the combinations actually observed in that spec's samples (`drop = TRUE`), so a missing cell removes only that cell's level instead of requiring every cross-product combination to exist.
 - **Additive adjustment.** Every other factor that still varies within the spec is added to the fixed-effect formula as a plain additive adjustment term (for example `~ 0 + GROUP + (1 | PATIENTCODE)` when testing `HORMONE` within a single EXPOSURE level via `REPORT_WITHIN`). Additive terms adjust the estimate without requiring their cells to be crossed with the tested factor.
-- **REPORT_WITHIN.** The HORMONE and INFECTION families set `REPORT_WITHIN = "EXPOSURE"`, so each is reported separately within every EXPOSURE level actually observed in that spec's samples -- PBS, PEAT, and PINE alike. PBS is an ordinary EXPOSURE stratum here (not excluded), so the HORMONE and INFECTION effects can be seen on their own in the PBS baseline as well as under PEAT/PINE exposure. EXPOSURE_INFECTED instead restricts the samples to HPIV3 and tests the exposure simple effects directly within that infected stratum; it does not test an EXPOSURE:INFECTION interaction.
+- **REPORT_WITHIN.** The HORMONE, HORMONE_INFECTED, and INFECTION families set `REPORT_WITHIN = "EXPOSURE"`, so each is reported separately within every EXPOSURE level actually observed in that spec's samples -- PBS, PEAT, and PINE alike. PBS is an ordinary EXPOSURE stratum here (not excluded), so hormone and infection effects can be seen in the PBS baseline as well as under PEAT/PINE exposure. EXPOSURE_INFECTED instead restricts the samples to HPIV3 and tests the exposure simple effects directly within that infected stratum; it does not test an EXPOSURE:INFECTION interaction. EXPOSURE and EXPOSURE_INFECTED use only Peat-vs-PBS and Pine-vs-PBS contrasts.
 - **Unchanged pipeline.** Raw counts, spec-specific CPM/total-count filtering, TMM normalization, `variancePartition::voomWithDreamWeights()`, and `variancePartition::dream()` are otherwise unchanged. `makeContrastsDream()` builds each contrast directly from the test-scoped `GROUP` cells actually present; both EXPOSURE families use the named pairs in `EXPOSURE_CONTRASTS`. P-values are adjusted separately for each contrast.
 
 Infection contrasts in SAE males rely on only three patients (DD001V, DD019V, DD020V); DD007T and DD050S have only uninfected SAE samples. These low-n results, including SAE-male infection tests, are exploratory and explicitly flagged. Patient identifiers retain their original case.
 
 ## Primary and secondary interaction tests
 
-The tests are exactly those defined by each spec's `TESTS` entry: a single factor requests a main effect, fit additively against the other varying factors within that spec's samples. Both EXPOSURE families use `EXPOSURE_CONTRASTS` (default `PEAT-PBS`, `PINE-PBS`, and `PEAT-PINE`); EXPOSURE_INFECTED applies them only within HPIV3-infected samples, as a stratified simple effect rather than a formal EXPOSURE:INFECTION interaction. `REPORT_WITHIN` conditions a test on each observed level of the named factor(s): a second, explicitly-augmented fit is built that crosses just the test factor(s) with the conditioning factor(s), and only that fit (not the unconditioned main-effect fit) requires those specific cells.
+The tests are exactly those defined by each spec's `TESTS` entry: a single factor requests a main effect, fit additively against the other varying factors within that spec's samples. Both EXPOSURE families use the PBS-referenced pairs in `EXPOSURE_CONTRASTS` (`PEAT-PBS` and `PINE-PBS`); EXPOSURE_INFECTED applies them only within HPIV3-infected samples, as a stratified simple effect rather than a formal EXPOSURE:INFECTION interaction. HORMONE and HORMONE_INFECTED test E2 vs NONE separately within uninfected and infected samples, respectively. `REPORT_WITHIN` conditions a test on each observed level of the named factor(s): a second, explicitly-augmented fit is built that crosses just the test factor(s) with the conditioning factor(s), and only that fit (not the unconditioned main-effect fit) requires those specific cells.
 
 ## Sex stratification
 
@@ -1578,8 +1584,10 @@ if (nrow(rnaseq_model_results) == 0) {
 # Volcano plots and unique/shared significant genes
 
 Volcano and unique/shared-gene overlap outputs use the campaign-driven contrasts in
-`rnaseq_model_results`, grouped by `airway` and `family` (EXPOSURE/EXPOSURE_INFECTED/HORMONE/INFECTION),
-with `sex_stratum` (All/M/F) and `contrast_label` distinguishing panels within each group.
+`rnaseq_model_results`, grouped by `airway` and `family` (EXPOSURE, HORMONE,
+INFECTION, EXPOSURE_INFECTED, or HORMONE_INFECTED), with `sex_stratum`
+(All/M/F) and `contrast_label` distinguishing panels within each group.
+Uninfected and infected exposure and hormone effects remain separate families.
 
 ```{r volcano-and-overlap}
 if (nrow(rnaseq_model_results) == 0) {
@@ -1607,10 +1615,8 @@ if (nrow(rnaseq_model_results) == 0) {
     ) %>%
     dplyr::ungroup()
 
-  # One volcano figure per (AIRWAY, FAMILY): LAE and SAE are always kept on
-  # separate figures (they are never modeled together), and EXPOSURE/
-  # HORMONE/INFECTION are plotted separately since they answer different
-  # questions. Panels within a figure are faceted by sex-stratum/contrast.
+  # One volcano figure per (AIRWAY, FAMILY): infection-specific exposure and
+  # hormone families are distinct, and panels are faceted by sex/contrast.
   airway_family_keys <- volcano_data_all %>%
     dplyr::distinct(airway, family) %>%
     dplyr::arrange(airway, family)
@@ -1818,6 +1824,141 @@ if (nrow(rnaseq_model_results) == 0) {
 }
 ```
 
+# Infection-stratified exposure overlaps
+
+Each gene Euler plot compares significant Peat-vs-PBS or Pine-vs-PBS responses
+between the uninfected EXPOSURE family and the infected EXPOSURE_INFECTED
+family within one airway and sex stratum. Shared genes may represent exposure
+responses retained in both baseline and infected settings; genes unique to
+EXPOSURE_INFECTED may reflect infection-specific priming, while genes unique
+to EXPOSURE may represent baseline-only responses. Membership CSVs identify
+each gene and its family membership. Plots are skipped with an informative
+message when either family has no modeled results or fewer than two
+significant genes. Euler membership is significance-based regardless of
+direction; the membership CSV also records log2 fold change, direction, and
+adjusted p-value for each gene/set.
+
+```{r rnaseq-exposure-euler}
+rnaseq_euler_keys <- rnaseq_model_results %>%
+  dplyr::filter(
+    .data$family == "EXPOSURE",
+    .data$contrast_label %in% c("EXPOSURE=PEAT-PBS", "EXPOSURE=PINE-PBS")
+  ) %>%
+  dplyr::distinct(.data$airway, .data$sex_stratum, .data$contrast_label) %>%
+  dplyr::arrange(.data$airway, .data$sex_stratum, .data$contrast_label)
+
+for (euler_index in seq_len(nrow(rnaseq_euler_keys))) {
+  euler_key <- rnaseq_euler_keys[euler_index, , drop = FALSE]
+  euler_family_results <- rnaseq_model_results %>%
+    dplyr::filter(
+      .data$airway == euler_key$airway[[1]],
+      .data$sex_stratum == euler_key$sex_stratum[[1]],
+      .data$contrast_label == euler_key$contrast_label[[1]],
+      .data$family %in% c("EXPOSURE", "EXPOSURE_INFECTED"),
+      is.finite(.data$logFC),
+      !is.na(.data$q.value)
+    )
+  family_counts <- euler_family_results %>%
+    dplyr::group_by(.data$family) %>%
+    dplyr::summarise(
+      n_modeled = dplyr::n_distinct(.data$GENEID),
+      n_significant = dplyr::n_distinct(.data$GENEID[.data$significant %in% TRUE]),
+      .groups = "drop"
+    )
+  family_counts <- stats::setNames(family_counts$n_significant, family_counts$family)
+  n_uninfected <- if ("EXPOSURE" %in% names(family_counts)) family_counts[["EXPOSURE"]] else 0L
+  n_infected <- if ("EXPOSURE_INFECTED" %in% names(family_counts)) {
+    family_counts[["EXPOSURE_INFECTED"]]
+  } else {
+    0L
+  }
+  modeled_families <- unique(as.character(euler_family_results$family))
+  exposure_slug <- if (grepl("PEAT", euler_key$contrast_label[[1]], fixed = TRUE)) {
+    "peat"
+  } else {
+    "pine"
+  }
+  euler_label <- paste(
+    euler_key$contrast_label[[1]],
+    "| AIRWAY =", euler_key$airway[[1]],
+    "| SEX =", euler_key$sex_stratum[[1]]
+  )
+  euler_stem <- paste0(
+    "hpiv3_euler_rnaseq_", exposure_slug,
+    "_airway-", tolower(safe_name(euler_key$airway[[1]])),
+    "_sex-", tolower(safe_name(euler_key$sex_stratum[[1]]))
+  )
+
+  if (!all(c("EXPOSURE", "EXPOSURE_INFECTED") %in% modeled_families)) {
+    message("Gene Euler plot skipped for ", euler_label, ": an exposure family has no modeled results.")
+    next
+  }
+  if (n_uninfected < 2L || n_infected < 2L) {
+    message(
+      "Gene Euler plot skipped for ", euler_label,
+      ": at least two significant genes per family are required ",
+      "(EXPOSURE=", n_uninfected, ", EXPOSURE_INFECTED=", n_infected, ")."
+    )
+    next
+  }
+
+  euler_gene_input <- euler_family_results %>%
+    dplyr::mutate(
+      INFECTION = dplyr::if_else(
+        .data$family == "EXPOSURE", "NONE", "HPIV3"
+      ),
+      PROTEIN = as.character(.data$GENEID)
+    )
+  euler_summary <- summarize_unique_significant_proteins(
+    euler_gene_input,
+    group_var = "INFECTION",
+    group_levels = c("NONE", "HPIV3"),
+    filters = list(
+      airway = euler_key$airway[[1]],
+      sex_stratum = euler_key$sex_stratum[[1]],
+      contrast_label = euler_key$contrast_label[[1]]
+    )
+  )
+  euler_membership <- euler_summary$membership_long %>%
+    dplyr::left_join(
+      euler_gene_input %>%
+        dplyr::select(PROTEIN, INFECTION, logFC, q.value),
+      by = c("PROTEIN", "sig_group" = "INFECTION")
+    ) %>%
+    dplyr::transmute(
+      GENEID = .data$PROTEIN,
+      family = .data$sig_group,
+      n_sig_groups = .data$n_sig_groups,
+      membership_class = .data$membership_class,
+      logFC = .data$logFC,
+      q.value = .data$q.value,
+      direction = dplyr::case_when(
+        .data$logFC > 0 ~ "UP",
+        .data$logFC < 0 ~ "DOWN",
+        TRUE ~ NA_character_
+      ),
+      airway = euler_key$airway[[1]],
+      sex_stratum = euler_key$sex_stratum[[1]],
+      contrast_label = euler_key$contrast_label[[1]]
+    )
+  save_table(
+    euler_membership,
+    file.path(RNA_OUTPUT_SUBDIR, "euler", paste0(euler_stem, "_membership.csv"))
+  )
+  euler_plot <- plot_unique_protein_euler(
+    euler_summary,
+    title_str = paste("Significant gene overlap:", euler_label)
+  )
+  print(euler_plot)
+  save_plot(
+    file.path(RNA_OUTPUT_SUBDIR, "euler", paste0(euler_stem, ".png")),
+    euler_plot,
+    width = 10,
+    height = 8
+  )
+}
+```
+
 # Full gene-by-contrast profile matrix
 
 The exported `hpiv3_rnaseq_full_gene_contrast_profile.csv` contains one row per
@@ -1911,4 +2052,16 @@ if (nrow(rnaseq_profile_summary) > 0) {
 } else {
   message("No modeled conditions are available for the profile summary.")
 }
+```
+
+# Session summary
+
+```{r rnaseq-session-summary}
+cat("RNA-seq outputs written under:", file.path(PATH_OUTPUT, RNA_OUTPUT_SUBDIR), "\n")
+cat("Key outputs include:\n")
+cat("  - hpiv3_rnaseq_campaign_all_results.csv (including all five analysis families)\n")
+cat("  - volcano_<AIRWAY>_<FAMILY>.png and sex_comparison_<AIRWAY>_<FAMILY>.png\n")
+cat("  - euler/hpiv3_euler_rnaseq_<peat|pine>_airway-*_sex-*.png\n")
+cat("  - euler/hpiv3_euler_rnaseq_<peat|pine>_airway-*_sex-*_membership.csv\n")
+cat("  - hpiv3_rnaseq_full_gene_contrast_profile.csv\n")
 ```

@@ -29,13 +29,41 @@ for (ranked_chunk_start in ranked_chunk_starts) {
   stopifnot(!is.na(ranked_chunk_end))
   parse(text = rmd_lines[(ranked_chunk_start + 1L):(ranked_chunk_end - 1L)])
 }
+euler_chunk_start <- match("```{r hpiv3-exposure-euler}", rmd_lines)
+euler_chunk_end <- if (is.na(euler_chunk_start)) {
+  NA_integer_
+} else {
+  which(seq_along(rmd_lines) > euler_chunk_start & rmd_lines == "```")[1]
+}
+stopifnot(!is.na(euler_chunk_start), !is.na(euler_chunk_end))
+parse(text = rmd_lines[(euler_chunk_start + 1L):(euler_chunk_end - 1L)])
+
+exposure_function_start <- regexpr(
+  "fit_hpiv3_exposure_models <- function",
+  analysis_text,
+  fixed = TRUE
+)
+exposure_function_end <- regexpr(
+  "summarize_hpiv3_strata <- function",
+  analysis_text,
+  fixed = TRUE
+)
+exposure_function_text <- substr(
+  analysis_text,
+  exposure_function_start,
+  exposure_function_end - 1L
+)
 
 stopifnot(
   "Hormone models must test E2 against NONE" =
     grepl('control_level = "NONE"', analysis_text) &&
       grepl('case_level = "E2"', analysis_text),
-  "Hormone models must pool across hormone and stratify by airway/timepoint/exposure" =
-    grepl("distinct\\(AIRWAY, TIMEPOINT, EXPOSURE\\)", analysis_text),
+  "Hormone models must stratify by airway/timepoint/exposure/infection" =
+    grepl("distinct\\(AIRWAY, TIMEPOINT, EXPOSURE, INFECTION\\)", analysis_text),
+  "Hormone models must filter and report the infection stratum" =
+    grepl("INFECTION == infection_i", analysis_text, fixed = TRUE) &&
+      grepl('INFECTION = as.character\\(infection_i\\)', analysis_text) &&
+      grepl("group_by\\(AIRWAY, TIMEPOINT, EXPOSURE, SEX, INFECTION\\)", analysis_text),
   "Hormone models must emit pooled and sex-specific groups" =
     grepl('sex_groups <- c\\("All", intersect\\(c\\("F", "M"\\)', analysis_text),
   "Hormone models must retain mixed and fallback linear model paths" =
@@ -43,6 +71,10 @@ stopifnot(
       grepl("stats::lm\\(log2_value ~ HORMONE", analysis_text),
   "Exposure models must create pooled All-sex input rows" =
     grepl('mutate\\(SEX = "All"\\)', analysis_text),
+  "Exposure contrasts must compare treatments with PBS only" =
+    grepl('method = "trt.vs.ctrl"', exposure_function_text) &&
+      grepl('match\\("PBS_Control", exposure_levels\\)', exposure_function_text) &&
+      !grepl('method = "pairwise"', exposure_function_text),
   "Ranked bars must use estimated effects and direction/significance fills" =
     grepl("geom_col\\(width = 0.75\\)", plots_text) &&
       grepl('"Higher, significant"', plots_text) &&
@@ -76,7 +108,16 @@ stopifnot(
   "Report must save a companion volcano plot alongside each ranked bar chart" =
     grepl("plot_hpiv3_volcano(", report_text, fixed = TRUE) &&
       grepl('"volcano"', report_text, fixed = TRUE) &&
-      grepl("hpiv3_volcano_", report_text, fixed = TRUE)
+      grepl("hpiv3_volcano_", report_text, fixed = TRUE),
+  "Ranked plots must filter and encode airway, hormone, timepoint, and infection strata" =
+    grepl('c\\("AIRWAY", "HORMONE", "TIMEPOINT", "INFECTION"\\)', report_text) &&
+      grepl("chart_filters\\$SEX <- sex_value", report_text, fixed = TRUE) &&
+      grepl('"_sex-", tolower\\(sex_value\\)', report_text),
+  "Protein Euler outputs must use infection membership and export CSVs" =
+    grepl('group_var = "INFECTION"', report_text, fixed = TRUE) &&
+      grepl("plot_unique_protein_euler(", report_text, fixed = TRUE) &&
+      grepl('"_membership.csv"', report_text, fixed = TRUE) &&
+      grepl("at least two significant proteins per infection stratum", report_text, fixed = TRUE)
 )
 
-cat("PASS: HPIV3 hormone, pooled exposure, ranked plot/volcano, and report wiring checks passed.\n")
+cat("PASS: HPIV3 PBS-referenced contrasts, infection-stratified models, ranked plots, and Euler wiring checks passed.\n")

@@ -106,6 +106,12 @@ stopifnot(
     volcano_position > 0 &&
       sex_section_position > volcano_position &&
       profile_section_position > sex_section_position,
+  "The infection-stratified gene Euler section must follow sex-comparison plots" =
+    regexpr("# Infection-stratified exposure overlaps", rmd_text) > sex_section_position &&
+      regexpr("# Infection-stratified exposure overlaps", rmd_text) < profile_section_position &&
+      grepl("plot_unique_protein_euler(", rmd_text, fixed = TRUE) &&
+      grepl("hpiv3_euler_rnaseq_", rmd_text, fixed = TRUE) &&
+      grepl('"_membership.csv"', rmd_text, fixed = TRUE),
   "The report must export a wide logFC profile with interpretable condition columns" =
     grepl("hpiv3_rnaseq_full_gene_contrast_profile\\.csv", rmd_text) &&
       grepl("profile_column = paste\\(", rmd_text, fixed = FALSE) &&
@@ -115,6 +121,18 @@ stopifnot(
 )
 
 report_lines <- readLines(rmd_path, warn = FALSE)
+euler_chunk_start <- match("```{r rnaseq-exposure-euler}", report_lines)
+euler_chunk_end <- if (is.na(euler_chunk_start)) {
+  NA_integer_
+} else {
+  which(seq_along(report_lines) > euler_chunk_start & report_lines == "```")[1]
+}
+stopifnot(
+  "Cannot locate the infection-stratified gene Euler chunk" =
+    !is.na(euler_chunk_start) && !is.na(euler_chunk_end)
+)
+parse(text = report_lines[(euler_chunk_start + 1L):(euler_chunk_end - 1L)])
+
 profile_chunk_start <- match("```{r full-gene-contrast-profile}", report_lines)
 profile_chunk_end <- if (is.na(profile_chunk_start)) {
   NA_integer_
