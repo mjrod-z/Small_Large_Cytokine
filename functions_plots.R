@@ -1287,12 +1287,48 @@ plot_hpiv3_volcano <- function(model_results,
     TRUE ~ "Not significant"
   )
 
+  # UP/DOWN counts annotated in the top corners of each panel (mirrors the
+  # reference RNA-seq volcano styling in `plot_volcano_deg()`), computed per
+  # panel so facet_wrap(scales = "free") still places each label correctly.
+  panel_group <- if (length(panel_cols) > 0L) as.character(plot_df$panel) else "All"
+  count_label_data <- plot_df %>%
+    dplyr::mutate(.panel_group = panel_group) %>%
+    dplyr::group_by(.panel_group) %>%
+    dplyr::summarise(
+      n_up = sum(direction == "Higher, significant"),
+      n_down = sum(direction == "Lower, significant"),
+      x_min = min(estimate, na.rm = TRUE),
+      x_max = max(estimate, na.rm = TRUE),
+      y_max = max(neg_log10_p, na.rm = TRUE),
+      .groups = "drop"
+    )
+  if (length(panel_cols) > 0L) count_label_data$panel <- count_label_data$.panel_group
+
   p <- ggplot2::ggplot(
     plot_df,
     ggplot2::aes(x = estimate, y = neg_log10_p, color = direction)
   ) +
-    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "grey55") +
-    ggplot2::geom_point(alpha = 0.8, size = 2) +
+    ggplot2::geom_vline(
+      xintercept = c(-LOG2FC_CUTOFF, LOG2FC_CUTOFF),
+      color = "grey50", linetype = "dashed", linewidth = 0.5
+    ) +
+    ggplot2::geom_hline(
+      yintercept = -log10(ADJ_P_CUTOFF),
+      color = "grey50", linetype = "dashed", linewidth = 0.5
+    ) +
+    ggplot2::geom_point(alpha = 0.7, size = 2) +
+    ggplot2::geom_text(
+      data = count_label_data,
+      ggplot2::aes(x = x_max, y = y_max, label = paste0("UP: ", n_up)),
+      inherit.aes = FALSE, hjust = 1, vjust = 1.3, size = 3.2,
+      fontface = "bold", color = UP_COLOR_DEFAULT
+    ) +
+    ggplot2::geom_text(
+      data = count_label_data,
+      ggplot2::aes(x = x_min, y = y_max, label = paste0("DOWN: ", n_down)),
+      inherit.aes = FALSE, hjust = 0, vjust = 1.3, size = 3.2,
+      fontface = "bold", color = DOWN_COLOR_DEFAULT
+    ) +
     ggplot2::scale_color_manual(
       values = c(
         "Higher, significant" = UP_COLOR_DEFAULT,
@@ -1301,10 +1337,17 @@ plot_hpiv3_volcano <- function(model_results,
       ),
       drop = FALSE
     ) +
-    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme_minimal(base_size = 12) +
     ggplot2::theme(
+      strip.text = ggplot2::element_text(size = 10, face = "bold"),
+      panel.border = ggplot2::element_rect(
+        color = "grey40", fill = NA, linewidth = 0.4
+      ),
+      panel.grid.major = ggplot2::element_line(color = "grey85"),
       panel.grid.minor = ggplot2::element_blank(),
-      legend.title = ggplot2::element_blank()
+      legend.title = ggplot2::element_blank(),
+      legend.position = "bottom",
+      plot.background = ggplot2::element_rect(fill = "white", color = NA)
     ) +
     hpiv3_title_theme() +
     ggplot2::labs(
@@ -1322,6 +1365,9 @@ plot_hpiv3_volcano <- function(model_results,
         ggplot2::aes(label = PROTEIN),
         size = 3,
         max.overlaps = 30,
+        fontface = "bold",
+        box.padding = 0.4,
+        segment.color = "grey40",
         show.legend = FALSE
       )
     }
