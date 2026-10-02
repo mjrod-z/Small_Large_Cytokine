@@ -88,30 +88,36 @@ family_spec <- function(family) {
   )
 }
 
-RNA_CAMPAIGN_SPECS <- unlist(lapply(RNA_AIRWAY_LEVELS, function(airway) {
-  lapply(RNA_SEX_STRATA, function(sex_stratum) {
-    lapply(RNA_FAMILIES, function(family) {
-      fam <- family_spec(family)
-      list(
-        spec_tag = paste(airway, sex_stratum, family, sep = "_"),
-        AIRWAY = airway,
-        SEX_STRATUM = sex_stratum,
-        FAMILY = family,
-        SUBSET = list(
-          AIRWAY = airway,
-          SEX = if (sex_stratum == "All") NULL else sex_stratum,
-          INFECTION = fam$infection_levels,
-          HORMONE = NULL,
-          EXPOSURE = NULL
-        ),
-        TESTS = fam$tests,
-        REPORT_WITHIN = fam$report_within,
-        EXPOSURE_CONTRASTS = EXPOSURE_CONTRASTS
-      )
-    })
-  })
-}), recursive = FALSE)
-names(RNA_CAMPAIGN_SPECS) <- vapply(RNA_CAMPAIGN_SPECS, `[[`, character(1), "spec_tag")
+RNA_CAMPAIGN_GRID <- expand.grid(
+  AIRWAY = RNA_AIRWAY_LEVELS,
+  SEX_STRATUM = RNA_SEX_STRATA,
+  FAMILY = RNA_FAMILIES,
+  stringsAsFactors = FALSE
+)
+
+RNA_CAMPAIGN_SPECS <- lapply(seq_len(nrow(RNA_CAMPAIGN_GRID)), function(i) {
+  airway <- RNA_CAMPAIGN_GRID$AIRWAY[[i]]
+  sex_stratum <- RNA_CAMPAIGN_GRID$SEX_STRATUM[[i]]
+  family <- RNA_CAMPAIGN_GRID$FAMILY[[i]]
+  fam <- family_spec(family)
+  list(
+    spec_tag = paste(airway, sex_stratum, family, sep = "_"),
+    AIRWAY = airway,
+    SEX_STRATUM = sex_stratum,
+    FAMILY = family,
+    SUBSET = list(
+      AIRWAY = airway,
+      SEX = if (sex_stratum == "All") NULL else sex_stratum,
+      INFECTION = fam$infection_levels,
+      HORMONE = NULL,
+      EXPOSURE = NULL
+    ),
+    TESTS = fam$tests,
+    REPORT_WITHIN = fam$report_within,
+    EXPOSURE_CONTRASTS = EXPOSURE_CONTRASTS
+  )
+})
+names(RNA_CAMPAIGN_SPECS) <- vapply(RNA_CAMPAIGN_SPECS, function(x) x[["spec_tag"]], character(1))
 
 cat("✓", length(RNA_CAMPAIGN_SPECS), "RNA-seq campaign specs defined (",
     length(RNA_AIRWAY_LEVELS), "airways x", length(RNA_SEX_STRATA),
