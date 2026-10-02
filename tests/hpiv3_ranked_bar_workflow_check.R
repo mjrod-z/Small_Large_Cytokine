@@ -49,6 +49,13 @@ stopifnot(
       grepl('"Lower, significant"', plots_text),
   "Ranked plot helper must be present in bootstrap checks" =
     grepl('"plot_hpiv3_ranked_bars"', loader_text),
+  "Volcano plot helper must be present in bootstrap checks" =
+    grepl('"plot_hpiv3_volcano"', loader_text),
+  "Volcano plots must color by the same significance/direction scheme" =
+    grepl("plot_hpiv3_volcano <- function", plots_text) &&
+      grepl('"Higher, significant" = UP_COLOR_DEFAULT', plots_text, fixed = TRUE) &&
+      grepl('"Lower, significant" = DOWN_COLOR_DEFAULT', plots_text, fixed = TRUE) &&
+      grepl("ggrepel::geom_text_repel", plots_text),
   "Report must create all three requested ranked comparison types" =
     all(vapply(
       c('"exposure"', '"hormone"', '"infection"'),
@@ -65,7 +72,11 @@ stopifnot(
       logical(1),
       x = report_text,
       fixed = TRUE
-    ))
+    )),
+  "Report must save a companion volcano plot alongside each ranked bar chart" =
+    grepl("plot_hpiv3_volcano(", report_text, fixed = TRUE) &&
+      grepl('"volcano"', report_text, fixed = TRUE) &&
+      grepl("hpiv3_volcano_", report_text, fixed = TRUE)
 )
 
-cat("PASS: HPIV3 hormone, pooled exposure, ranked plot, and report wiring checks passed.\n")
+cat("PASS: HPIV3 hormone, pooled exposure, ranked plot/volcano, and report wiring checks passed.\n")

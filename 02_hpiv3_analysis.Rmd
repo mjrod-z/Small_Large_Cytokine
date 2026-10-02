@@ -173,6 +173,11 @@ non-significant estimates. Each plot ranks proteins by effect within each panel;
 the report saves comparison tables and PNGs under
 `output/hpiv3/ranked_bars/`.
 
+A companion volcano plot (estimate vs. -log10(p-value)) is generated alongside
+each ranked bar chart to make significant hits easy to spot across the full set
+of modeled proteins without a cluttered x-axis; these are saved under
+`output/hpiv3/volcano/`.
+
 ```{r hpiv3-ranked-bar-helpers}
 hpiv3_ranked_exposure_results <- hpiv3_exposure_results %>%
   dplyr::filter(
@@ -261,6 +266,23 @@ save_hpiv3_ranked_comparisons <- function(
     )
     save_plot(output_file, chart, width = 12, height = 9, dpi = 300, bg = "white")
     print(chart)
+
+    volcano_chart <- plot_hpiv3_volcano(
+      results,
+      model_type = model_type,
+      filters = chart_filters,
+      title = paste(plot_title, "\u2014 volcano")
+    )
+    volcano_file <- file.path(
+      HPIV3_OUTPUT_SUBDIR,
+      "volcano",
+      paste0(
+        "hpiv3_volcano_", category_label, "_",
+        safe_name(target_value), "_sex_", tolower(sex_value), ".png"
+      )
+    )
+    save_plot(volcano_file, volcano_chart, width = 9, height = 7, dpi = 300, bg = "white")
+    print(volcano_chart)
 
     output_index[[group_index]] <- tibble::tibble(
       comparison = category_label,
@@ -578,6 +600,7 @@ cat("  - hpiv3_hormone_model_results.csv\n")
 cat("  - hpiv3_ranked_exposure_model_results.csv\n")
 cat("  - hpiv3_ranked_bar_plot_index.csv\n")
 cat("  - ranked_bars/hpiv3_ranked_<comparison>_<target>_sex_<group>.png\n")
+cat("  - volcano/hpiv3_volcano_<comparison>_<target>_sex_<group>.png\n")
 cat("  - hpiv3_abundance_heatmap_source.csv\n")
 cat("  - hpiv3_abundance_heatmap_matrix_<AIRWAY>_<TIMEPOINT>.csv\n")
 cat("  - hpiv3_abundance_heatmap_<AIRWAY>_<TIMEPOINT>.png\n")
