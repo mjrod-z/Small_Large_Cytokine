@@ -27,7 +27,9 @@ safe_name <- function(x) {
 
 plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
                              subtitle = NULL, x_limits = c(-10, 10),
-                             y_limits = VOLCANO_Y_LIMITS) {
+                             y_limits = VOLCANO_Y_LIMITS,
+                             gene_col = "GENEID",
+                             highlight_genes = NULL) {
   required_cols <- c("log2FC", "adj.P.Val", "DEG", "delabel", facet_by)
   missing_cols <- setdiff(required_cols, names(data))
   if (length(missing_cols) > 0) {
@@ -46,7 +48,34 @@ plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
   data$DEG <- factor(data$DEG, levels = c("DOWN", "NO", "UP"))
   label_data <- data[!is.na(data$delabel) & nzchar(as.character(data$delabel)), , drop = FALSE]
 
-  ggplot2::ggplot(
+  # UP/DOWN gene counts per facet panel, annotated in the top corners
+  # (mirrors the reference hBEC RNA-seq pipeline's volcano styling).
+  facet_sym <- rlang::sym(facet_by)
+  deg_counts <- data %>%
+    dplyr::group_by(!!facet_sym, .data$DEG) %>%
+    dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+    tidyr::complete(!!facet_sym, DEG = c("DOWN", "UP"), fill = list(n = 0)) %>%
+    dplyr::filter(.data$DEG %in% c("UP", "DOWN"))
+  count_label_data <- deg_counts %>%
+    dplyr::mutate(
+      label = paste0(.data$DEG, ": ", .data$n),
+      x = dplyr::if_else(.data$DEG == "UP", x_limits[[2]], x_limits[[1]]),
+      hjust = dplyr::if_else(.data$DEG == "UP", 1, 0),
+      y = y_limits[[2]],
+      color = dplyr::if_else(.data$DEG == "UP", "#bb0c00", "#00AFBB")
+    )
+
+  # Always-labeled highlighted genes (e.g. a priori genes of interest), shown
+  # with a black-outlined point and a boxed label regardless of significance
+  # or whether they happened to be in the top-5 `delabel` set.
+  highlight_data <- NULL
+  if (!is.null(highlight_genes) && length(highlight_genes) > 0 &&
+      gene_col %in% names(data)) {
+    highlight_data <- data[as.character(data[[gene_col]]) %in% highlight_genes, , drop = FALSE]
+    if (nrow(highlight_data) == 0) highlight_data <- NULL
+  }
+
+  p <- ggplot2::ggplot(
     data,
     ggplot2::aes(x = log2FC, y = neg_log10_adj, color = DEG)
   ) +
@@ -59,6 +88,15 @@ plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
       color = "grey50", linetype = "dashed", linewidth = 0.5
     ) +
     ggplot2::geom_point(size = 1.5, alpha = 0.7, na.rm = TRUE) +
+    ggplot2::geom_text(
+      data = count_label_data,
+      ggplot2::aes(x = .data$x, y = .data$y, label = .data$label, hjust = .data$hjust),
+      inherit.aes = FALSE,
+      vjust = 1.3,
+      size = 3.2,
+      fontface = "bold",
+      color = count_label_data$color
+    ) +
     ggrepel::geom_text_repel(
       data = label_data,
       ggplot2::aes(label = delabel),
@@ -68,7 +106,30 @@ plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
       box.padding = 0.4,
       segment.color = "grey40",
       show.legend = FALSE
-    ) +
+    )
+
+  if (!is.null(highlight_data)) {
+    p <- p +
+      ggplot2::geom_point(
+        data = highlight_data,
+        shape = 21, color = "black", fill = NA, size = 2.6, stroke = 0.8,
+        inherit.aes = TRUE, show.legend = FALSE
+      ) +
+      ggrepel::geom_label_repel(
+        data = highlight_data,
+        ggplot2::aes(label = .data[[gene_col]]),
+        size = 3,
+        fontface = "bold",
+        color = "black",
+        fill = "white",
+        max.overlaps = Inf,
+        box.padding = 0.5,
+        segment.color = "black",
+        show.legend = FALSE
+      )
+  }
+
+  p +
     ggplot2::scale_color_manual(
       values = c("DOWN" = "#00AFBB", "NO" = "grey75", "UP" = "#bb0c00"),
       labels = c("DOWN" = "Downregulated", "NO" = "Not significant",
