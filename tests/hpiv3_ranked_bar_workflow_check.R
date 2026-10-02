@@ -101,9 +101,10 @@ stopifnot(
       grepl('"Higher, significant" = UP_COLOR_DEFAULT', plots_text, fixed = TRUE) &&
       grepl('"Lower, significant" = DOWN_COLOR_DEFAULT', plots_text, fixed = TRUE) &&
       grepl("ggrepel::geom_text_repel", plots_text),
-  "HPIV3 volcano plots must mirror the reference threshold lines, UP/DOWN corner counts, and bordered theme" =
-    grepl("xintercept = c(-LOG2FC_CUTOFF, LOG2FC_CUTOFF)", plots_text, fixed = TRUE) &&
-      grepl("yintercept = -log10(ADJ_P_CUTOFF)", plots_text, fixed = TRUE) &&
+  "HPIV3 volcano plots must draw a per-panel significance boundary (no log2FC cutoff), UP/DOWN corner counts, and bordered theme" =
+    grepl("hpiv3_volcano_thresholds(plot_df, panel_group)", plots_text, fixed = TRUE) &&
+      grepl("ggplot2::aes(yintercept = threshold_y)", plots_text, fixed = TRUE) &&
+      !grepl("xintercept = c(-LOG2FC_CUTOFF, LOG2FC_CUTOFF),\n      color = \"grey50\", linetype = \"dashed\", linewidth = 0.5\n    ) +\n    ggplot2::geom_hline(\n      yintercept = -log10(ADJ_P_CUTOFF),\n      color = \"grey50\", linetype = \"dashed\", linewidth = 0.5\n    ) +\n    ggplot2::geom_point(alpha = 0.7, size = 2)", plots_text, fixed = TRUE) &&
       grepl('paste0("UP: ", n_up)', plots_text, fixed = TRUE) &&
       grepl('paste0("DOWN: ", n_down)', plots_text, fixed = TRUE) &&
       grepl("panel.border = ggplot2::element_rect(", plots_text, fixed = TRUE),
@@ -155,6 +156,12 @@ stopifnot(
       grepl("heatmap_tag <- hpiv3_dimension_tag(", report_text, fixed = TRUE) &&
       grepl('"hpiv3_heatmap_matrix_"', report_text, fixed = TRUE) &&
       grepl('"hpiv3_heatmap_"', report_text, fixed = TRUE),
+  "Report must expose exposure/Euler diagnostics and a configurable Euler minimum" =
+    grepl("HPIV3_EULER_MIN_SIG", report_text, fixed = TRUE) &&
+      grepl("hpiv3_euler_skipped_strata.csv", report_text, fixed = TRUE) &&
+      grepl("Exposure summary:", report_text, fixed = TRUE) &&
+      !grepl("message(\n     \"Protein Euler plot skipped", report_text, fixed = TRUE) &&
+      grepl("prepare_hpiv3_ranked_exposure_results(", report_text, fixed = TRUE),
   "Protein Euler outputs must use infection membership and export CSVs" =
     grepl('group_var = "INFECTION"', report_text, fixed = TRUE) &&
       grepl("plot_unique_protein_euler(", report_text, fixed = TRUE) &&
@@ -174,5 +181,102 @@ stopifnot(
       grepl("plot_volcano_deg(", rnaseq_report_text, fixed = TRUE) &&
       grepl('RNA_FAMILIES <- c("EXPOSURE", "HORMONE", "INFECTION"', rnaseq_report_text, fixed = TRUE)
 )
+
+# ---- Behavioural checks (need ggplot2/dplyr/tibble/ggrepel; skipped otherwise) ----
+behaviour_pkgs <- c("ggplot2", "dplyr", "tibble", "ggrepel")
+if (all(vapply(behaviour_pkgs, requireNamespace, logical(1), quietly = TRUE))) {
+  suppressPackageStartupMessages({ library(dplyr); library(ggplot2) })
+  ALPHA_Q <- 0.05
+  UP_COLOR_DEFAULT <- "#D7191C"
+  DOWN_COLOR_DEFAULT <- "#2C7BB6"
+  eval(parse(file = plots_path))
+  PBS_LEVEL <- "PBS_Control"
+  prep_fn_start <- regexpr("prepare_hpiv3_ranked_exposure_results <- function", analysis_text, fixed = TRUE)
+  prep_fn_end <- regexpr("summarize_hpiv3_strata <- function", analysis_text, fixed = TRUE)
+  eval(parse(text = substr(analysis_text, prep_fn_start, prep_fn_end - 1L)))
+
+  # BH q within one stratum; two panels (infection NONE/HPIV3) with different boundaries.
+  make_panel <- function(infection, p, n_sig_expected) {
+    q <- p.adjust(p, method = "fdr")
+    tibble::tibble(
+      PROTEIN = paste0(infection, "_", seq_along(p)),
+      INFECTION = infection, SEX = "All", comparison = "EXPOSURE",
+      contrast = "Peat_25 - PBS_Control", target_exposure = "Peat_25",
+      estimate = seq(-1, 1, length.out = length(p)),
+      p.value = p, q.value = q, significant = q < ALPHA_Q
+    )
+  }
+  panel_none <- make_panel("NONE", c(0, 1e-6, 1e-4, 0.03, 0.2, 0.7), 3)
+  panel_hpiv3 <- make_panel("HPIV3", c(1e-3, 0.002, 0.04, 0.5, 0.9), 2)
+  vol_data <- dplyr::bind_rows(panel_none, panel_hpiv3)
+
+  groups <- vol_data$INFECTION
+  thr <- hpiv3_volcano_thresholds(vol_data, groups)
+  stopifnot(
+    "Threshold table must have one row per panel" = nrow(thr) == 2L,
+    "Threshold must be finite even when p = 0 appears in a panel" =
+      all(is.finite(thr$threshold_y)),
+    "p = 0 must give a finite -log10(p)" = is.finite(hpiv3_neg_log10_p(0)),
+    "NA/Inf p-values must stay NA" = all(is.na(hpiv3_neg_log10_p(c(NA, Inf, NaN))))
+  )
+  for (g in thr$.panel_group) {
+    sub <- vol_data[vol_data$INFECTION == g, ]
+    y <- hpiv3_neg_log10_p(sub$p.value)
+    ty <- thr$threshold_y[thr$.panel_group == g]
+    stopifnot(
+      "Threshold line must sit at or below every significant point" = all(y[sub$significant] >= ty - 1e-12),
+      "Threshold line must sit above every non-significant point" = all(y[!sub$significant] < ty)
+    )
+  }
+  # The raw-p boundary is NOT -log10(ALPHA_Q) in general.
+  stopifnot("Boundary must derive from significant proteins, not -log10(ALPHA_Q)" =
+    !isTRUE(all.equal(thr$threshold_y[thr$.panel_group == "NONE"], -log10(ALPHA_Q))))
+
+  # Panels without significant hits get no boundary.
+  none_sig <- hpiv3_volcano_thresholds(
+    dplyr::mutate(panel_hpiv3, significant = FALSE), panel_hpiv3$INFECTION
+  )
+  stopifnot("No significant proteins -> NA threshold" = is.na(none_sig$threshold_y))
+
+  # The plot must contain a dotted hline layer whose y values equal the thresholds.
+  vol_single <- panel_none
+  filters <- list(INFECTION = "NONE", SEX = "All", target_exposure = "Peat_25")
+  vol_plot <- plot_hpiv3_volcano(vol_single, "exposure", filters = filters)
+  hline_layers <- Filter(function(l) inherits(l$geom, "GeomHline"), vol_plot$layers)
+  stopifnot("Volcano must have exactly one boundary hline layer" = length(hline_layers) == 1L)
+  vline_layers <- Filter(function(l) inherits(l$geom, "GeomVline"), vol_plot$layers)
+  stopifnot("Volcano must not draw a log2FC vline" = length(vline_layers) == 0L)
+  hline_y <- hline_layers[[1]]$data$threshold_y
+  built <- ggplot2::ggplot_build(vol_plot)
+  pts <- built$data[[which(vapply(vol_plot$layers, function(l) inherits(l$geom, "GeomPoint"), logical(1)))[1]]]
+  stopifnot(
+    "Boundary hline y must match hpiv3_volcano_thresholds()" =
+      isTRUE(all.equal(hline_y, thr$threshold_y[thr$.panel_group == "NONE"])),
+    "Plotted y of p = 0 must be finite" = all(is.finite(pts$y))
+  )
+  # Facetted volcano also builds.
+  invisible(ggplot2::ggplot_build(plot_hpiv3_volcano(
+    vol_data, "exposure", filters = list(SEX = "All", target_exposure = "Peat_25")
+  )))
+  # Ranked bars build for exposure results too.
+  invisible(ggplot2::ggplot_build(plot_hpiv3_ranked_bars(vol_single, "exposure", filters = filters)))
+
+  # Exposure contrast parsing: sign, label, PBS-first flip, non-Peat/Pine drop.
+  raw_exp <- tibble::tibble(
+    comparison = "EXPOSURE",
+    contrast = c("Peat_25 - PBS_Control", "PBS_Control - Pine_25", "Eucalyptus_25 - PBS_Control", NA),
+    estimate = c(1, 2, 3, NA)
+  )
+  prep <- prepare_hpiv3_ranked_exposure_results(raw_exp)
+  stopifnot(
+    "Only Peat/Pine rows survive" = identical(prep$target_exposure, c("Peat_25", "Pine_25")),
+    "PBS-first contrast flips the estimate sign" = identical(prep$estimate, c(1, -2)),
+    "Contrast labels are normalised to <target> - PBS_Control" =
+      identical(prep$contrast, c("Peat_25 - PBS_Control", "Pine_25 - PBS_Control"))
+  )
+} else {
+  cat("NOTE: skipping behavioural volcano checks (missing:",
+      paste(behaviour_pkgs[!vapply(behaviour_pkgs, requireNamespace, logical(1), quietly = TRUE)], collapse = ", "), ")\n")
+}
 
 cat("PASS: HPIV3 PBS-referenced contrasts, infection-stratified models, ranked plots, naming, and Euler wiring checks passed.\n")

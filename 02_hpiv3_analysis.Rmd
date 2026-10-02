@@ -37,10 +37,12 @@ source(here::here("_load_all.R"))
 HPIV3_MISSING_THRESHOLD <- 0.30
 HPIV3_PSEUDOCOUNT <- PSEUDOCOUNT
 HPIV3_OUTPUT_SUBDIR <- "hpiv3"
+HPIV3_EULER_MIN_SIG <- 2L  # minimum significant proteins required in each of NONE and HPIV3
 
 cat("✓ HPIV3 analysis configuration loaded\n")
 cat("  Missingness threshold:", HPIV3_MISSING_THRESHOLD, "\n")
 cat("  Modeling pseudocount :", HPIV3_PSEUDOCOUNT, "\n")
+cat("  Euler min. significant:", HPIV3_EULER_MIN_SIG, "\n")
 cat("  Output subdirectory  :", file.path(PATH_OUTPUT, HPIV3_OUTPUT_SUBDIR), "\n")
 ```
 
@@ -179,28 +181,24 @@ of modeled proteins without a cluttered x-axis; these are saved under
 `output/hpiv3/volcano/`.
 
 ```{r hpiv3-ranked-bar-helpers}
-hpiv3_ranked_exposure_results <- hpiv3_exposure_results %>%
-  dplyr::filter(
-    comparison == "EXPOSURE",
-    !is.na(contrast),
-    grepl("PBS_Control", contrast)
-  ) %>%
-  dplyr::mutate(
-    contrast_left = sub(" - .*", "", contrast),
-    contrast_right = sub("^.* - ", "", contrast),
-    target_exposure = dplyr::if_else(
-      contrast_left == "PBS_Control",
-      contrast_right,
-      contrast_left
-    ),
-    pbs_is_first = contrast_left == "PBS_Control"
-  ) %>%
-  dplyr::filter(grepl("^(Peat|Pine)(_|$)", target_exposure, ignore.case = TRUE)) %>%
-  dplyr::mutate(
-    estimate = dplyr::if_else(pbs_is_first, -estimate, estimate),
-    contrast = paste(target_exposure, "-", "PBS_Control")
-  ) %>%
-  dplyr::select(-contrast_left, -contrast_right, -pbs_is_first)
+hpiv3_ranked_exposure_results <- prepare_hpiv3_ranked_exposure_results(
+  hpiv3_exposure_results,
+  pbs_level = PBS_LEVEL
+)
+
+cat("Exposure model rows            :", nrow(hpiv3_exposure_results), "\n")
+cat("  comparison values            :",
+    paste(unique(as.character(hpiv3_exposure_results$comparison)), collapse = " | "), "\n")
+cat("  contrast values              :",
+    paste(utils::head(unique(stats::na.omit(hpiv3_exposure_results$contrast)), 10), collapse = " | "), "\n")
+cat("  PBS_LEVEL                    :", PBS_LEVEL, "\n")
+cat("  Observed EXPOSURE levels     :",
+    paste(sort(unique(as.character(hpiv3_data$EXPOSURE))), collapse = " | "), "\n")
+cat("Ranked exposure result rows    :", nrow(hpiv3_ranked_exposure_results), "\n")
+if (nrow(hpiv3_ranked_exposure_results) == 0L) {
+  cat("  WARNING: no PBS-referenced Peat/Pine rows; failure reasons in exposure models:\n")
+  print(utils::head(sort(table(hpiv3_exposure_results$failure_reason), decreasing = TRUE), 5))
+}
 
 save_table(
   hpiv3_ranked_exposure_results,
@@ -219,6 +217,7 @@ hpiv3_ranked_target_exposures <- hpiv3_ranked_target_exposures[
     )
 ]
 hpiv3_ranked_sex_labels <- c(All = "All", M = "Males", F = "Females")
+cat("Ranked exposure target levels  :", paste(hpiv3_ranked_exposure_levels, collapse = " | "), "\n")
 
 save_hpiv3_ranked_comparisons <- function(
     results, model_type, target_column, target_levels, category_label) {
@@ -231,6 +230,14 @@ save_hpiv3_ranked_comparisons <- function(
       as.character(.data[[target_column]]) %in% target_levels,
       is.finite(estimate)
     )
+  cat(
+    "[", category_label, "] rows in results: ", nrow(results),
+    "; kept after SEX/target/finite-estimate filters: ", nrow(available),
+    " (dropped: SEX=", sum(!results$SEX %in% names(hpiv3_ranked_sex_labels)),
+    ", target not in levels=", sum(!as.character(results[[target_column]]) %in% target_levels),
+    ", non-finite estimate=", sum(!is.finite(results$estimate)), ")\n",
+    sep = ""
+  )
   dimension_columns <- intersect(
     c("AIRWAY", "HORMONE", "TIMEPOINT", "INFECTION"),
     names(available)
@@ -265,6 +272,12 @@ save_hpiv3_ranked_comparisons <- function(
         group_data <- group_data %>%
           dplyr::filter(as.character(.data[[filter_column]]) == filter_value)
       }
+    }
+    if (anyDuplicated(group_data[, c("PROTEIN", "contrast")]) > 0L) {
+      stop(
+        "Ranked comparison filters select more than one stratum (duplicate PROTEIN/contrast rows) for ",
+        category_label, " / ", target_value, "; q-values are only valid within one stratum."
+      )
     }
     dimension_label <- paste(
       paste(dimension_columns, vapply(
@@ -336,7 +349,13 @@ save_hpiv3_ranked_comparisons <- function(
       n_modeled_proteins = nrow(group_data)
     )
   }
-  dplyr::bind_rows(output_index)
+  output_index <- dplyr::bind_rows(output_index)
+  cat(
+    "[", category_label, "] strata plotted: ", nrow(output_index),
+    " (ranked-bar PNGs: ", nrow(output_index), ", volcano PNGs: ", nrow(output_index), ")\n",
+    sep = ""
+  )
+  output_index
 }
 
 hpiv3_ranked_bar_plot_index <- tibble::tibble(
@@ -371,6 +390,12 @@ hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
    "exposure"
  )
 )
+cat("Exposure summary: result rows =", nrow(hpiv3_ranked_exposure_results),
+    "| target levels =", paste(hpiv3_ranked_exposure_levels, collapse = ", "),
+    "| plots written =", sum(hpiv3_ranked_bar_plot_index$comparison == "exposure"), "\n")
+if (sum(hpiv3_ranked_bar_plot_index$comparison == "exposure") == 0L) {
+  cat("WARNING: no exposure ranked-bar/volcano plots were produced.\n")
+}
 ```
 
 ## E2 versus NONE within each exposure
@@ -412,6 +437,11 @@ save_table(
  hpiv3_ranked_bar_plot_index,
  file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_ranked_bar_plot_index.csv")
 )
+cat("Ranked plot counts by comparison type (rows = strata; each has a bar and a volcano PNG):\n")
+print(table(factor(
+  hpiv3_ranked_bar_plot_index$comparison,
+  levels = c("exposure", "hormone", "infection")
+)))
 ```
 
 # Infection-stratified exposure overlaps
@@ -423,7 +453,9 @@ baseline and infected settings; proteins unique to HPIV3 may reflect
 infection-specific priming, while proteins unique to `NONE` may represent
 baseline-only responses. Membership CSVs list the proteins and their infection
 set membership for auditability. Sets are skipped when either infection group
-has fewer than two significant modeled proteins or lacks modeled results.
+has fewer than `HPIV3_EULER_MIN_SIG` (default 2) significant modeled proteins or lacks modeled results.
+Skipped strata and reasons are listed after the loop and saved to
+`output/hpiv3/euler/hpiv3_euler_skipped_strata.csv`.
 Euler membership is based on significance regardless of direction; the CSV
 also records each group's estimated direction and adjusted p-value.
 
@@ -439,6 +471,9 @@ filter_hpiv3_values <- function(data, filters) {
  }
  data
 }
+
+hpiv3_euler_skipped <- list()
+hpiv3_euler_plot_count <- 0L
 
 hpiv3_euler_strata <- hpiv3_ranked_exposure_results %>%
  dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT, SEX, target_exposure) %>%
@@ -490,17 +525,25 @@ for (euler_index in seq_len(nrow(hpiv3_euler_strata))) {
  )
 
  if (!all(c("NONE", "HPIV3") %in% modeled_infections)) {
-   message(
-     "Protein Euler plot skipped for ", euler_label,
-     ": one infection stratum has no modeled results."
+   skip_reason <- "one infection stratum has no modeled results"
+   cat("Protein Euler plot skipped for ", euler_label, ": ", skip_reason, ".\n", sep = "")
+   hpiv3_euler_skipped[[length(hpiv3_euler_skipped) + 1L]] <- tibble::tibble(
+     target_exposure = euler_key$target_exposure[[1]], AIRWAY = euler_key$AIRWAY[[1]],
+     HORMONE = euler_key$HORMONE[[1]], TIMEPOINT = euler_key$TIMEPOINT[[1]],
+     SEX = euler_key$SEX[[1]], n_none = n_none, n_hpiv3 = n_hpiv3, reason = skip_reason
    )
    next
  }
- if (n_none < 2L || n_hpiv3 < 2L) {
-   message(
-     "Protein Euler plot skipped for ", euler_label,
-     ": at least two significant proteins per infection stratum are required ",
-     "(NONE=", n_none, ", HPIV3=", n_hpiv3, ")."
+ if (n_none < HPIV3_EULER_MIN_SIG || n_hpiv3 < HPIV3_EULER_MIN_SIG) {
+   skip_reason <- paste0(
+     "at least two significant proteins per infection stratum are required ",
+     "(minimum ", HPIV3_EULER_MIN_SIG, "; NONE=", n_none, ", HPIV3=", n_hpiv3, ")"
+   )
+   cat("Protein Euler plot skipped for ", euler_label, ": ", skip_reason, ".\n", sep = "")
+   hpiv3_euler_skipped[[length(hpiv3_euler_skipped) + 1L]] <- tibble::tibble(
+     target_exposure = euler_key$target_exposure[[1]], AIRWAY = euler_key$AIRWAY[[1]],
+     HORMONE = euler_key$HORMONE[[1]], TIMEPOINT = euler_key$TIMEPOINT[[1]],
+     SEX = euler_key$SEX[[1]], n_none = n_none, n_hpiv3 = n_hpiv3, reason = skip_reason
    )
    next
  }
@@ -544,7 +587,26 @@ for (euler_index in seq_len(nrow(hpiv3_euler_strata))) {
    width = 10,
    height = 8
  )
+ hpiv3_euler_plot_count <- hpiv3_euler_plot_count + 1L
 }
+
+hpiv3_euler_skipped <- dplyr::bind_rows(
+ tibble::tibble(
+   target_exposure = character(), AIRWAY = character(), HORMONE = character(),
+   TIMEPOINT = character(), SEX = character(), n_none = integer(),
+   n_hpiv3 = integer(), reason = character()
+ ),
+ hpiv3_euler_skipped
+)
+save_table(
+ hpiv3_euler_skipped,
+ file.path(HPIV3_OUTPUT_SUBDIR, "euler", "hpiv3_euler_skipped_strata.csv")
+)
+cat("Euler summary: candidate strata =", nrow(hpiv3_euler_strata),
+    "| plots written =", hpiv3_euler_plot_count,
+    "| skipped =", nrow(hpiv3_euler_skipped),
+    "| minimum significant per infection group =", HPIV3_EULER_MIN_SIG, "\n")
+if (nrow(hpiv3_euler_skipped) > 0L) print(as.data.frame(hpiv3_euler_skipped))
 ```
 
 # HPIV3 abundance heatmaps
@@ -770,6 +832,7 @@ cat("  - ranked_bars/hpiv3_rb_<comparison>_<target>_aw-*_ho-*_tp-*_inf-*_sex-*.p
 cat("  - volcano/hpiv3_volc_<comparison>_<target>_aw-*_ho-*_tp-*_inf-*_sex-*.png\n")
 cat("  - euler/hpiv3_euler_<exposure>_aw-*_ho-*_tp-*_sex-*.png\n")
 cat("  - euler/hpiv3_euler_<exposure>_aw-*_ho-*_tp-*_sex-*_membership.csv\n")
+cat("  - euler/hpiv3_euler_skipped_strata.csv\n")
 cat("  - hpiv3_abundance_heatmap_source.csv\n")
 cat("  - hpiv3_heatmap_matrix_aw-*_tp-*.csv\n")
 cat("  - hpiv3_heatmap_aw-*_tp-*.png\n")

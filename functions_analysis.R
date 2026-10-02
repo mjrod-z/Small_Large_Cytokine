@@ -1714,6 +1714,34 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
     dplyr::ungroup()
 }
 
+# Reshape raw exposure-model rows into Peat/Pine-vs-PBS ranked results.
+# emmeans `trt.vs.ctrl` labels contrasts "<treatment> - <control>" (e.g.
+# "Peat_25 - PBS_Control"); if PBS ever appears first the sign is flipped so the
+# estimate always reads treatment minus PBS. Adds `target_exposure`; there is no
+# `EXPOSURE` column in exposure-model output.
+prepare_hpiv3_ranked_exposure_results <- function(results,
+                                                  pbs_level = PBS_LEVEL,
+                                                  target_pattern = "^(Peat|Pine)(_|$)") {
+  stopifnot(is.data.frame(results), all(c("comparison", "contrast", "estimate") %in% names(results)))
+  parsed <- results[
+    as.character(results$comparison) == "EXPOSURE" & !is.na(results$contrast),
+    ,
+    drop = FALSE
+  ]
+  contrast_clean <- gsub("[()]", "", trimws(as.character(parsed$contrast)))
+  left <- trimws(sub(" - .*", "", contrast_clean))
+  right <- trimws(sub("^.* - ", "", contrast_clean))
+  pbs_first <- left == pbs_level
+  keep <- (left == pbs_level | right == pbs_level) & grepl(" - ", contrast_clean, fixed = TRUE)
+  parsed <- parsed[keep, , drop = FALSE]
+  pbs_first <- pbs_first[keep]
+  target <- ifelse(pbs_first, right[keep], left[keep])
+  parsed$target_exposure <- target
+  parsed$estimate <- ifelse(pbs_first, -parsed$estimate, parsed$estimate)
+  parsed$contrast <- paste(target, "-", pbs_level)
+  parsed[grepl(target_pattern, parsed$target_exposure, ignore.case = TRUE), , drop = FALSE]
+}
+
 summarize_hpiv3_strata <- function(data, protein_cols) {
   stopifnot(is.data.frame(data))
   protein_cols <- intersect(protein_cols, names(data))
