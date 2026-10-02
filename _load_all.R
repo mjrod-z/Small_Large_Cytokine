@@ -66,6 +66,7 @@ required_objects <- c(
   "fit_hpiv3_infection_models",
   "fit_hpiv3_hormone_models",
   "fit_hpiv3_exposure_models",
+  "prepare_hpiv3_ranked_exposure_results",
   "summarize_hpiv3_strata",
   "summarize_unique_significant_proteins",
   "plot_hpiv3_infection_dotplot",

@@ -1028,6 +1028,37 @@ plot_gsea_barplot <- function(gsea_data, n_top = 12, facet_by = "sample_name",
 }
 
 
+# Significance boundary for HPIV3 volcano plots. `significant` is defined from
+# the BH-adjusted q.value (within a biological stratum), while the volcano
+# y-axis is the raw -log10(p.value). The boundary on that axis is therefore the
+# largest raw p-value among significant proteins (BH q is monotone in p, so it
+# separates significant from non-significant points). Returns one row per
+# panel; `threshold_p`/`threshold_y` are NA for panels with no significant hit.
+hpiv3_volcano_thresholds <- function(plot_df, panel_group = NULL) {
+  stopifnot(is.data.frame(plot_df), all(c("p.value", "significant") %in% names(plot_df)))
+  if (is.null(panel_group)) panel_group <- rep("All", nrow(plot_df))
+  p_value <- as.numeric(plot_df$p.value)
+  is_sig <- !is.na(plot_df$significant) & plot_df$significant & is.finite(p_value)
+  groups <- unique(as.character(panel_group))
+  threshold_p <- vapply(groups, function(g) {
+    keep <- is_sig & as.character(panel_group) == g
+    if (any(keep)) max(p_value[keep]) else NA_real_
+  }, numeric(1))
+  tibble::tibble(
+    .panel_group = groups,
+    threshold_p = unname(threshold_p),
+    threshold_y = hpiv3_neg_log10_p(unname(threshold_p))
+  )
+}
+
+# -log10(p) that stays finite for p == 0 (clamped to `floor_p`, by default the
+# smallest positive double) and propagates NA for missing/non-finite p-values.
+hpiv3_neg_log10_p <- function(p, floor_p = .Machine$double.xmin) {
+  p <- as.numeric(p)
+  p[!is.finite(p)] <- NA_real_
+  -log10(pmax(p, floor_p))
+}
+
 plot_hpiv3_ranked_bars <- function(model_results,
                                    model_type = c("infection", "hormone", "exposure"),
                                    contrast = NULL,
@@ -1133,13 +1164,17 @@ plot_hpiv3_ranked_bars <- function(model_results,
   if (!is.null(top_n) && nrow(plot_df) > top_n) {
     if (length(panel_cols) == 0L) {
       plot_df <- plot_df[
-        order(abs(as.numeric(plot_df$estimate)), decreasing = TRUE)[seq_len(top_n)],
+        order(
+          !(!is.na(plot_df$significant) & plot_df$significant),
+          -abs(as.numeric(plot_df$estimate))
+        )[seq_len(top_n)],
         ,
         drop = FALSE
       ]
     } else {
       plot_df <- dplyr::group_by(plot_df, panel) %>%
-        dplyr::slice_max(order_by = abs(estimate), n = top_n, with_ties = FALSE) %>%
+        dplyr::arrange(dplyr::desc(!is.na(significant) & significant), dplyr::desc(abs(estimate)), .by_group = TRUE) %>%
+        dplyr::slice_head(n = top_n) %>%
         dplyr::ungroup()
     }
   }
@@ -1188,7 +1223,11 @@ plot_hpiv3_ranked_bars <- function(model_results,
     hpiv3_title_theme() +
     ggplot2::labs(
       title = plot_title,
-      subtitle = paste0("Bars ranked by estimated effect; significant at q < ", ALPHA_Q),
+      subtitle = paste0(
+        "Bars ranked by estimated effect; significant = q.value < ", ALPHA_Q,
+        " (BH-FDR within stratum); ",
+        if (is.null(top_n)) "all proteins shown" else paste0("up to ", top_n, " proteins per panel, significant first")
+      ),
       x = "Estimated log2 difference (contrast)",
       y = "Protein"
     )
@@ -1280,7 +1319,12 @@ plot_hpiv3_volcano <- function(model_results,
     )
   }
 
-  plot_df$neg_log10_p <- -log10(as.numeric(plot_df$p.value))
+  # p == 0 is drawn one decade beyond the smallest positive p so it does not
+  # stretch the axis; threshold and points share this same transform.
+  positive_p <- as.numeric(plot_df$p.value)
+  positive_p <- positive_p[positive_p > 0]
+  p_floor <- if (length(positive_p) > 0L) min(positive_p) / 10 else .Machine$double.xmin
+  plot_df$neg_log10_p <- hpiv3_neg_log10_p(plot_df$p.value, p_floor)
   plot_df$direction <- dplyr::case_when(
     !is.na(plot_df$significant) & plot_df$significant & plot_df$estimate > 0 ~ "Higher, significant",
     !is.na(plot_df$significant) & plot_df$significant & plot_df$estimate < 0 ~ "Lower, significant",
@@ -1304,17 +1348,35 @@ plot_hpiv3_volcano <- function(model_results,
     )
   if (length(panel_cols) > 0L) count_label_data$panel <- count_label_data$.panel_group
 
+  # One boundary line per panel, derived from the same `significant` flag that
+  # drives point colour and labels (no log2FC cutoff: the report applies none).
+  threshold_data <- hpiv3_volcano_thresholds(plot_df, panel_group)
+  threshold_data <- threshold_data[!is.na(threshold_data$threshold_y), , drop = FALSE]
+  threshold_data$label <- vapply(
+    threshold_data$threshold_p,
+    function(p) paste0("q < ", ALPHA_Q, " boundary (raw p \u2264 ", formatC(p, format = "g", digits = 2), ")"),
+    character(1)
+  )
+  threshold_data <- dplyr::left_join(
+    threshold_data,
+    count_label_data[, c(".panel_group", "x_min")],
+    by = ".panel_group"
+  )
+  if (length(panel_cols) > 0L) threshold_data$panel <- threshold_data$.panel_group
+
   p <- ggplot2::ggplot(
     plot_df,
     ggplot2::aes(x = estimate, y = neg_log10_p, color = direction)
   ) +
-    ggplot2::geom_vline(
-      xintercept = c(-LOG2FC_CUTOFF, LOG2FC_CUTOFF),
-      color = "grey50", linetype = "dashed", linewidth = 0.5
-    ) +
     ggplot2::geom_hline(
-      yintercept = -log10(ADJ_P_CUTOFF),
-      color = "grey50", linetype = "dashed", linewidth = 0.5
+      data = threshold_data,
+      ggplot2::aes(yintercept = threshold_y),
+      color = "grey30", linetype = "dotted", linewidth = 0.6
+    ) +
+    ggplot2::geom_text(
+      data = threshold_data,
+      ggplot2::aes(x = x_min, y = threshold_y, label = label),
+      inherit.aes = FALSE, hjust = 0, vjust = -0.4, size = 2.8, color = "grey30"
     ) +
     ggplot2::geom_point(alpha = 0.7, size = 2) +
     ggplot2::geom_text(
@@ -1352,9 +1414,12 @@ plot_hpiv3_volcano <- function(model_results,
     hpiv3_title_theme() +
     ggplot2::labs(
       title = plot_title,
-      subtitle = paste0("Points colored by significance; significant at q < ", ALPHA_Q),
+      subtitle = paste0(
+        "Significant = q.value < ", ALPHA_Q,
+        " (BH-FDR within stratum); dotted line = largest raw p-value among significant proteins"
+      ),
       x = "Estimated log2 difference (contrast)",
-      y = expression(-log[10]("p-value"))
+      y = expression(-log[10]("raw p-value"))
     )
 
   if (isTRUE(label_significant)) {
