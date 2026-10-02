@@ -25,6 +25,54 @@ safe_name <- function(x) {
   x
 }
 
+# Short, filename-safe abbreviations for the stratification dimensions that
+# recur across HPIV3 ranked-bar/volcano, Euler, and abundance-heatmap outputs,
+# so every output family uses the same compact tokens (e.g. "aw-" instead of
+# "airway-").
+HPIV3_DIMENSION_TAGS <- c(
+  AIRWAY = "aw",
+  HORMONE = "ho",
+  TIMEPOINT = "tp",
+  INFECTION = "inf",
+  EXPOSURE = "exp",
+  SEX = "sex"
+)
+
+# Build a short, collision-safe filename fragment such as
+# "aw-sae_ho-none_tp-24h_inf-none_sex-all" from a named list/vector of
+# stratification values, using the shared HPIV3_DIMENSION_TAGS abbreviations.
+hpiv3_dimension_tag <- function(values) {
+  if (length(values) == 0L) return("")
+  columns <- names(values)
+  tags <- unname(HPIV3_DIMENSION_TAGS[columns])
+  tags[is.na(tags)] <- tolower(columns[is.na(tags)])
+  paste(
+    paste(tags, vapply(values, function(v) tolower(safe_name(as.character(v))), character(1)), sep = "-"),
+    collapse = "_"
+  )
+}
+
+# Wrap long plot titles/subtitles onto multiple lines (base `strwrap`, no
+# extra dependency) so long stratum labels do not overflow the plot area.
+wrap_plot_text <- function(text, width = 60) {
+  if (is.null(text) || length(text) == 0L || is.na(text) || !nzchar(text)) return(text)
+  paste(strwrap(text, width = width), collapse = "\n")
+}
+
+# Shared title/subtitle theme sizing+wrapping applied across HPIV3 ranked-bar,
+# volcano, Euler, and upset plots so long titles shrink and wrap instead of
+# being cut off.
+hpiv3_title_theme <- function(title_size = 12, subtitle_size = 9.5) {
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(
+      size = title_size, face = "bold", hjust = 0.5, lineheight = 1.05
+    ),
+    plot.subtitle = ggplot2::element_text(
+      size = subtitle_size, hjust = 0.5, lineheight = 1.05
+    )
+  )
+}
+
 plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
                              subtitle = NULL, x_limits = c(-10, 10),
                              y_limits = VOLCANO_Y_LIMITS,
@@ -47,6 +95,8 @@ plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
   ))
   data$DEG <- factor(data$DEG, levels = c("DOWN", "NO", "UP"))
   label_data <- data[!is.na(data$delabel) & nzchar(as.character(data$delabel)), , drop = FALSE]
+  title <- wrap_plot_text(title, width = 70)
+  subtitle <- wrap_plot_text(subtitle, width = 90)
 
   # UP/DOWN gene counts per facet panel, annotated in the top corners
   # (mirrors the reference hBEC RNA-seq pipeline's volcano styling).
@@ -148,14 +198,14 @@ plot_volcano_deg <- function(data, facet_by = "comparison", title = NULL,
     ggplot2::theme_minimal(base_size = 12) +
     ggplot2::theme(
       strip.text = ggplot2::element_text(size = 10, face = "bold"),
-      plot.title = ggplot2::element_text(hjust = 0.5, face = "bold"),
       panel.border = ggplot2::element_rect(
         color = "grey40", fill = NA, linewidth = 0.4
       ),
       panel.grid.minor = ggplot2::element_blank(),
       legend.position = "bottom",
       plot.background = ggplot2::element_rect(fill = "white", color = NA)
-    )
+    ) +
+    hpiv3_title_theme(title_size = 13, subtitle_size = 10)
 }
 
 plot_hpiv3_rnaseq_sex_comparison <- function(
@@ -180,8 +230,9 @@ plot_hpiv3_rnaseq_sex_comparison <- function(
   empty_plot <- function(reason) {
     ggplot2::ggplot() +
       ggplot2::theme_void() +
+      hpiv3_title_theme() +
       ggplot2::labs(
-        title = paste("Sex comparison:", airway, family),
+        title = wrap_plot_text(paste("Sex comparison:", airway, family)),
         subtitle = reason
       )
   }
@@ -282,7 +333,7 @@ plot_hpiv3_rnaseq_sex_comparison <- function(
     ) +
     ggplot2::facet_wrap(ggplot2::vars(contrast_label), scales = "free_y") +
     ggplot2::labs(
-      title = paste("Male vs female RNA-seq effects:", airway, family),
+      title = wrap_plot_text(paste("Male vs female RNA-seq effects:", airway, family)),
       subtitle = paste("Top", top_n, "paired genes per contrast; opaque points meet the DEG rule"),
       x = expression("log"[2] * " fold change"),
       y = "Gene",
@@ -294,7 +345,8 @@ plot_hpiv3_rnaseq_sex_comparison <- function(
       strip.text = ggplot2::element_text(face = "bold"),
       panel.grid.minor = ggplot2::element_blank(),
       legend.position = "bottom"
-    )
+    ) +
+    hpiv3_title_theme()
 }
 
 sig_label_from_q <- function(q, alpha_q = ALPHA_Q) {
@@ -1031,8 +1083,11 @@ plot_hpiv3_ranked_bars <- function(model_results,
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
+        hpiv3_title_theme() +
         ggplot2::labs(
-          title = if (is.null(title)) paste("HPIV3", model_type, "ranked effects") else title,
+          title = wrap_plot_text(
+            if (is.null(title)) paste("HPIV3", model_type, "ranked effects") else title
+          ),
           subtitle = "No modeled results match the requested filters"
         )
     )
@@ -1096,6 +1151,7 @@ plot_hpiv3_ranked_bars <- function(model_results,
     TRUE ~ "No change"
   )
   plot_title <- if (is.null(title)) paste("HPIV3", model_type, "ranked effects") else title
+  plot_title <- wrap_plot_text(plot_title, width = 60)
 
   y_mapping <- if (length(panel_cols) > 0L) "protein_panel" else "PROTEIN"
   p <- ggplot2::ggplot(
@@ -1129,6 +1185,7 @@ plot_hpiv3_ranked_bars <- function(model_results,
       axis.text.y = ggplot2::element_text(size = 8),
       legend.title = ggplot2::element_blank()
     ) +
+    hpiv3_title_theme() +
     ggplot2::labs(
       title = plot_title,
       subtitle = paste0("Bars ranked by estimated effect; significant at q < ", ALPHA_Q),
@@ -1188,11 +1245,15 @@ plot_hpiv3_volcano <- function(model_results,
     ,
     drop = FALSE
   ]
-  plot_title <- if (is.null(title)) paste("HPIV3", model_type, "volcano") else title
+  plot_title <- wrap_plot_text(
+    if (is.null(title)) paste("HPIV3", model_type, "volcano") else title,
+    width = 60
+  )
   if (nrow(plot_df) == 0L) {
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
+        hpiv3_title_theme() +
         ggplot2::labs(
           title = plot_title,
           subtitle = "No modeled results match the requested filters"
@@ -1245,6 +1306,7 @@ plot_hpiv3_volcano <- function(model_results,
       panel.grid.minor = ggplot2::element_blank(),
       legend.title = ggplot2::element_blank()
     ) +
+    hpiv3_title_theme() +
     ggplot2::labs(
       title = plot_title,
       subtitle = paste0("Points colored by significance; significant at q < ", ALPHA_Q),
@@ -1582,6 +1644,7 @@ plot_unique_protein_upset <- function(unique_result, title_str = NULL) {
     dplyr::filter(n_sig_groups > 0)
 
   default_title <- paste("Significant proteins by", unique_result$group_var %||% "group")
+  plot_title_text <- wrap_plot_text(title_str %||% default_title)
   filter_text <- "None"
   if (length(unique_result$filters %||% list()) > 0) {
     filter_text <- paste(
@@ -1596,8 +1659,9 @@ plot_unique_protein_upset <- function(unique_result, title_str = NULL) {
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
+        hpiv3_title_theme() +
         ggplot2::labs(
-          title = title_str %||% default_title,
+          title = plot_title_text,
           subtitle = "No significant proteins in any group"
         )
     )
@@ -1617,9 +1681,10 @@ plot_unique_protein_upset <- function(unique_result, title_str = NULL) {
         ggplot2::geom_col(fill = "steelblue") +
         ggplot2::geom_text(ggplot2::aes(label = n_proteins), vjust = -0.3, size = 3.2) +
         ggplot2::theme_minimal(base_size = 11) +
+        hpiv3_title_theme() +
         ggplot2::labs(
-          title = title_str %||% default_title,
-          subtitle = paste("Filters:", filter_text),
+          title = plot_title_text,
+          subtitle = wrap_plot_text(paste("Filters:", filter_text), width = 80),
           x = NULL,
           y = "Number of proteins"
         )
@@ -1640,9 +1705,10 @@ plot_unique_protein_upset <- function(unique_result, title_str = NULL) {
       combmatrix.panel.line.size = 0
     ) +
     ggplot2::theme_minimal(base_size = 11) +
+    hpiv3_title_theme() +
     ggplot2::labs(
-      title = title_str %||% default_title,
-      subtitle = paste("Filters:", filter_text),
+      title = plot_title_text,
+      subtitle = wrap_plot_text(paste("Filters:", filter_text), width = 80),
       x = NULL,
       y = "Number of proteins"
     )
@@ -1655,6 +1721,7 @@ plot_unique_protein_euler <- function(unique_result, title_str = NULL) {
     dplyr::filter(n_sig_groups > 0)
 
   default_title <- paste("Euler-style significant proteins by", unique_result$group_var %||% "group")
+  plot_title_text <- wrap_plot_text(title_str %||% default_title)
   filter_text <- "None"
   if (length(unique_result$filters %||% list()) > 0) {
     filter_text <- paste(
@@ -1669,8 +1736,9 @@ plot_unique_protein_euler <- function(unique_result, title_str = NULL) {
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
+        hpiv3_title_theme() +
         ggplot2::labs(
-          title = title_str %||% default_title,
+          title = plot_title_text,
           subtitle = "No significant proteins in any group"
         )
     )
@@ -1682,8 +1750,9 @@ plot_unique_protein_euler <- function(unique_result, title_str = NULL) {
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
+        hpiv3_title_theme() +
         ggplot2::labs(
-          title = title_str %||% default_title,
+          title = plot_title_text,
           subtitle = "No significant proteins in any group"
         )
     )
@@ -1712,13 +1781,14 @@ plot_unique_protein_euler <- function(unique_result, title_str = NULL) {
     return(
       ggplot2::ggplot() +
         ggplot2::theme_void() +
+        hpiv3_title_theme() +
         ggplot2::labs(
-          title = title_str %||% default_title,
-          subtitle = paste0(
+          title = plot_title_text,
+          subtitle = wrap_plot_text(paste0(
             "Filters: ", filter_text,
             " | Euler plot shown for up to 3 sets; this stratum has ",
             n_sets, " sets: ", paste(set_levels, collapse = ", ")
-          )
+          ), width = 80)
         )
     )
   }
@@ -1734,9 +1804,10 @@ plot_unique_protein_euler <- function(unique_result, title_str = NULL) {
         ggplot2::annotate("text", x = 0, y = 1.25, label = one_label, size = 4.2, fontface = "bold") +
         ggplot2::coord_equal(xlim = c(-1.4, 1.4), ylim = c(-1.4, 1.5), clip = "off") +
         ggplot2::theme_void() +
+        hpiv3_title_theme() +
         ggplot2::labs(
-          title = title_str %||% default_title,
-          subtitle = paste("Filters:", filter_text)
+          title = plot_title_text,
+          subtitle = wrap_plot_text(paste("Filters:", filter_text), width = 80)
         )
     )
   }
@@ -1769,9 +1840,10 @@ plot_unique_protein_euler <- function(unique_result, title_str = NULL) {
         ggplot2::coord_equal(xlim = c(-2.1, 2.1), ylim = c(-1.5, 1.6), clip = "off") +
         ggplot2::theme_void() +
         ggplot2::theme(legend.position = "none") +
+        hpiv3_title_theme() +
         ggplot2::labs(
-          title = title_str %||% default_title,
-          subtitle = paste("Filters:", filter_text)
+          title = plot_title_text,
+          subtitle = wrap_plot_text(paste("Filters:", filter_text), width = 80)
         )
     )
   }
@@ -1810,8 +1882,9 @@ plot_unique_protein_euler <- function(unique_result, title_str = NULL) {
     ggplot2::coord_equal(xlim = c(-2.2, 2.2), ylim = c(-1.6, 2.0), clip = "off") +
     ggplot2::theme_void() +
     ggplot2::theme(legend.position = "none") +
+    hpiv3_title_theme() +
     ggplot2::labs(
-      title = title_str %||% default_title,
-      subtitle = paste("Filters:", filter_text)
+      title = plot_title_text,
+      subtitle = wrap_plot_text(paste("Filters:", filter_text), width = 80)
     )
 }

@@ -1884,9 +1884,11 @@ for (euler_index in seq_len(nrow(rnaseq_euler_keys))) {
     "| SEX =", euler_key$sex_stratum[[1]]
   )
   euler_stem <- paste0(
-    "hpiv3_euler_rnaseq_", exposure_slug,
-    "_airway-", tolower(safe_name(euler_key$airway[[1]])),
-    "_sex-", tolower(safe_name(euler_key$sex_stratum[[1]]))
+    "hpiv3_euler_rnaseq_", exposure_slug, "_",
+    hpiv3_dimension_tag(c(
+      AIRWAY = euler_key$airway[[1]],
+      SEX = euler_key$sex_stratum[[1]]
+    ))
   )
 
   if (!all(c("EXPOSURE", "EXPOSURE_INFECTED") %in% modeled_families)) {
@@ -2061,7 +2063,7 @@ cat("RNA-seq outputs written under:", file.path(PATH_OUTPUT, RNA_OUTPUT_SUBDIR),
 cat("Key outputs include:\n")
 cat("  - hpiv3_rnaseq_campaign_all_results.csv (including all five analysis families)\n")
 cat("  - volcano_<AIRWAY>_<FAMILY>.png and sex_comparison_<AIRWAY>_<FAMILY>.png\n")
-cat("  - euler/hpiv3_euler_rnaseq_<peat|pine>_airway-*_sex-*.png\n")
-cat("  - euler/hpiv3_euler_rnaseq_<peat|pine>_airway-*_sex-*_membership.csv\n")
+cat("  - euler/hpiv3_euler_rnaseq_<peat|pine>_aw-*_sex-*.png\n")
+cat("  - euler/hpiv3_euler_rnaseq_<peat|pine>_aw-*_sex-*_membership.csv\n")
 cat("  - hpiv3_rnaseq_full_gene_contrast_profile.csv\n")
 ```
