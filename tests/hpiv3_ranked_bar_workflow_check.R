@@ -12,10 +12,12 @@ stopifnot(!is.na(root))
 analysis_path <- file.path(root, "functions_analysis.R")
 plots_path <- file.path(root, "functions_plots.R")
 report_path <- file.path(root, "02_hpiv3_analysis.Rmd")
+rnaseq_report_path <- file.path(root, "03_rnaseq_hpiv3_analysis.Rmd")
 loader_path <- file.path(root, "_load_all.R")
 analysis_text <- paste(readLines(analysis_path, warn = FALSE), collapse = "\n")
 plots_text <- paste(readLines(plots_path, warn = FALSE), collapse = "\n")
 report_text <- paste(readLines(report_path, warn = FALSE), collapse = "\n")
+rnaseq_report_text <- paste(readLines(rnaseq_report_path, warn = FALSE), collapse = "\n")
 loader_text <- paste(readLines(loader_path, warn = FALSE), collapse = "\n")
 
 for (path in c(analysis_path, plots_path, loader_path)) parse(file = path)
@@ -29,6 +31,12 @@ for (ranked_chunk_start in ranked_chunk_starts) {
   stopifnot(!is.na(ranked_chunk_end))
   parse(text = rmd_lines[(ranked_chunk_start + 1L):(ranked_chunk_end - 1L)])
 }
+# An explicit "exposure" ranked-bar/volcano chunk must exist alongside the
+# hormone and infection chunks, so exposure PNGs are actually generated.
+stopifnot(
+  "A dedicated hpiv3-ranked-exposure-bars chunk must exist" =
+    any(startsWith(rmd_lines, "```{r hpiv3-ranked-exposure-bars"))
+)
 euler_chunk_start <- match("```{r hpiv3-exposure-euler}", rmd_lines)
 euler_chunk_end <- if (is.na(euler_chunk_start)) {
   NA_integer_
@@ -75,6 +83,11 @@ stopifnot(
     grepl('method = "trt.vs.ctrl"', exposure_function_text) &&
       grepl('match\\("PBS_Control", exposure_levels\\)', exposure_function_text) &&
       !grepl('method = "pairwise"', exposure_function_text),
+  "Exposure models must stratify by airway/hormone/timepoint/sex/infection so exposure rows survive filtering" =
+    grepl(
+      "distinct\\(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION\\)",
+      exposure_function_text
+    ),
   "Ranked bars must use estimated effects and direction/significance fills" =
     grepl("geom_col\\(width = 0.75\\)", plots_text) &&
       grepl('"Higher, significant"', plots_text) &&
@@ -88,6 +101,14 @@ stopifnot(
       grepl('"Higher, significant" = UP_COLOR_DEFAULT', plots_text, fixed = TRUE) &&
       grepl('"Lower, significant" = DOWN_COLOR_DEFAULT', plots_text, fixed = TRUE) &&
       grepl("ggrepel::geom_text_repel", plots_text),
+  "Plot helpers must define shared title-wrapping and short dimension-tag utilities" =
+    grepl("wrap_plot_text <- function", plots_text, fixed = TRUE) &&
+      grepl("hpiv3_title_theme <- function", plots_text, fixed = TRUE) &&
+      grepl("hpiv3_dimension_tag <- function", plots_text, fixed = TRUE) &&
+      grepl("HPIV3_DIMENSION_TAGS", plots_text, fixed = TRUE),
+  "Ranked bar and volcano plots must wrap/resize their titles" =
+    grepl("plot_title <- wrap_plot_text", plots_text, fixed = TRUE) &&
+      grepl("hpiv3_title_theme()", plots_text, fixed = TRUE),
   "Report must create all three requested ranked comparison types" =
     all(vapply(
       c('"exposure"', '"hormone"', '"infection"'),
@@ -108,16 +129,44 @@ stopifnot(
   "Report must save a companion volcano plot alongside each ranked bar chart" =
     grepl("plot_hpiv3_volcano(", report_text, fixed = TRUE) &&
       grepl('"volcano"', report_text, fixed = TRUE) &&
-      grepl("hpiv3_volcano_", report_text, fixed = TRUE),
+      grepl("hpiv3_volc_", report_text, fixed = TRUE),
+  "Exposure ranked-bar/volcano chunk must save PNGs for the exposure comparison" =
+    grepl("save_hpiv3_ranked_comparisons(", report_text, fixed = TRUE) &&
+      grepl('hpiv3_ranked_exposure_results,', report_text, fixed = TRUE) &&
+      grepl('hpiv3_ranked_exposure_levels,', report_text, fixed = TRUE) &&
+      grepl('"hpiv3_rb_", category_label, "_"', report_text, fixed = TRUE) &&
+      grepl('"hpiv3_volc_", category_label, "_"', report_text, fixed = TRUE),
+  "Ranked bar/volcano filenames must use the short, shared dimension-tag convention" =
+    grepl("stratum_tag <- hpiv3_dimension_tag(", report_text, fixed = TRUE) &&
+      !grepl("_hormone-", report_text, fixed = TRUE) &&
+      !grepl("_timepoint-", report_text, fixed = TRUE),
   "Ranked plots must filter and encode airway, hormone, timepoint, and infection strata" =
     grepl('c\\("AIRWAY", "HORMONE", "TIMEPOINT", "INFECTION"\\)', report_text) &&
-      grepl("chart_filters\\$SEX <- sex_value", report_text, fixed = TRUE) &&
-      grepl('"_sex-", tolower\\(sex_value\\)', report_text),
+      grepl("chart_filters$SEX <- sex_value", report_text, fixed = TRUE),
+  "Euler and heatmap outputs must reuse the shared short dimension-tag naming convention" =
+    grepl("euler_stem <- paste0(", report_text, fixed = TRUE) &&
+      grepl("hpiv3_dimension_tag(", report_text, fixed = TRUE) &&
+      grepl("heatmap_tag <- hpiv3_dimension_tag(", report_text, fixed = TRUE) &&
+      grepl('"hpiv3_heatmap_matrix_"', report_text, fixed = TRUE) &&
+      grepl('"hpiv3_heatmap_"', report_text, fixed = TRUE),
   "Protein Euler outputs must use infection membership and export CSVs" =
     grepl('group_var = "INFECTION"', report_text, fixed = TRUE) &&
       grepl("plot_unique_protein_euler(", report_text, fixed = TRUE) &&
       grepl('"_membership.csv"', report_text, fixed = TRUE) &&
-      grepl("at least two significant proteins per infection stratum", report_text, fixed = TRUE)
+      grepl("at least two significant proteins per infection stratum", report_text, fixed = TRUE),
+  "Session summary must describe the new short-tag ranked-bar/volcano/euler/heatmap filenames" =
+    grepl("hpiv3_rb_<comparison>", report_text, fixed = TRUE) &&
+      grepl("hpiv3_volc_<comparison>", report_text, fixed = TRUE) &&
+      grepl("hpiv3_heatmap_matrix_aw-", report_text, fixed = TRUE) &&
+      grepl("hpiv3_heatmap_aw-", report_text, fixed = TRUE),
+  "RNA-seq report must reuse the shared short dimension-tag naming convention for Euler outputs" =
+    grepl("hpiv3_dimension_tag(", rnaseq_report_text, fixed = TRUE) &&
+      !grepl('"_airway-"', rnaseq_report_text, fixed = TRUE) &&
+      grepl("hpiv3_euler_rnaseq_<peat|pine>_aw-", rnaseq_report_text, fixed = TRUE),
+  "RNA-seq report must still generate EXPOSURE-family volcano/Euler outputs alongside HORMONE/INFECTION" =
+    grepl('family == "EXPOSURE"', rnaseq_report_text, fixed = TRUE) &&
+      grepl("plot_volcano_deg(", rnaseq_report_text, fixed = TRUE) &&
+      grepl('RNA_FAMILIES <- c("EXPOSURE", "HORMONE", "INFECTION"', rnaseq_report_text, fixed = TRUE)
 )
 
-cat("PASS: HPIV3 PBS-referenced contrasts, infection-stratified models, ranked plots, and Euler wiring checks passed.\n")
+cat("PASS: HPIV3 PBS-referenced contrasts, infection-stratified models, ranked plots, naming, and Euler wiring checks passed.\n")

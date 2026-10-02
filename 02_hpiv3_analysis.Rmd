@@ -274,23 +274,20 @@ save_hpiv3_ranked_comparisons <- function(
       ), sep = "="),
       collapse = " | "
     )
-    dimension_filename <- paste(
-      paste(
-        tolower(dimension_columns),
-        vapply(
-          dimension_columns,
-          function(column) tolower(safe_name(as.character(group_values[[column]][[1]]))),
-          character(1)
-        ),
-        sep = "-"
+    dimension_values <- stats::setNames(
+      vapply(
+        dimension_columns,
+        function(column) as.character(group_values[[column]][[1]]),
+        character(1)
       ),
-      collapse = "_"
+      dimension_columns
     )
+    stratum_tag <- hpiv3_dimension_tag(c(dimension_values, SEX = sex_value))
     plot_title <- switch(
       category_label,
-      exposure = paste("Exposure effect:", target_value, "vs PBS_Control —", dimension_label, "|", sex_label),
-      hormone = paste("Hormone effect (E2 vs NONE),", target_value, "—", dimension_label, "|", sex_label),
-      infection = paste("Infection effect (HPIV3 vs NONE),", target_value, "—", dimension_label, "|", sex_label)
+      exposure = paste("Exposure:", target_value, "vs PBS \u2014", dimension_label, "|", sex_label),
+      hormone = paste("Hormone: E2 vs NONE,", target_value, "\u2014", dimension_label, "|", sex_label),
+      infection = paste("Infection: HPIV3 vs NONE,", target_value, "\u2014", dimension_label, "|", sex_label)
     )
     chart <- plot_hpiv3_ranked_bars(
       results,
@@ -302,9 +299,8 @@ save_hpiv3_ranked_comparisons <- function(
       HPIV3_OUTPUT_SUBDIR,
       "ranked_bars",
       paste0(
-        "hpiv3_ranked_", category_label, "_",
-        safe_name(target_value), "_", dimension_filename,
-        "_sex-", tolower(sex_value), ".png"
+        "hpiv3_rb_", category_label, "_",
+        safe_name(target_value), "_", stratum_tag, ".png"
       )
     )
     save_plot(output_file, chart, width = 12, height = 9, dpi = 300, bg = "white")
@@ -320,9 +316,8 @@ save_hpiv3_ranked_comparisons <- function(
       HPIV3_OUTPUT_SUBDIR,
       "volcano",
       paste0(
-        "hpiv3_volcano_", category_label, "_",
-        safe_name(target_value), "_", dimension_filename,
-        "_sex-", tolower(sex_value), ".png"
+        "hpiv3_volc_", category_label, "_",
+        safe_name(target_value), "_", stratum_tag, ".png"
       )
     )
     save_plot(volcano_file, volcano_chart, width = 9, height = 7, dpi = 300, bg = "white")
@@ -478,18 +473,20 @@ for (euler_index in seq_len(nrow(hpiv3_euler_strata))) {
    "pine"
  }
  euler_label <- paste(
-   euler_key$target_exposure[[1]], "vs PBS_Control |",
+   euler_key$target_exposure[[1]], "vs PBS |",
    "AIRWAY =", euler_key$AIRWAY[[1]],
    "| HORMONE =", euler_key$HORMONE[[1]],
    "| TIMEPOINT =", euler_key$TIMEPOINT[[1]],
    "| SEX =", euler_key$SEX[[1]]
  )
  euler_stem <- paste0(
-   "hpiv3_euler_", exposure_slug,
-   "_airway-", tolower(safe_name(as.character(euler_key$AIRWAY[[1]]))),
-   "_hormone-", tolower(safe_name(as.character(euler_key$HORMONE[[1]]))),
-   "_sex-", tolower(safe_name(as.character(euler_key$SEX[[1]]))),
-   "_timepoint-", tolower(safe_name(as.character(euler_key$TIMEPOINT[[1]])))
+   "hpiv3_euler_", exposure_slug, "_",
+   hpiv3_dimension_tag(c(
+     AIRWAY = as.character(euler_key$AIRWAY[[1]]),
+     HORMONE = as.character(euler_key$HORMONE[[1]]),
+     TIMEPOINT = as.character(euler_key$TIMEPOINT[[1]]),
+     SEX = as.character(euler_key$SEX[[1]])
+   ))
  )
 
  if (!all(c("NONE", "HPIV3") %in% modeled_infections)) {
@@ -714,14 +711,10 @@ for (stratum_index in seq_len(nrow(heatmap_strata))) {
     )
   })
 
-  safe_airway <- safe_name(airway_value)
-  safe_timepoint <- safe_name(timepoint_value)
+  heatmap_tag <- hpiv3_dimension_tag(c(AIRWAY = airway_value, TIMEPOINT = timepoint_value))
   matrix_file <- file.path(
     HPIV3_OUTPUT_SUBDIR,
-    paste0(
-      "hpiv3_abundance_heatmap_matrix_",
-      safe_airway, "_", safe_timepoint, ".csv"
-    )
+    paste0("hpiv3_heatmap_matrix_", heatmap_tag, ".csv")
   )
   save_table(
     tibble::as_tibble(abundance_matrix, rownames = "PROTEIN"),
@@ -731,10 +724,7 @@ for (stratum_index in seq_len(nrow(heatmap_strata))) {
   heatmap_file <- file.path(
     PATH_OUTPUT,
     HPIV3_OUTPUT_SUBDIR,
-    paste0(
-      "hpiv3_abundance_heatmap_",
-      safe_airway, "_", safe_timepoint, ".png"
-    )
+    paste0("hpiv3_heatmap_", heatmap_tag, ".png")
   )
   dir.create(dirname(heatmap_file), recursive = TRUE, showWarnings = FALSE)
   pheatmap::pheatmap(
@@ -751,10 +741,9 @@ for (stratum_index in seq_len(nrow(heatmap_strata))) {
     annotation_colors = annotation_colors,
     annotation_legend = TRUE,
     clustering_method = "complete",
-    main = paste(
-      "HPIV3 protein abundance:",
-      "AIRWAY =", airway_value,
-      "| TIMEPOINT =", timepoint_value
+    main = wrap_plot_text(
+      paste("HPIV3 protein abundance: AIRWAY =", airway_value, "| TIMEPOINT =", timepoint_value),
+      width = 50
     ),
     filename = heatmap_file,
     width = max(10, ncol(abundance_matrix) * 0.28 + 4),
@@ -777,11 +766,11 @@ cat("  - hpiv3_exposure_model_results.csv\n")
 cat("  - hpiv3_hormone_model_results.csv\n")
 cat("  - hpiv3_ranked_exposure_model_results.csv\n")
 cat("  - hpiv3_ranked_bar_plot_index.csv\n")
-cat("  - ranked_bars/hpiv3_ranked_<comparison>_<target>_airway-*_hormone-*_timepoint-*_infection-*_sex-*.png\n")
-cat("  - volcano/hpiv3_volcano_<comparison>_<target>_airway-*_hormone-*_timepoint-*_infection-*_sex-*.png\n")
-cat("  - euler/hpiv3_euler_<exposure>_airway-*_hormone-*_sex-*_timepoint-*.png\n")
-cat("  - euler/hpiv3_euler_<exposure>_airway-*_hormone-*_sex-*_timepoint-*_membership.csv\n")
+cat("  - ranked_bars/hpiv3_rb_<comparison>_<target>_aw-*_ho-*_tp-*_inf-*_sex-*.png\n")
+cat("  - volcano/hpiv3_volc_<comparison>_<target>_aw-*_ho-*_tp-*_inf-*_sex-*.png\n")
+cat("  - euler/hpiv3_euler_<exposure>_aw-*_ho-*_tp-*_sex-*.png\n")
+cat("  - euler/hpiv3_euler_<exposure>_aw-*_ho-*_tp-*_sex-*_membership.csv\n")
 cat("  - hpiv3_abundance_heatmap_source.csv\n")
-cat("  - hpiv3_abundance_heatmap_matrix_<AIRWAY>_<TIMEPOINT>.csv\n")
-cat("  - hpiv3_abundance_heatmap_<AIRWAY>_<TIMEPOINT>.png\n")
+cat("  - hpiv3_heatmap_matrix_aw-*_tp-*.csv\n")
+cat("  - hpiv3_heatmap_aw-*_tp-*.png\n")
 ```
