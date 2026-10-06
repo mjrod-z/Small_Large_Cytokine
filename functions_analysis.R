@@ -1953,3 +1953,63 @@ summarize_unique_significant_proteins <- function(
     alpha_q = alpha_q
   )
 }
+
+# Fit a model function separately within each observed AIRWAY x INFECTION subset
+# and verify no result row leaks outside its subset.
+fit_hpiv3_by_airway_infection <- function(fit_fn, data, ...) {
+  subsets <- data %>%
+    dplyr::distinct(AIRWAY, INFECTION) %>%
+    dplyr::arrange(AIRWAY, INFECTION)
+  fits <- lapply(seq_len(nrow(subsets)), function(i) {
+    airway_i <- subsets$AIRWAY[[i]]
+    infection_i <- subsets$INFECTION[[i]]
+    subset_data <- data %>%
+      dplyr::filter(AIRWAY == airway_i, INFECTION == infection_i)
+    cat("  Subset AIRWAY =", as.character(airway_i),
+        "| INFECTION =", as.character(infection_i),
+        "| rows =", nrow(subset_data), "\n")
+    fit <- fit_fn(subset_data, ...)
+    if (nrow(fit) > 0L) {
+      stopifnot(
+        "Model results leaked outside their AIRWAY x INFECTION subset" =
+          all(as.character(fit$INFECTION) == as.character(infection_i)) &&
+          all(as.character(fit$AIRWAY) == as.character(airway_i))
+      )
+    }
+    fit
+  })
+  dplyr::bind_rows(fits)
+}
+
+# Audit that every modeled exposure contrast uses a PBS baseline from the same
+# airway/hormone/timepoint/sex/infection stratum. Stops on failure.
+audit_hpiv3_exposure_baselines <- function(data, exposure_results, pbs_level = PBS_LEVEL) {
+  strata_cols <- c("AIRWAY", "HORMONE", "TIMEPOINT", "SEX", "INFECTION")
+  audit_data <- dplyr::bind_rows(data, dplyr::mutate(data, SEX = "All")) %>%
+    dplyr::mutate(dplyr::across(dplyr::all_of(strata_cols), as.character))
+  counts <- audit_data %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(strata_cols))) %>%
+    dplyr::summarise(
+      n_pbs_same_infection = sum(as.character(EXPOSURE) == pbs_level),
+      .groups = "drop"
+    )
+  audit <- exposure_results %>%
+    dplyr::filter(
+      as.character(comparison) == "EXPOSURE", !is.na(contrast),
+      model_status %in% c("modeled", "modeled_fallback")
+    ) %>%
+    dplyr::mutate(dplyr::across(dplyr::all_of(strata_cols), as.character)) %>%
+    dplyr::distinct(dplyr::across(dplyr::all_of(c(strata_cols, "contrast")))) %>%
+    dplyr::left_join(counts, by = strata_cols) %>%
+    dplyr::mutate(
+      baseline_is_pbs = grepl(pbs_level, contrast, fixed = TRUE),
+      baseline_infection = INFECTION,
+      baseline_matches_infection = baseline_is_pbs &
+        !is.na(n_pbs_same_infection) & n_pbs_same_infection > 0L
+    )
+  stopifnot(
+    "Exposure baseline audit failed: a contrast lacks a same-infection PBS baseline" =
+      all(audit$baseline_matches_infection)
+  )
+  audit
+}

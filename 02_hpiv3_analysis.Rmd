@@ -36,13 +36,26 @@ source(here::here("_load_all.R"))
 
 HPIV3_MISSING_THRESHOLD <- 0.30
 HPIV3_PSEUDOCOUNT <- PSEUDOCOUNT
-HPIV3_OUTPUT_SUBDIR <- "hpiv3"
+# Hormone strata to analyse: "both" (E2 and NONE), "E2_only", or "exclude_E2".
+HPIV3_HORMONE_MODE <- "both"
+stopifnot(
+  "HPIV3_HORMONE_MODE must be one of 'both', 'E2_only', 'exclude_E2'" =
+    HPIV3_HORMONE_MODE %in% c("both", "E2_only", "exclude_E2")
+)
+# Non-default modes write to a mode-specific subdirectory so outputs never
+# overwrite the default ("both") results.
+HPIV3_OUTPUT_SUBDIR <- if (HPIV3_HORMONE_MODE == "both") {
+  "hpiv3"
+} else {
+  file.path("hpiv3", paste0("hormone_", tolower(HPIV3_HORMONE_MODE)))
+}
 HPIV3_EULER_MIN_SIG <- 2L  # minimum significant proteins required in each of NONE and HPIV3
 
 cat("✓ HPIV3 analysis configuration loaded\n")
 cat("  Missingness threshold:", HPIV3_MISSING_THRESHOLD, "\n")
 cat("  Modeling pseudocount :", HPIV3_PSEUDOCOUNT, "\n")
 cat("  Euler min. significant:", HPIV3_EULER_MIN_SIG, "\n")
+cat("  Hormone mode         :", HPIV3_HORMONE_MODE, "\n")
 cat("  Output subdirectory  :", file.path(PATH_OUTPUT, HPIV3_OUTPUT_SUBDIR), "\n")
 ```
 
@@ -59,12 +72,13 @@ QC and modeling rules:
 - Text values matching `<LLOD` or `>ULOD` (case/whitespace-insensitive) are treated as missing before numeric conversion.
 - Other non-numeric protein values are also converted to missing and reported.
 - Infection labels are normalized so `NO` and `NONE` become `NONE`; `HPIV3` is retained; unexpected labels stop the run.
-- Hormone levels are kept as `NONE` and `E2`.
+- Hormone levels are kept as `NONE` and `E2`. The `HPIV3_HORMONE_MODE` option (`"both"`, `"E2_only"`, or `"exclude_E2"`) subsets the data immediately after loading, before missingness QC, model fitting, and any plotting. Non-default modes write to `output/hpiv3/hormone_<mode>/` so they never overwrite the default outputs. Hormone (E2 vs NONE) models require both levels and are skipped otherwise.
 - Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum.
-- Infection effects are modeled on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE` within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × SEX` strata, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
+- Infection effects are modeled only in the PBS (`PBS_Control`) exposure group, not for Peat or Pine, on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE` within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × SEX` strata, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
 - Hormone effects are modeled as `E2` versus `NONE` within `AIRWAY × TIMEPOINT × EXPOSURE × INFECTION × SEX` strata, using the same random-intercept fallback.
 - Sex effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × INFECTION` strata.
-- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata, including pooled `SEX = "All"` results; only Peat-vs-PBS and Pine-vs-PBS contrasts are tested.
+- Sex, hormone, and exposure models are fitted separately within each `AIRWAY × INFECTION` subset (`fit_hpiv3_by_airway_infection()`), so `NONE` and `HPIV3` samples are never pooled in those comparisons. Only the infection model (HPIV3 vs NONE) uses both infection states by design.
+- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata, including pooled `SEX = "All"` results; only Peat-vs-PBS and Pine-vs-PBS contrasts are tested. Every exposure contrast is referenced to the PBS group of the same airway, hormone, timepoint, sex, and infection state (e.g. Male HPIV3 Peat vs Male HPIV3 PBS); an explicit audit step verifies this.
 
 # Load and prepare HPIV3 data
 
@@ -75,6 +89,7 @@ hpiv3_bundle <- build_hpiv3_analysis_data(
 )
 
 hpiv3_data <- hpiv3_bundle$data
+hpiv3_data <- filter_hpiv3_hormone_mode(hpiv3_data, HPIV3_HORMONE_MODE)
 hpiv3_proteins <- hpiv3_bundle$protein_cols
 hpiv3_qc <- hpiv3_bundle$qc
 
@@ -82,7 +97,8 @@ cat("✓ HPIV3 inputs loaded\n")
 cat("  Rows           :", nrow(hpiv3_data), "\n")
 cat("  Protein columns:", length(hpiv3_proteins), "\n")
 cat("  Airway levels  :", paste(levels(hpiv3_data$AIRWAY), collapse = " | "), "\n")
-cat("  Hormone levels :", paste(levels(hpiv3_data$HORMONE), collapse = " | "), "\n")
+cat("  Hormone levels :", paste(unique(as.character(hpiv3_data$HORMONE)), collapse = " | "),
+    " (mode:", HPIV3_HORMONE_MODE, ")\n")
 cat("  Timepoints     :", paste(levels(hpiv3_data$TIMEPOINT), collapse = " | "), "\n")
 cat("  Infection levels:", paste(levels(factor(hpiv3_data$INFECTION)), collapse = " | "), "\n")
 ```
@@ -116,8 +132,9 @@ cat("  Excluded proteins:", sum(!hpiv3_protein_status$included), "\n")
 # HPIV3 mixed-effects modeling
 
 ```{r hpiv3-models}
+# Infection (HPIV3 vs NONE) is only compared for PBS_Control, not Peat/Pine.
 hpiv3_model_results <- fit_hpiv3_infection_models(
-  hpiv3_data,
+  dplyr::filter(hpiv3_data, as.character(EXPOSURE) == PBS_LEVEL),
   hpiv3_proteins,
   protein_status = hpiv3_protein_status,
   pseudocount = HPIV3_PSEUDOCOUNT,
@@ -131,10 +148,17 @@ cat("  Modeled rows :", sum(!is.na(hpiv3_model_results$p.value)), "\n")
 cat("  Significant q<", ALPHA_Q, ":", sum(hpiv3_model_results$significant, na.rm = TRUE), "\n")
 ```
 
-# HPIV3 sex and exposure stratified mixed-effects modeling
+# HPIV3 sex, exposure and hormone models within airway × infection subsets
+
+Sex, exposure, and hormone models are fitted separately within each observed
+`AIRWAY × INFECTION` subset. The infection model above is the only one that
+uses both infection states together. Within a subset, exposure contrasts are
+Peat/Pine versus the PBS group of that same subset (same infection state), and
+the audit below confirms this against the input data.
 
 ```{r hpiv3-noninfection-models}
-hpiv3_sex_results <- fit_hpiv3_sex_models(
+hpiv3_sex_results <- fit_hpiv3_by_airway_infection(
+  fit_hpiv3_sex_models,
   hpiv3_data,
   hpiv3_proteins,
   protein_status = hpiv3_protein_status,
@@ -143,7 +167,8 @@ hpiv3_sex_results <- fit_hpiv3_sex_models(
 )
 save_table(hpiv3_sex_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_sex_model_results.csv"))
 
-hpiv3_exposure_results <- fit_hpiv3_exposure_models(
+hpiv3_exposure_results <- fit_hpiv3_by_airway_infection(
+  fit_hpiv3_exposure_models,
   hpiv3_data,
   hpiv3_proteins,
   protein_status = hpiv3_protein_status,
@@ -152,19 +177,51 @@ hpiv3_exposure_results <- fit_hpiv3_exposure_models(
 )
 save_table(hpiv3_exposure_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_model_results.csv"))
 
-hpiv3_hormone_results <- fit_hpiv3_hormone_models(
-  hpiv3_data,
-  hpiv3_proteins,
-  protein_status = hpiv3_protein_status,
-  pseudocount = HPIV3_PSEUDOCOUNT,
-  alpha_q = ALPHA_Q
-)
+if (dplyr::n_distinct(as.character(hpiv3_data$HORMONE)) < 2L) {
+  cat("Hormone (E2 vs NONE) models skipped: hormone mode '", HPIV3_HORMONE_MODE,
+      "' leaves a single hormone stratum.\n", sep = "")
+  hpiv3_hormone_results <- tibble::tibble()
+} else {
+  hpiv3_hormone_results <- fit_hpiv3_by_airway_infection(
+    fit_hpiv3_hormone_models,
+    hpiv3_data,
+    hpiv3_proteins,
+    protein_status = hpiv3_protein_status,
+    pseudocount = HPIV3_PSEUDOCOUNT,
+    alpha_q = ALPHA_Q
+  )
+}
 save_table(hpiv3_hormone_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_hormone_model_results.csv"))
 
 cat("✓ Non-infection modeling complete\n")
 cat("  Sex modeled rows     :", sum(!is.na(hpiv3_sex_results$p.value)), "\n")
 cat("  Exposure modeled rows:", sum(!is.na(hpiv3_exposure_results$p.value)), "\n")
-cat("  Hormone modeled rows :", sum(!is.na(hpiv3_hormone_results$p.value)), "\n")
+cat("  Hormone modeled rows :",
+    if (nrow(hpiv3_hormone_results) > 0L) sum(!is.na(hpiv3_hormone_results$p.value)) else 0L, "\n")
+```
+
+## Exposure baseline audit
+
+Every PBS-referenced exposure contrast must use a PBS baseline from the same
+infection state (and the same airway, hormone, timepoint, and sex). The audit
+checks that each modeled contrast's stratum has PBS samples in the input data
+with that identical infection state, and that no PBS baseline from another
+infection state could have been used. The audit stops the run on any failure
+and is saved to `hpiv3_exposure_baseline_audit.csv`.
+
+```{r hpiv3-exposure-baseline-audit}
+hpiv3_exposure_baseline_audit <- audit_hpiv3_exposure_baselines(
+  hpiv3_data,
+  hpiv3_exposure_results,
+  pbs_level = PBS_LEVEL
+)
+
+save_table(
+  hpiv3_exposure_baseline_audit,
+  file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_baseline_audit.csv")
+)
+cat("✓ Exposure baseline audit passed:", nrow(hpiv3_exposure_baseline_audit),
+    "contrast strata, all referenced to same-infection PBS\n")
 ```
 
 # Ranked protein effect comparisons
@@ -221,6 +278,10 @@ cat("Ranked exposure target levels  :", paste(hpiv3_ranked_exposure_levels, coll
 
 save_hpiv3_ranked_comparisons <- function(
     results, model_type, target_column, target_levels, category_label) {
+  if (nrow(results) == 0L) {
+    cat("[", category_label, "] no results (skipped; check HPIV3_HORMONE_MODE)\n", sep = "")
+    return(tibble::tibble())
+  }
   if (!target_column %in% names(results) || !"SEX" %in% names(results)) {
     stop("Ranked comparison results must include `", target_column, "` and `SEX`.")
   }
@@ -374,8 +435,9 @@ hpiv3_ranked_bar_plot_index <- tibble::tibble(
 
 ## Peat and Pine versus PBS
 
-Exposure comparisons are referenced to PBS within each airway, hormone,
-infection, and sex stratum. The table reports Peat/Pine minus PBS, so positive
+Exposure comparisons are fitted within each airway × infection subset and
+referenced to the PBS group of the same airway, hormone, infection, and sex
+stratum (e.g. HPIV3 Peat versus HPIV3 PBS). The table reports Peat/Pine minus PBS, so positive
 and negative bars consistently mean higher and lower abundance under the
 named exposure, respectively.
 
@@ -401,7 +463,8 @@ if (sum(hpiv3_ranked_bar_plot_index$comparison == "exposure") == 0L) {
 ## E2 versus NONE within each exposure
 
 These hormone comparisons are fitted separately within each airway, timepoint,
-exposure, infection, and sex group. Each ranked-bar and volcano output records
+exposure, infection, and sex group (inside each `AIRWAY × INFECTION` subset).
+They are skipped when `HPIV3_HORMONE_MODE` leaves only one hormone stratum. Each ranked-bar and volcano output records
 the infection stratum in its title and filename.
 
 ```{r hpiv3-ranked-hormone-bars, fig.width=12, fig.height=9}
@@ -417,10 +480,10 @@ hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
 )
 ```
 
-## HPIV3 versus NONE within each exposure
+## HPIV3 versus NONE within PBS
 
-These infection comparisons are fitted within each airway, hormone,
-timepoint, exposure, and sex group.
+These infection comparisons are fitted only in the PBS exposure group, within
+each airway, hormone, timepoint, and sex group.
 
 ```{r hpiv3-ranked-infection-bars, fig.width=12, fig.height=9}
 hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
@@ -429,7 +492,7 @@ hpiv3_ranked_bar_plot_index <- dplyr::bind_rows(
    hpiv3_model_results,
    "infection",
    "EXPOSURE",
-   hpiv3_ranked_target_exposures,
+   PBS_LEVEL,
    "infection"
  )
 )
@@ -442,6 +505,22 @@ print(table(factor(
   hpiv3_ranked_bar_plot_index$comparison,
   levels = c("exposure", "hormone", "infection")
 )))
+```
+
+# Combined 8-panel exposure volcanoes by airway
+
+For each airway (LAE or SAE, never mixed) and each hormone and timepoint, one
+8-panel volcano shows Peat and Pine versus PBS. Top row: Male (Peat, Pine, then
+HPIV3 Peat, HPIV3 Pine); bottom row: Female (same order). HPIV3 panels are
+referenced to the HPIV3 PBS group of the same sex, and uninfected panels to
+the uninfected PBS group. PNGs are saved under `output/hpiv3/volcano_grid/`.
+
+```{r hpiv3-volcano-grid, fig.width=18, fig.height=10}
+hpiv3_grid_count <- save_hpiv3_volcano_grids(
+  hpiv3_ranked_exposure_results,
+  HPIV3_OUTPUT_SUBDIR
+)
+cat("8-panel volcano grids written:", hpiv3_grid_count, "\n")
 ```
 
 # Infection-stratified exposure overlaps
@@ -826,10 +905,12 @@ cat("  - hpiv3_all_protein_model_results.csv\n")
 cat("  - hpiv3_sex_model_results.csv\n")
 cat("  - hpiv3_exposure_model_results.csv\n")
 cat("  - hpiv3_hormone_model_results.csv\n")
+cat("  - hpiv3_exposure_baseline_audit.csv\n")
 cat("  - hpiv3_ranked_exposure_model_results.csv\n")
 cat("  - hpiv3_ranked_bar_plot_index.csv\n")
 cat("  - ranked_bars/hpiv3_rb_<comparison>_<target>_aw-*_ho-*_tp-*_inf-*_sex-*.png\n")
 cat("  - volcano/hpiv3_volc_<comparison>_<target>_aw-*_ho-*_tp-*_inf-*_sex-*.png\n")
+cat("  - volcano_grid/hpiv3_volc_grid_aw-*_ho-*_tp-*.png\n")
 cat("  - euler/hpiv3_euler_<exposure>_aw-*_ho-*_tp-*_sex-*.png\n")
 cat("  - euler/hpiv3_euler_<exposure>_aw-*_ho-*_tp-*_sex-*_membership.csv\n")
 cat("  - euler/hpiv3_euler_skipped_strata.csv\n")
