@@ -3,7 +3,7 @@
 required_pkgs <- c(
   "here", "dplyr", "tidyr", "readr", "stringr",
   "purrr", "tibble", "ggplot2", "ggrepel", "pheatmap", "ggnewscale", "ggpattern",
-  "ggupset", "rvest", "lme4", "emmeans", "ARTool"
+  "ggupset", "rvest", "lme4", "emmeans", "pbkrtest", "ARTool"
 )
 
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
@@ -66,6 +66,7 @@ required_objects <- c(
   "fit_hpiv3_infection_models",
   "fit_hpiv3_hormone_models",
   "fit_hpiv3_exposure_models",
+  "fit_hpiv3_exposure_infection_interactions",
   "prepare_hpiv3_ranked_exposure_results",
   "summarize_hpiv3_strata",
   "summarize_unique_significant_proteins",

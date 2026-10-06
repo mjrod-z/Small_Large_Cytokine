@@ -109,7 +109,7 @@ screen_one_exposure_lmer_log2 <- function(df, cytokine_cols, target_exposure,
   )
   
   get_contrast <- function(fit) {
-    emm  <- emmeans::emmeans(fit, ~ EXPOSURE, weights = emmeans_weights)
+    emm  <- analysis_emmeans(fit, ~ EXPOSURE, weights = emmeans_weights)
     levs <- levels(emm)[["EXPOSURE"]]
     ctrl_idx <- match(ctrl_level, levs)
     target_idx <- match(target_exposure, levs)
@@ -224,7 +224,7 @@ exposure_lmer_pairwise <- function(data, group = "All", adjust_method = "fdr",
       silent = TRUE)
     if (inherits(model, "try-error")) { warning("Model failed for ", resp); next }
     
-    emm      <- emmeans::emmeans(model, ~ EXPOSURE, weights = "equal")
+    emm      <- analysis_emmeans(model, ~ EXPOSURE, weights = "equal")
     ctrl_idx <- which(levels(data$EXPOSURE) == ctrl_level)
     pairwise <- emmeans::contrast(emm, method = "trt.vs.ctrl",
                                   ref = ctrl_idx, adjust = adjust_method)
@@ -276,7 +276,7 @@ interaction_lmer_pairwise <- function(data, group = "All", adjust_method = "fdr"
       warning("Interaction model failed for ", resp); next
     }
     
-    emm_exp  <- emmeans::emmeans(model, ~ EXPOSURE, weights = "equal")
+    emm_exp  <- analysis_emmeans(model, ~ EXPOSURE, weights = "equal")
     ctrl_idx <- which(levels(data$EXPOSURE) == ctrl_level)
     pw_exp   <- emmeans::contrast(emm_exp, "trt.vs.ctrl",
                                   ref = ctrl_idx, adjust = adjust_method)
@@ -284,7 +284,7 @@ interaction_lmer_pairwise <- function(data, group = "All", adjust_method = "fdr"
     exp_df$type     <- "Exposure_vs_Control"
     exp_df$response <- resp
     
-    emm_int  <- emmeans::emmeans(model, ~ SEX | EXPOSURE)
+    emm_int  <- analysis_emmeans(model, ~ SEX | EXPOSURE)
     pw_int   <- emmeans::contrast(emm_int, "pairwise",
                                   simple = "SEX", combine = TRUE)
     int_df   <- as.data.frame(summary(pw_int))
@@ -743,6 +743,123 @@ compute_hpiv3_missingness_qc <- function(data, protein_cols,
   list(qc = qc, protein_status = protein_status)
 }
 
+HPIV3_LMER_DF_METHOD <- "kenward-roger"
+
+analysis_emmeans <- function(object, specs, ...) {
+  arguments <- list(object = object, specs = specs, ...)
+  if (inherits(object, "merMod")) {
+    arguments$lmer.df <- HPIV3_LMER_DF_METHOD
+  }
+  do.call(emmeans::emmeans, arguments)
+}
+
+fit_hpiv3_paired_model <- function(data, fixed_formula, pairing_factor) {
+  donor_group_counts <- data %>%
+    dplyr::group_by(PATIENTCODE) %>%
+    dplyr::summarise(
+      n_levels = dplyr::n_distinct(.data[[pairing_factor]]),
+      .groups = "drop"
+    )
+  paired_donors <- sum(donor_group_counts$n_levels > 1L)
+  n_donors <- dplyr::n_distinct(data$PATIENTCODE)
+  can_pair <- paired_donors > 0L
+  if (can_pair && n_donors < 2L) {
+    return(list(
+      fit = NULL, model_type = NA_character_, model_status = "failed",
+      paired = TRUE, paired_donors = paired_donors, singular_fit = NA,
+      failure_reason = "cross-level donor pairing exists but fewer than two donors are available"
+    ))
+  }
+  model_data <- data
+  lmer_error <- NA_character_
+  lm_error <- NA_character_
+  singular_fit <- FALSE
+  fit <- NULL
+
+  if (can_pair) {
+    random_formula <- stats::update.formula(
+      fixed_formula,
+      . ~ . + (1 | PATIENTCODE)
+    )
+    fit <- tryCatch(
+      lme4::lmer(random_formula, data = data),
+      error = function(e) {
+        lmer_error <<- conditionMessage(e)
+        NULL
+      }
+    )
+    if (!is.null(fit)) {
+      singular_fit <- isTRUE(tryCatch(
+        lme4::isSingular(fit),
+        error = function(...) FALSE
+      ))
+      if (!singular_fit) {
+        return(list(
+          fit = fit, model_type = "lmer", model_status = "modeled",
+          paired = TRUE, paired_donors = paired_donors,
+          singular_fit = FALSE, failure_reason = NA_character_
+        ))
+      }
+    }
+    paired_formula <- stats::update.formula(
+      fixed_formula,
+      . ~ . + PATIENTCODE
+    )
+    model_data$PATIENTCODE <- factor(as.character(model_data$PATIENTCODE))
+    fit <- tryCatch(
+      stats::lm(paired_formula, data = model_data),
+      error = function(e) {
+        lm_error <<- conditionMessage(e)
+        NULL
+      }
+    )
+    fallback <- "donor-fixed paired linear model"
+    model_type <- "lm_donor_fixed"
+    model_status <- "modeled_paired_fallback"
+    paired <- TRUE
+  } else {
+    fit <- tryCatch(
+      stats::lm(fixed_formula, data = data),
+      error = function(e) {
+        lm_error <<- conditionMessage(e)
+        NULL
+      }
+    )
+    fallback <- "unpaired linear model"
+    model_type <- "lm_unpaired"
+    model_status <- "modeled_fallback"
+    paired <- FALSE
+  }
+
+  if (is.null(fit)) {
+    detail <- if (!is.na(lm_error) && nzchar(lm_error)) lm_error else lmer_error
+    reason <- if (can_pair) {
+      paste("paired model failed; unpaired fallback not used")
+    } else {
+      "unpaired linear model failed"
+    }
+    if (!is.na(detail) && nzchar(detail)) reason <- paste0(reason, ": ", detail)
+    return(list(
+      fit = NULL, model_type = NA_character_, model_status = "failed",
+      paired = paired, paired_donors = paired_donors,
+      singular_fit = singular_fit, failure_reason = reason
+    ))
+  }
+
+  reason <- if (can_pair && singular_fit) {
+    paste("singular mixed model; used", fallback)
+  } else if (can_pair && !is.na(lmer_error)) {
+    paste0("mixed model failed (", lmer_error, "); used ", fallback)
+  } else {
+    "insufficient cross-level donor pairing; used unpaired linear model"
+  }
+  list(
+    fit = fit, model_type = model_type, model_status = model_status,
+    paired = paired, paired_donors = paired_donors,
+    singular_fit = singular_fit, failure_reason = reason
+  )
+}
+
 fit_hpiv3_infection_models <- function(data, protein_cols,
                                        protein_status = NULL,
                                        pseudocount = PSEUDOCOUNT,
@@ -767,7 +884,7 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
     dplyr::select(PROTEIN, included, exclusion_reason)
 
   get_contrast <- function(fit) {
-    emm <- emmeans::emmeans(fit, ~ INFECTION, weights = "equal")
+    emm <- analysis_emmeans(fit, ~ INFECTION, weights = "equal")
     infection_levels <- levels(emm)[["INFECTION"]]
     ctrl_idx <- match(control_level, infection_levels)
     if (is.na(ctrl_idx)) {
@@ -821,7 +938,6 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
         n_none <- sum(dat$INFECTION == control_level)
         n_hpiv3 <- sum(dat$INFECTION == case_level)
         n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
-        repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
 
         result_row <- tibble::tibble(
           AIRWAY = as.character(airway_i),
@@ -835,6 +951,8 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
           n_none = n_none,
           n_hpiv3 = n_hpiv3,
           n_donors = n_donors,
+          n_paired_donors = 0L,
+          paired_with_patientcode = FALSE,
           used_random_intercept = FALSE,
           model_type = NA_character_,
           model_status = "skipped",
@@ -842,6 +960,8 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
           estimate = NA_real_,
           SE = NA_real_,
           p.value = NA_real_,
+          df = NA_real_,
+          df_method = NA_character_,
           singular_fit = NA
         )
 
@@ -875,56 +995,21 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
 
         dat <- dat %>% dplyr::mutate(log2_value = log2(as.numeric(VALUE) + pseudocount))
 
-        fit <- NULL
-        used_lmer <- FALSE
-        singular_fit <- FALSE
-        lmer_error <- NA_character_
-        lm_error <- NA_character_
-
-        if (n_donors >= 2 && repeated_donor) {
-          fit <- tryCatch(
-            lme4::lmer(log2_value ~ INFECTION + (1 | PATIENTCODE), data = dat),
-            error = function(e) {
-              lmer_error <<- conditionMessage(e)
-              NULL
-            }
-          )
-          if (!is.null(fit)) {
-            singular_fit <- isTRUE(tryCatch(lme4::isSingular(fit), error = function(...) FALSE))
-            if (!singular_fit) {
-              used_lmer <- TRUE
-            }
-          }
-        }
-
-        if (!used_lmer) {
-          fit <- tryCatch(
-            stats::lm(log2_value ~ INFECTION, data = dat),
-            error = function(e) {
-              lm_error <<- conditionMessage(e)
-              NULL
-            }
-          )
-          if (is.null(fit)) {
-            base_reason <- if (singular_fit) {
-              "singular mixed model and fallback linear model failed"
-            } else {
-              "model fitting failed"
-            }
-            detail_reason <- lm_error
-            if (is.na(detail_reason) || !nzchar(detail_reason)) {
-              detail_reason <- lmer_error
-            }
-            result_row$failure_reason <- if (is.na(detail_reason) || !nzchar(detail_reason)) {
-              base_reason
-            } else {
-              paste0(base_reason, ": ", detail_reason)
-            }
-            result_row$singular_fit <- singular_fit
-            results[[idx]] <- result_row
-            idx <- idx + 1L
-            next
-          }
+        fit_info <- fit_hpiv3_paired_model(
+          dat, log2_value ~ INFECTION, pairing_factor = "INFECTION"
+        )
+        fit <- fit_info$fit
+        used_lmer <- fit_info$model_type == "lmer"
+        if (is.null(fit)) {
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- fit_info$model_status
+          result_row$failure_reason <- fit_info$failure_reason
+          result_row$paired_with_patientcode <- fit_info$paired
+          result_row$n_paired_donors <- fit_info$paired_donors
+          result_row$singular_fit <- fit_info$singular_fit
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
         }
 
         contrast_error <- NA_character_
@@ -936,12 +1021,16 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
           }
         )
         if (is.null(contrast)) {
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- "failed"
           result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
             "emmeans contrast failed"
           } else {
             paste0("emmeans contrast failed: ", contrast_error)
           }
-          result_row$singular_fit <- singular_fit
+          result_row$paired_with_patientcode <- fit_info$paired
+          result_row$n_paired_donors <- fit_info$paired_donors
+          result_row$singular_fit <- fit_info$singular_fit
           results[[idx]] <- result_row
           idx <- idx + 1L
           next
@@ -949,19 +1038,17 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
 
         stats_row <- as.data.frame(summary(contrast))
         result_row$used_random_intercept <- used_lmer
-        result_row$model_type <- if (used_lmer) "lmer" else "lm"
-        result_row$model_status <- if (used_lmer) "modeled" else "modeled_fallback"
-        result_row$failure_reason <- if (!used_lmer && singular_fit) {
-          "singular mixed model; used linear-model fallback"
-        } else if (!used_lmer && !(n_donors >= 2 && repeated_donor)) {
-          "random intercept unsupported; used linear-model fallback"
-        } else {
-          NA_character_
-        }
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- fit_info$model_status
+        result_row$failure_reason <- fit_info$failure_reason
         result_row$estimate <- stats_row$estimate[[1]]
         result_row$SE <- stats_row$SE[[1]]
         result_row$p.value <- stats_row$p.value[[1]]
-        result_row$singular_fit <- singular_fit
+        result_row$df <- stats_row$df[[1]]
+        result_row$df_method <- if (used_lmer) HPIV3_LMER_DF_METHOD else "residual"
+        result_row$singular_fit <- fit_info$singular_fit
 
         results[[idx]] <- result_row
         idx <- idx + 1L
@@ -1046,7 +1133,6 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       sex_counts <- table(dat$SEX)
       n_obs <- nrow(dat)
       n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
-      repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
       counts_label <- if (length(sex_counts) == 0) {
         NA_character_
       } else {
@@ -1066,6 +1152,8 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
         n_groups = length(sex_counts),
         group_counts = counts_label,
         n_donors = n_donors,
+        n_paired_donors = 0L,
+        paired_with_patientcode = FALSE,
         used_random_intercept = FALSE,
         model_type = NA_character_,
         model_status = "skipped",
@@ -1073,6 +1161,8 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
         estimate = NA_real_,
         SE = NA_real_,
         p.value = NA_real_,
+        df = NA_real_,
+        df_method = NA_character_,
         singular_fit = NA
       )
 
@@ -1093,6 +1183,14 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       dat_fit <- dat %>%
         dplyr::filter(as.character(SEX) %in% valid_levels) %>%
         droplevels()
+      sex_counts <- table(dat_fit$SEX)
+      n_obs <- nrow(dat_fit)
+      n_donors <- dplyr::n_distinct(dat_fit$PATIENTCODE)
+      counts_label <- paste0(names(sex_counts), "=", as.integer(sex_counts), collapse = "; ")
+      result_row$n_samples <- n_obs
+      result_row$n_groups <- length(sex_counts)
+      result_row$group_counts <- counts_label
+      result_row$n_donors <- n_donors
 
       if (length(unique(as.character(dat_fit$SEX))) < 2) {
         result_row$failure_reason <- paste0(
@@ -1106,62 +1204,27 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
 
       dat_fit <- dat_fit %>% dplyr::mutate(log2_value = log2(as.numeric(VALUE) + pseudocount))
 
-      fit <- NULL
-      used_lmer <- FALSE
-      singular_fit <- FALSE
-      lmer_error <- NA_character_
-      lm_error <- NA_character_
-
-      if (n_donors >= 2 && repeated_donor) {
-        fit <- tryCatch(
-          lme4::lmer(log2_value ~ SEX + (1 | PATIENTCODE), data = dat_fit),
-          error = function(e) {
-            lmer_error <<- conditionMessage(e)
-            NULL
-          }
-        )
-        if (!is.null(fit)) {
-          singular_fit <- isTRUE(tryCatch(lme4::isSingular(fit), error = function(...) FALSE))
-          if (!singular_fit) {
-            used_lmer <- TRUE
-          }
-        }
-      }
-
-      if (!used_lmer) {
-        fit <- tryCatch(
-          stats::lm(log2_value ~ SEX, data = dat_fit),
-          error = function(e) {
-            lm_error <<- conditionMessage(e)
-            NULL
-          }
-        )
-        if (is.null(fit)) {
-          base_reason <- if (singular_fit) {
-            "singular mixed model and fallback linear model failed"
-          } else {
-            "model fitting failed"
-          }
-          detail_reason <- lm_error
-          if (is.na(detail_reason) || !nzchar(detail_reason)) {
-            detail_reason <- lmer_error
-          }
-          result_row$failure_reason <- if (is.na(detail_reason) || !nzchar(detail_reason)) {
-            base_reason
-          } else {
-            paste0(base_reason, ": ", detail_reason)
-          }
-          result_row$singular_fit <- singular_fit
-          results[[idx]] <- result_row
-          idx <- idx + 1L
-          next
-        }
+      fit_info <- fit_hpiv3_paired_model(
+        dat_fit, log2_value ~ SEX, pairing_factor = "SEX"
+      )
+      fit <- fit_info$fit
+      used_lmer <- fit_info$model_type == "lmer"
+      if (is.null(fit)) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- fit_info$model_status
+        result_row$failure_reason <- fit_info$failure_reason
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$singular_fit <- fit_info$singular_fit
+        results[[idx]] <- result_row
+        idx <- idx + 1L
+        next
       }
 
       contrast_error <- NA_character_
       contrast <- tryCatch(
         {
-          emm <- emmeans::emmeans(fit, ~ SEX, weights = "equal")
+          emm <- analysis_emmeans(fit, ~ SEX, weights = "equal")
           emmeans::contrast(emm, method = "pairwise", adjust = "none")
         },
         error = function(e) {
@@ -1171,12 +1234,16 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       )
 
       if (is.null(contrast)) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- "failed"
         result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
           "emmeans contrast failed"
         } else {
           paste0("emmeans contrast failed: ", contrast_error)
         }
-        result_row$singular_fit <- singular_fit
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$singular_fit <- fit_info$singular_fit
         results[[idx]] <- result_row
         idx <- idx + 1L
         next
@@ -1184,8 +1251,12 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
 
       stats_rows <- as.data.frame(summary(contrast))
       if (nrow(stats_rows) == 0) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- "failed"
         result_row$failure_reason <- "no pairwise sex contrasts available"
-        result_row$singular_fit <- singular_fit
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$singular_fit <- fit_info$singular_fit
         results[[idx]] <- result_row
         idx <- idx + 1L
         next
@@ -1195,19 +1266,17 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
         out_row <- result_row
         out_row$contrast <- as.character(stats_rows$contrast[[k]])
         out_row$used_random_intercept <- used_lmer
-        out_row$model_type <- if (used_lmer) "lmer" else "lm"
-        out_row$model_status <- if (used_lmer) "modeled" else "modeled_fallback"
-        out_row$failure_reason <- if (!used_lmer && singular_fit) {
-          "singular mixed model; used linear-model fallback"
-        } else if (!used_lmer && !(n_donors >= 2 && repeated_donor)) {
-          "random intercept unsupported; used linear-model fallback"
-        } else {
-          NA_character_
-        }
+        out_row$paired_with_patientcode <- fit_info$paired
+        out_row$n_paired_donors <- fit_info$paired_donors
+        out_row$model_type <- fit_info$model_type
+        out_row$model_status <- fit_info$model_status
+        out_row$failure_reason <- fit_info$failure_reason
         out_row$estimate <- stats_rows$estimate[[k]]
         out_row$SE <- stats_rows$SE[[k]]
         out_row$p.value <- stats_rows$p.value[[k]]
-        out_row$singular_fit <- singular_fit
+        out_row$df <- stats_rows$df[[k]]
+        out_row$df_method <- if (used_lmer) HPIV3_LMER_DF_METHOD else "residual"
+        out_row$singular_fit <- fit_info$singular_fit
         results[[idx]] <- out_row
         idx <- idx + 1L
       }
@@ -1295,7 +1364,6 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
         n_none <- sum(dat$HORMONE == control_level)
         n_e2 <- sum(dat$HORMONE == case_level)
         n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
-        repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
 
         result_row <- tibble::tibble(
           AIRWAY = as.character(airway_i),
@@ -1311,6 +1379,8 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
           n_none = n_none,
           n_e2 = n_e2,
           n_donors = n_donors,
+          n_paired_donors = 0L,
+          paired_with_patientcode = FALSE,
           used_random_intercept = FALSE,
           model_type = NA_character_,
           model_status = "skipped",
@@ -1318,6 +1388,8 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
           estimate = NA_real_,
           SE = NA_real_,
           p.value = NA_real_,
+          df = NA_real_,
+          df_method = NA_character_,
           singular_fit = NA
         )
 
@@ -1345,57 +1417,27 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
         }
 
         dat <- dat %>% dplyr::mutate(log2_value = log2(as.numeric(VALUE) + pseudocount))
-        fit <- NULL
-        used_lmer <- FALSE
-        singular_fit <- FALSE
-        lmer_error <- NA_character_
-        lm_error <- NA_character_
-
-        if (n_donors >= 2 && repeated_donor) {
-          fit <- tryCatch(
-            lme4::lmer(log2_value ~ HORMONE + (1 | PATIENTCODE), data = dat),
-            error = function(e) {
-              lmer_error <<- conditionMessage(e)
-              NULL
-            }
-          )
-          if (!is.null(fit)) {
-            singular_fit <- isTRUE(tryCatch(lme4::isSingular(fit), error = function(...) FALSE))
-            if (!singular_fit) used_lmer <- TRUE
-          }
-        }
-
-        if (!used_lmer) {
-          fit <- tryCatch(
-            stats::lm(log2_value ~ HORMONE, data = dat),
-            error = function(e) {
-              lm_error <<- conditionMessage(e)
-              NULL
-            }
-          )
-          if (is.null(fit)) {
-            base_reason <- if (singular_fit) {
-              "singular mixed model and fallback linear model failed"
-            } else {
-              "model fitting failed"
-            }
-            detail_reason <- if (!is.na(lm_error) && nzchar(lm_error)) lm_error else lmer_error
-            result_row$failure_reason <- if (is.na(detail_reason) || !nzchar(detail_reason)) {
-              base_reason
-            } else {
-              paste0(base_reason, ": ", detail_reason)
-            }
-            result_row$singular_fit <- singular_fit
-            results[[idx]] <- result_row
-            idx <- idx + 1L
-            next
-          }
+        fit_info <- fit_hpiv3_paired_model(
+          dat, log2_value ~ HORMONE, pairing_factor = "HORMONE"
+        )
+        fit <- fit_info$fit
+        used_lmer <- fit_info$model_type == "lmer"
+        if (is.null(fit)) {
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- fit_info$model_status
+          result_row$failure_reason <- fit_info$failure_reason
+          result_row$paired_with_patientcode <- fit_info$paired
+          result_row$n_paired_donors <- fit_info$paired_donors
+          result_row$singular_fit <- fit_info$singular_fit
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
         }
 
         contrast_error <- NA_character_
         contrast <- tryCatch(
           {
-            emm <- emmeans::emmeans(fit, ~ HORMONE, weights = "equal")
+            emm <- analysis_emmeans(fit, ~ HORMONE, weights = "equal")
             hormone_levels <- levels(emm)[["HORMONE"]]
             ctrl_idx <- match(control_level, hormone_levels)
             if (is.na(ctrl_idx)) stop("Control level '", control_level, "' not found in HORMONE results.")
@@ -1407,12 +1449,16 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
           }
         )
         if (is.null(contrast)) {
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- "failed"
           result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
             "emmeans contrast failed"
           } else {
             paste0("emmeans contrast failed: ", contrast_error)
           }
-          result_row$singular_fit <- singular_fit
+          result_row$paired_with_patientcode <- fit_info$paired
+          result_row$n_paired_donors <- fit_info$paired_donors
+          result_row$singular_fit <- fit_info$singular_fit
           results[[idx]] <- result_row
           idx <- idx + 1L
           next
@@ -1420,19 +1466,17 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
 
         stats_row <- as.data.frame(summary(contrast))
         result_row$used_random_intercept <- used_lmer
-        result_row$model_type <- if (used_lmer) "lmer" else "lm"
-        result_row$model_status <- if (used_lmer) "modeled" else "modeled_fallback"
-        result_row$failure_reason <- if (!used_lmer && singular_fit) {
-          "singular mixed model; used linear-model fallback"
-        } else if (!used_lmer && !(n_donors >= 2 && repeated_donor)) {
-          "random intercept unsupported; used linear-model fallback"
-        } else {
-          NA_character_
-        }
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- fit_info$model_status
+        result_row$failure_reason <- fit_info$failure_reason
         result_row$estimate <- stats_row$estimate[[1]]
         result_row$SE <- stats_row$SE[[1]]
         result_row$p.value <- stats_row$p.value[[1]]
-        result_row$singular_fit <- singular_fit
+        result_row$df <- stats_row$df[[1]]
+        result_row$df_method <- if (used_lmer) HPIV3_LMER_DF_METHOD else "residual"
+        result_row$singular_fit <- fit_info$singular_fit
         results[[idx]] <- result_row
         idx <- idx + 1L
       }
@@ -1519,7 +1563,6 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       exposure_counts <- table(dat$EXPOSURE)
       n_obs <- nrow(dat)
       n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
-      repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
       counts_label <- if (length(exposure_counts) == 0) {
         NA_character_
       } else {
@@ -1550,6 +1593,8 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         estimate = NA_real_,
         SE = NA_real_,
         p.value = NA_real_,
+        df = NA_real_,
+        df_method = NA_character_,
         singular_fit = NA
       )
 
@@ -1581,24 +1626,54 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         next
       }
 
-      # Donor pairing: keep only donors with a PBS baseline in this stratum
+      # Keep same-stratum donors with PBS before checking usable exposure levels.
       pbs_donors <- unique(as.character(dat_fit$PATIENTCODE[as.character(dat_fit$EXPOSURE) == "PBS_Control"]))
-      if (length(pbs_donors) > 0) {
-        dat_fit <- dat_fit %>%
-          dplyr::filter(as.character(PATIENTCODE) %in% pbs_donors) %>%
-          droplevels()
-        if (length(unique(as.character(dat_fit$EXPOSURE))) < 2) {
-          result_row$n_pbs_donors <- length(pbs_donors)
-          result_row$n_paired_donors <- 0L
-          result_row$n_exposure_obs_paired <- 0L
-          result_row$failure_reason <- "no exposure observations from donors with a PBS baseline"
-          results[[idx]] <- result_row
-          idx <- idx + 1L
-          next
-        }
+      if (length(pbs_donors) == 0L) {
+        result_row$n_pbs_donors <- 0L
+        result_row$n_paired_donors <- 0L
+        result_row$n_exposure_obs_paired <- 0L
+        result_row$failure_reason <- "no PBS baseline in this stratum"
+        results[[idx]] <- result_row
+        idx <- idx + 1L
+        next
+      }
+      dat_fit <- dat_fit %>%
+        dplyr::filter(as.character(PATIENTCODE) %in% pbs_donors) %>%
+        droplevels()
+      paired_exposure_counts <- table(dat_fit$EXPOSURE)
+      paired_counts_label <- if (length(paired_exposure_counts) == 0L) {
+        NA_character_
+      } else {
+        paste0(names(paired_exposure_counts), "=", as.integer(paired_exposure_counts), collapse = "; ")
+      }
+      result_row$n_samples <- nrow(dat_fit)
+      result_row$n_groups <- length(paired_exposure_counts)
+      result_row$group_counts <- paired_counts_label
+      result_row$n_donors <- dplyr::n_distinct(dat_fit$PATIENTCODE)
+      if (
+        length(paired_exposure_counts) < 2L ||
+        any(as.integer(paired_exposure_counts) < min_nonmissing_per_group)
+      ) {
+        result_row$n_pbs_donors <- length(pbs_donors)
+        result_row$n_paired_donors <- length(intersect(
+          pbs_donors,
+          unique(as.character(dat_fit$PATIENTCODE[
+            as.character(dat_fit$EXPOSURE) != "PBS_Control"
+          ]))
+        ))
+        result_row$n_exposure_obs_paired <- sum(
+          as.character(dat_fit$EXPOSURE) != "PBS_Control"
+        )
+        result_row$failure_reason <- paste0(
+          "insufficient per-exposure observations after PBS-donor filtering ",
+          "(required >= ", min_nonmissing_per_group, " per level; observed: ",
+          paired_counts_label, ")"
+        )
+        results[[idx]] <- result_row
+        idx <- idx + 1L
+        next
       }
       n_donors <- dplyr::n_distinct(dat_fit$PATIENTCODE)
-      repeated_donor <- anyDuplicated(as.character(dat_fit$PATIENTCODE)) > 0
       is_pbs_fit <- as.character(dat_fit$EXPOSURE) == "PBS_Control"
       exposure_donors <- unique(as.character(dat_fit$PATIENTCODE[!is_pbs_fit]))
       result_row$n_donors <- n_donors
@@ -1607,81 +1682,29 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       result_row$n_exposure_obs_paired <- sum(
         !is_pbs_fit & as.character(dat_fit$PATIENTCODE) %in% pbs_donors
       )
-      can_pair <- n_donors >= 2 && repeated_donor && result_row$n_paired_donors > 0
-
       dat_fit <- dat_fit %>% dplyr::mutate(log2_value = log2(as.numeric(VALUE) + pseudocount))
 
-      fit <- NULL
-      used_lmer <- FALSE
-      used_donor_fixed <- FALSE
-      singular_fit <- FALSE
-      lmer_error <- NA_character_
-      lm_error <- NA_character_
-
-      if (can_pair) {
-        fit <- tryCatch(
-          lme4::lmer(log2_value ~ EXPOSURE + (1 | PATIENTCODE), data = dat_fit),
-          error = function(e) {
-            lmer_error <<- conditionMessage(e)
-            NULL
-          }
-        )
-        if (!is.null(fit)) {
-          singular_fit <- isTRUE(tryCatch(lme4::isSingular(fit), error = function(...) FALSE))
-          if (!singular_fit) {
-            used_lmer <- TRUE
-          }
-        }
-      }
-
-      if (!used_lmer) {
-        # Prefer a donor-paired fallback (donor as fixed block) over an unpaired lm
-        if (can_pair) {
-          dat_fit$PATIENTCODE <- factor(as.character(dat_fit$PATIENTCODE))
-          fit <- tryCatch(
-            stats::lm(log2_value ~ EXPOSURE + PATIENTCODE, data = dat_fit),
-            error = function(e) {
-              lm_error <<- conditionMessage(e)
-              NULL
-            }
-          )
-          used_donor_fixed <- !is.null(fit)
-        }
-        if (is.null(fit)) {
-          fit <- tryCatch(
-            stats::lm(log2_value ~ EXPOSURE, data = dat_fit),
-            error = function(e) {
-              lm_error <<- conditionMessage(e)
-              NULL
-            }
-          )
-        }
-        if (is.null(fit)) {
-          base_reason <- if (singular_fit) {
-            "singular mixed model and fallback linear model failed"
-          } else {
-            "model fitting failed"
-          }
-          detail_reason <- lm_error
-          if (is.na(detail_reason) || !nzchar(detail_reason)) {
-            detail_reason <- lmer_error
-          }
-          result_row$failure_reason <- if (is.na(detail_reason) || !nzchar(detail_reason)) {
-            base_reason
-          } else {
-            paste0(base_reason, ": ", detail_reason)
-          }
-          result_row$singular_fit <- singular_fit
-          results[[idx]] <- result_row
-          idx <- idx + 1L
-          next
-        }
+      fit_info <- fit_hpiv3_paired_model(
+        dat_fit, log2_value ~ EXPOSURE, pairing_factor = "EXPOSURE"
+      )
+      fit <- fit_info$fit
+      used_lmer <- fit_info$model_type == "lmer"
+      if (is.null(fit)) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- fit_info$model_status
+        result_row$failure_reason <- fit_info$failure_reason
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$singular_fit <- fit_info$singular_fit
+        results[[idx]] <- result_row
+        idx <- idx + 1L
+        next
       }
 
       contrast_error <- NA_character_
       contrast <- tryCatch(
         {
-          emm <- emmeans::emmeans(fit, ~ EXPOSURE, weights = "equal")
+          emm <- analysis_emmeans(fit, ~ EXPOSURE, weights = "equal")
           exposure_levels <- levels(emm)[["EXPOSURE"]]
           pbs_idx <- match("PBS_Control", exposure_levels)
           if (is.na(pbs_idx)) {
@@ -1701,12 +1724,16 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       )
 
       if (is.null(contrast)) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- "failed"
         result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
           "emmeans contrast failed"
         } else {
           paste0("emmeans contrast failed: ", contrast_error)
         }
-        result_row$singular_fit <- singular_fit
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$singular_fit <- fit_info$singular_fit
         results[[idx]] <- result_row
         idx <- idx + 1L
         next
@@ -1714,8 +1741,12 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
 
       stats_rows <- as.data.frame(summary(contrast))
       if (nrow(stats_rows) == 0) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- "failed"
         result_row$failure_reason <- "no PBS-referenced exposure contrasts available"
-        result_row$singular_fit <- singular_fit
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$singular_fit <- fit_info$singular_fit
         results[[idx]] <- result_row
         idx <- idx + 1L
         next
@@ -1725,36 +1756,17 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         out_row <- result_row
         out_row$contrast <- as.character(stats_rows$contrast[[k]])
         out_row$used_random_intercept <- used_lmer
-        out_row$paired_with_patientcode <- used_lmer || used_donor_fixed
-        out_row$model_type <- if (used_lmer) {
-          "lmer"
-        } else if (used_donor_fixed) {
-          "lm_donor_fixed"
-        } else {
-          "lm_unpaired"
-        }
-        out_row$model_status <- if (used_lmer) {
-          "modeled"
-        } else if (used_donor_fixed) {
-          "modeled_paired_fallback"
-        } else {
-          "modeled_fallback"
-        }
-        out_row$failure_reason <- if (used_donor_fixed && singular_fit) {
-          "singular mixed model; used donor-fixed paired linear model"
-        } else if (used_donor_fixed) {
-          "mixed model failed; used donor-fixed paired linear model"
-        } else if (!used_lmer && singular_fit) {
-          "singular mixed model; used unpaired linear-model fallback"
-        } else if (!used_lmer) {
-          "donor pairing unsupported; used unpaired linear-model fallback"
-        } else {
-          NA_character_
-        }
+        out_row$paired_with_patientcode <- fit_info$paired
+        out_row$n_paired_donors <- fit_info$paired_donors
+        out_row$model_type <- fit_info$model_type
+        out_row$model_status <- fit_info$model_status
+        out_row$failure_reason <- fit_info$failure_reason
         out_row$estimate <- stats_rows$estimate[[k]]
         out_row$SE <- stats_rows$SE[[k]]
         out_row$p.value <- stats_rows$p.value[[k]]
-        out_row$singular_fit <- singular_fit
+        out_row$df <- stats_rows$df[[k]]
+        out_row$df_method <- if (used_lmer) HPIV3_LMER_DF_METHOD else "residual"
+        out_row$singular_fit <- fit_info$singular_fit
         results[[idx]] <- out_row
         idx <- idx + 1L
       }
@@ -1771,6 +1783,216 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         if (length(keep) > 0) {
           q_vals[keep] <- p.adjust(p.value[keep], method = "fdr")
         }
+        q_vals
+      },
+      significant = !is.na(q.value) & q.value < alpha_q
+    ) %>%
+    dplyr::ungroup()
+}
+
+fit_hpiv3_exposure_infection_interactions <- function(
+    data, protein_cols, protein_status = NULL, pseudocount = PSEUDOCOUNT,
+    alpha_q = ALPHA_Q, min_nonmissing_per_group = 2L,
+    pbs_level = PBS_LEVEL, target_pattern = "^(Peat|Pine)(_|$)") {
+  stopifnot(is.data.frame(data))
+  protein_cols <- intersect(protein_cols, names(data))
+  model_data <- data %>%
+    dplyr::filter(is.na(SEX) | as.character(SEX) != "All")
+  pooled_data <- model_data %>% dplyr::mutate(SEX = "All")
+  model_data <- dplyr::bind_rows(model_data, pooled_data)
+  strata <- model_data %>% dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT, SEX)
+  target_exposures <- sort(unique(as.character(model_data$EXPOSURE)))
+  target_exposures <- target_exposures[
+    !is.na(target_exposures) & target_exposures != pbs_level &
+      grepl(target_pattern, target_exposures, ignore.case = TRUE)
+  ]
+  if (length(target_exposures) == 0L || nrow(strata) == 0L) {
+    return(tibble::tibble(
+      AIRWAY = character(), HORMONE = character(), TIMEPOINT = character(),
+      SEX = character(), PROTEIN = character(), target_exposure = character(),
+      comparison = character(), contrast = character(), n_samples = integer(),
+      group_counts = character(), n_donors = integer(), n_paired_donors = integer(),
+      paired_with_patientcode = logical(), used_random_intercept = logical(),
+      model_type = character(), model_status = character(), failure_reason = character(),
+      estimate = numeric(), SE = numeric(), p.value = numeric(), df = numeric(),
+      df_method = character(), singular_fit = logical(), q.value = numeric(),
+      significant = logical()
+    ))
+  }
+  if (is.null(protein_status)) {
+    protein_status <- tibble::tibble(
+      PROTEIN = protein_cols, included = TRUE, exclusion_reason = NA_character_
+    )
+  }
+  results <- list()
+  idx <- 1L
+
+  for (stratum_idx in seq_len(nrow(strata))) {
+    stratum <- strata[stratum_idx, , drop = FALSE]
+    stratum_data <- model_data %>%
+      dplyr::filter(
+        AIRWAY == stratum$AIRWAY[[1]],
+        HORMONE == stratum$HORMONE[[1]],
+        TIMEPOINT == stratum$TIMEPOINT[[1]],
+        SEX == stratum$SEX[[1]]
+      )
+
+    for (target_exposure in target_exposures) {
+      for (protein in protein_cols) {
+        rule <- protein_status %>% dplyr::filter(PROTEIN == protein)
+        included <- if (nrow(rule) == 1L) isTRUE(rule$included[[1]]) else TRUE
+        reason <- if (nrow(rule) == 1L) rule$exclusion_reason[[1]] else NA_character_
+        dat <- stratum_data %>%
+          dplyr::transmute(
+            PATIENTCODE = as.character(PATIENTCODE),
+            INFECTION = as.character(INFECTION),
+            EXPOSURE = as.character(EXPOSURE),
+            VALUE = .data[[protein]]
+          ) %>%
+          dplyr::filter(
+            !is.na(PATIENTCODE), INFECTION %in% c("NONE", "HPIV3"),
+            EXPOSURE %in% c(pbs_level, target_exposure), !is.na(VALUE)
+          ) %>%
+          dplyr::group_by(PATIENTCODE, INFECTION) %>%
+          dplyr::filter(any(EXPOSURE == pbs_level)) %>%
+          dplyr::ungroup() %>%
+          dplyr::mutate(
+            EXPOSURE = factor(EXPOSURE, levels = c(pbs_level, target_exposure)),
+            INFECTION = factor(INFECTION, levels = c("NONE", "HPIV3"))
+          )
+        cell_counts <- table(dat$EXPOSURE, dat$INFECTION)
+        count_table <- as.data.frame(as.table(cell_counts))
+        counts_label <- if (nrow(count_table) == 0L) {
+          NA_character_
+        } else {
+          paste0(count_table$Var1, "/", count_table$Var2, "=", count_table$Freq,
+                 collapse = "; ")
+        }
+        result_row <- tibble::tibble(
+          AIRWAY = as.character(stratum$AIRWAY[[1]]),
+          HORMONE = as.character(stratum$HORMONE[[1]]),
+          TIMEPOINT = as.character(stratum$TIMEPOINT[[1]]),
+          SEX = as.character(stratum$SEX[[1]]),
+          PROTEIN = protein,
+          target_exposure = target_exposure,
+          comparison = "EXPOSURE_BY_INFECTION",
+          contrast = paste0(target_exposure, " vs ", pbs_level, ": (HPIV3 - NONE)"),
+          n_samples = nrow(dat),
+          group_counts = counts_label,
+          n_donors = dplyr::n_distinct(dat$PATIENTCODE),
+          n_paired_donors = 0L,
+          paired_with_patientcode = FALSE,
+          used_random_intercept = FALSE,
+          model_type = NA_character_,
+          model_status = "skipped",
+          failure_reason = NA_character_,
+          estimate = NA_real_,
+          SE = NA_real_,
+          p.value = NA_real_,
+          df = NA_real_,
+          df_method = NA_character_,
+          singular_fit = NA
+        )
+        if (!included) {
+          result_row$failure_reason <- reason
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+        if (nrow(dat) == 0L || any(cell_counts < min_nonmissing_per_group)) {
+          result_row$failure_reason <- paste0(
+            "insufficient same-infection PBS/exposure observations (required >= ",
+            min_nonmissing_per_group, " per cell)"
+          )
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+
+        dat <- dat %>%
+          dplyr::mutate(
+            log2_value = log2(as.numeric(VALUE) + pseudocount),
+            PAIR_LEVEL = interaction(EXPOSURE, INFECTION, drop = TRUE)
+          )
+        fit_info <- fit_hpiv3_paired_model(
+          dat, log2_value ~ EXPOSURE * INFECTION, pairing_factor = "PAIR_LEVEL"
+        )
+        if (is.null(fit_info$fit)) {
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- fit_info$model_status
+          result_row$failure_reason <- fit_info$failure_reason
+          result_row$n_paired_donors <- fit_info$paired_donors
+          result_row$paired_with_patientcode <- fit_info$paired
+          result_row$singular_fit <- fit_info$singular_fit
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+        contrast_error <- NA_character_
+        contrast <- tryCatch({
+          emm <- analysis_emmeans(
+            fit_info$fit, ~ EXPOSURE * INFECTION, weights = "equal"
+          )
+          # Reverse the infection contrast so estimates are (HPIV3 response - NONE response).
+          emmeans::contrast(
+            emm, interaction = c("trt.vs.ctrl", "revpairwise"), adjust = "none"
+          )
+        }, error = function(e) {
+          contrast_error <<- conditionMessage(e)
+          NULL
+        })
+        if (is.null(contrast)) {
+          result_row$failure_reason <- paste0("interaction contrast failed: ", contrast_error)
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- "failed"
+          result_row$n_paired_donors <- fit_info$paired_donors
+          result_row$paired_with_patientcode <- fit_info$paired
+          result_row$singular_fit <- fit_info$singular_fit
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+        stats_row <- as.data.frame(summary(contrast))
+        if (nrow(stats_row) != 1L) {
+          result_row$failure_reason <- "interaction contrast was not uniquely estimable"
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- "failed"
+          result_row$n_paired_donors <- fit_info$paired_donors
+          result_row$paired_with_patientcode <- fit_info$paired
+          result_row$singular_fit <- fit_info$singular_fit
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+        result_row$n_paired_donors <- fit_info$paired_donors
+        result_row$paired_with_patientcode <- fit_info$paired
+        result_row$used_random_intercept <- fit_info$model_type == "lmer"
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- fit_info$model_status
+        result_row$failure_reason <- fit_info$failure_reason
+        result_row$estimate <- stats_row$estimate[[1]]
+        result_row$SE <- stats_row$SE[[1]]
+        result_row$p.value <- stats_row$p.value[[1]]
+        result_row$df <- stats_row$df[[1]]
+        result_row$df_method <- if (fit_info$model_type == "lmer") {
+          HPIV3_LMER_DF_METHOD
+        } else {
+          "residual"
+        }
+        result_row$singular_fit <- fit_info$singular_fit
+        results[[idx]] <- result_row
+        idx <- idx + 1L
+      }
+    }
+  }
+
+  dplyr::bind_rows(results) %>%
+    dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, SEX) %>%
+    dplyr::mutate(
+      q.value = {
+        q_vals <- rep(NA_real_, dplyr::n())
+        keep <- which(!is.na(p.value))
+        if (length(keep) > 0L) q_vals[keep] <- p.adjust(p.value[keep], method = "fdr")
         q_vals
       },
       significant = !is.na(q.value) & q.value < alpha_q
@@ -2074,7 +2296,11 @@ audit_hpiv3_exposure_baselines <- function(data, exposure_results, pbs_level = P
     dplyr::group_by(dplyr::across(dplyr::all_of(c(strata_cols, "contrast")))) %>%
     dplyr::summarise(
       model_types = paste(sort(unique(model_type)), collapse = ";"),
-      n_unpaired_models = sum(!as.logical(paired_with_patientcode), na.rm = TRUE),
+      n_pairable_models = sum(n_paired_donors > 0L, na.rm = TRUE),
+      n_unpaired_models = sum(
+        !as.logical(paired_with_patientcode) & n_paired_donors > 0L,
+        na.rm = TRUE
+      ),
       .groups = "drop"
     )
   audit <- exposure_results %>%
@@ -2087,8 +2313,7 @@ audit_hpiv3_exposure_baselines <- function(data, exposure_results, pbs_level = P
     dplyr::left_join(counts, by = strata_cols) %>%
     dplyr::left_join(model_info, by = c(strata_cols, "contrast")) %>%
     dplyr::mutate(
-      donor_pairing_possible = !is.na(n_donors_with_pbs) & n_donors_with_pbs > 0L &
-        !is.na(n_exposure_obs_paired) & n_exposure_obs_paired > 0L,
+      donor_pairing_possible = !is.na(n_pairable_models) & n_pairable_models > 0L,
       baseline_is_pbs = grepl(pbs_level, contrast, fixed = TRUE),
       baseline_infection = INFECTION,
       baseline_matches_infection = baseline_is_pbs &
