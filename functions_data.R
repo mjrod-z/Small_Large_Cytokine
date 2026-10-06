@@ -597,3 +597,16 @@ build_hpiv3_analysis_data <- function(
     )
   )
 }
+
+# Subset HPIV3 data by hormone mode: "both", "E2_only", or "exclude_E2".
+filter_hpiv3_hormone_mode <- function(data, mode = c("both", "E2_only", "exclude_E2")) {
+  mode <- match.arg(mode)
+  out <- switch(
+    mode,
+    both = data,
+    E2_only = dplyr::filter(data, as.character(HORMONE) == "E2"),
+    exclude_E2 = dplyr::filter(data, as.character(HORMONE) != "E2")
+  )
+  if (nrow(out) == 0L) stop("No HPIV3 rows remain after hormone subsetting (mode = ", mode, ")")
+  out
+}

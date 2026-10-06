@@ -1546,6 +1546,35 @@ plot_hpiv3_volcano_grid <- function(ranked_results, airway, hormone = NULL,
   p
 }
 
+# Build and save one 8-panel volcano per AIRWAY x HORMONE x TIMEPOINT stratum.
+# Returns the number of grids written.
+save_hpiv3_volcano_grids <- function(ranked_results, output_subdir, print_plots = TRUE) {
+  strata <- ranked_results %>%
+    dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT) %>%
+    dplyr::arrange(AIRWAY, HORMONE, TIMEPOINT)
+  written <- 0L
+  for (i in seq_len(nrow(strata))) {
+    key <- lapply(strata[i, , drop = FALSE], function(v) as.character(v[[1]]))
+    grid_plot <- plot_hpiv3_volcano_grid(
+      ranked_results,
+      airway = key$AIRWAY, hormone = key$HORMONE, timepoint = key$TIMEPOINT,
+      title = paste(
+        "Exposure vs same-group PBS | AIRWAY =", key$AIRWAY,
+        "| HORMONE =", key$HORMONE, "| TIMEPOINT =", key$TIMEPOINT
+      )
+    )
+    if (is.null(grid_plot)) next
+    if (isTRUE(print_plots)) print(grid_plot)
+    save_plot(
+      file.path(output_subdir, "volcano_grid",
+                paste0("hpiv3_volc_grid_", hpiv3_dimension_tag(unlist(key)), ".png")),
+      grid_plot, width = 18, height = 10, dpi = 300, bg = "white"
+    )
+    written <- written + 1L
+  }
+  written
+}
+
 plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
   if (!is.null(airway) && length(airway) != 1) {
     stop("`airway` must be NULL or a single value.")

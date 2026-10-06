@@ -89,13 +89,7 @@ hpiv3_bundle <- build_hpiv3_analysis_data(
 )
 
 hpiv3_data <- hpiv3_bundle$data
-hpiv3_data <- switch(
-  HPIV3_HORMONE_MODE,
-  both = hpiv3_data,
-  E2_only = dplyr::filter(hpiv3_data, as.character(HORMONE) == "E2"),
-  exclude_E2 = dplyr::filter(hpiv3_data, as.character(HORMONE) != "E2")
-)
-stopifnot("No HPIV3 rows remain after hormone subsetting" = nrow(hpiv3_data) > 0L)
+hpiv3_data <- filter_hpiv3_hormone_mode(hpiv3_data, HPIV3_HORMONE_MODE)
 hpiv3_proteins <- hpiv3_bundle$protein_cols
 hpiv3_qc <- hpiv3_bundle$qc
 
@@ -163,31 +157,6 @@ Peat/Pine versus the PBS group of that same subset (same infection state), and
 the audit below confirms this against the input data.
 
 ```{r hpiv3-noninfection-models}
-fit_hpiv3_by_airway_infection <- function(fit_fn, data, ...) {
-  subsets <- data %>%
-    dplyr::distinct(AIRWAY, INFECTION) %>%
-    dplyr::arrange(AIRWAY, INFECTION)
-  fits <- lapply(seq_len(nrow(subsets)), function(i) {
-    airway_i <- subsets$AIRWAY[[i]]
-    infection_i <- subsets$INFECTION[[i]]
-    subset_data <- data %>%
-      dplyr::filter(AIRWAY == airway_i, INFECTION == infection_i)
-    cat("  Subset AIRWAY =", as.character(airway_i),
-        "| INFECTION =", as.character(infection_i),
-        "| rows =", nrow(subset_data), "\n")
-    fit <- fit_fn(subset_data, ...)
-    if (nrow(fit) > 0L) {
-      stopifnot(
-        "Model results leaked outside their AIRWAY x INFECTION subset" =
-          all(as.character(fit$INFECTION) == as.character(infection_i)) &&
-          all(as.character(fit$AIRWAY) == as.character(airway_i))
-      )
-    }
-    fit
-  })
-  dplyr::bind_rows(fits)
-}
-
 hpiv3_sex_results <- fit_hpiv3_by_airway_infection(
   fit_hpiv3_sex_models,
   hpiv3_data,
@@ -241,44 +210,15 @@ infection state could have been used. The audit stops the run on any failure
 and is saved to `hpiv3_exposure_baseline_audit.csv`.
 
 ```{r hpiv3-exposure-baseline-audit}
-hpiv3_audit_data <- dplyr::bind_rows(
+hpiv3_exposure_baseline_audit <- audit_hpiv3_exposure_baselines(
   hpiv3_data,
-  dplyr::mutate(hpiv3_data, SEX = "All")
-) %>%
-  dplyr::mutate(dplyr::across(c(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION), as.character))
-
-hpiv3_audit_counts <- hpiv3_audit_data %>%
-  dplyr::group_by(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION) %>%
-  dplyr::summarise(
-    n_pbs_same_infection = sum(as.character(EXPOSURE) == PBS_LEVEL),
-    .groups = "drop"
-  )
-
-hpiv3_exposure_baseline_audit <- hpiv3_exposure_results %>%
-  dplyr::filter(
-    as.character(comparison) == "EXPOSURE", !is.na(contrast),
-    model_status %in% c("modeled", "modeled_fallback")
-  ) %>%
-  dplyr::mutate(dplyr::across(c(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION), as.character)) %>%
-  dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION, contrast) %>%
-  dplyr::left_join(
-    hpiv3_audit_counts,
-    by = c("AIRWAY", "HORMONE", "TIMEPOINT", "SEX", "INFECTION")
-  ) %>%
-  dplyr::mutate(
-    baseline_is_pbs = grepl(PBS_LEVEL, contrast, fixed = TRUE),
-    baseline_infection = INFECTION,
-    baseline_matches_infection = baseline_is_pbs &
-      !is.na(n_pbs_same_infection) & n_pbs_same_infection > 0L
-  )
+  hpiv3_exposure_results,
+  pbs_level = PBS_LEVEL
+)
 
 save_table(
   hpiv3_exposure_baseline_audit,
   file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_baseline_audit.csv")
-)
-stopifnot(
-  "Exposure baseline audit failed: a contrast lacks a same-infection PBS baseline" =
-    all(hpiv3_exposure_baseline_audit$baseline_matches_infection)
 )
 cat("✓ Exposure baseline audit passed:", nrow(hpiv3_exposure_baseline_audit),
     "contrast strata, all referenced to same-infection PBS\n")
@@ -576,38 +516,10 @@ referenced to the HPIV3 PBS group of the same sex, and uninfected panels to
 the uninfected PBS group. PNGs are saved under `output/hpiv3/volcano_grid/`.
 
 ```{r hpiv3-volcano-grid, fig.width=18, fig.height=10}
-hpiv3_grid_strata <- hpiv3_ranked_exposure_results %>%
-  dplyr::distinct(AIRWAY, HORMONE, TIMEPOINT) %>%
-  dplyr::arrange(AIRWAY, HORMONE, TIMEPOINT)
-hpiv3_grid_count <- 0L
-for (grid_index in seq_len(nrow(hpiv3_grid_strata))) {
-  grid_key <- hpiv3_grid_strata[grid_index, , drop = FALSE]
-  grid_plot <- plot_hpiv3_volcano_grid(
-    hpiv3_ranked_exposure_results,
-    airway = as.character(grid_key$AIRWAY[[1]]),
-    hormone = as.character(grid_key$HORMONE[[1]]),
-    timepoint = as.character(grid_key$TIMEPOINT[[1]]),
-    title = paste(
-      "Exposure vs same-group PBS | AIRWAY =", grid_key$AIRWAY[[1]],
-      "| HORMONE =", grid_key$HORMONE[[1]],
-      "| TIMEPOINT =", grid_key$TIMEPOINT[[1]]
-    )
-  )
-  if (is.null(grid_plot)) next
-  print(grid_plot)
-  save_plot(
-    file.path(
-      HPIV3_OUTPUT_SUBDIR, "volcano_grid",
-      paste0("hpiv3_volc_grid_", hpiv3_dimension_tag(c(
-        AIRWAY = as.character(grid_key$AIRWAY[[1]]),
-        HORMONE = as.character(grid_key$HORMONE[[1]]),
-        TIMEPOINT = as.character(grid_key$TIMEPOINT[[1]])
-      )), ".png")
-    ),
-    grid_plot, width = 18, height = 10, dpi = 300, bg = "white"
-  )
-  hpiv3_grid_count <- hpiv3_grid_count + 1L
-}
+hpiv3_grid_count <- save_hpiv3_volcano_grids(
+  hpiv3_ranked_exposure_results,
+  HPIV3_OUTPUT_SUBDIR
+)
 cat("8-panel volcano grids written:", hpiv3_grid_count, "\n")
 ```
 
