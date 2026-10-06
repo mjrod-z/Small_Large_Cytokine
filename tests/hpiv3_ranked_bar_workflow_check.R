@@ -122,10 +122,18 @@ stopifnot(
       grepl("interaction_q.value", report_text, fixed = TRUE),
   "Censored HPIV3 measurements must be substituted and auditable rather than all converted to missing" =
     grepl("n_left_imputed", data_text, fixed = TRUE) &&
+      grepl("CENSOR_IMPUTED__", data_text, fixed = TRUE) &&
+      grepl("censoring_fraction", data_text, fixed = TRUE) &&
       grepl("left_limit / sqrt(2)", data_text, fixed = TRUE) &&
       grepl("right_limit * sqrt(2)", data_text, fixed = TRUE) &&
       grepl("hpiv3_censoring_qc.csv", report_text, fixed = TRUE) &&
+      grepl("hpiv3_censoring_stratum_qc.csv", report_text, fixed = TRUE) &&
       grepl("unique membership does not establish a difference", report_text, fixed = TRUE),
+  "HPIV3 models must reject degenerate inputs and invalid contrasts before FDR" =
+    grepl("hpiv3_model_input_failure", analysis_text, fixed = TRUE) &&
+      grepl("insufficient residual variation for fixed-effect design", analysis_text, fixed = TRUE) &&
+      grepl("hpiv3_contrast_failure", analysis_text, fixed = TRUE) &&
+      grepl("contrast SE is zero or numerically negligible", analysis_text, fixed = TRUE),
   "Exposure baseline audit must report donor pairing and reject unpaired fits when pairing is possible" =
     grepl("n_donors_with_pbs", analysis_text, fixed = TRUE) &&
       grepl("n_exposure_obs_paired", analysis_text, fixed = TRUE) &&
@@ -246,6 +254,11 @@ if (all(vapply(runtime_pkgs, requireNamespace, logical(1), quietly = TRUE))) {
   stopifnot(
     "Reference LLOD must be imputed at LLOD/sqrt(2)" =
       isTRUE(all.equal(converted$data$LLOD_REF[[1]], 1 / sqrt(2))),
+    "Imputed observations must retain a per-sample censoring indicator" =
+      isTRUE(converted$data$CENSOR_IMPUTED__LLOD_REF[[1]]) &&
+        !isTRUE(converted$data$CENSOR_IMPUTED__LLOD_REF[[2]]),
+    "Conversion QC must report censoring fractions" =
+      converted$qc$censoring_fraction[[1]] == 0.5,
     "Missing LLOD must use the minimum quantified value proxy" =
       isTRUE(all.equal(converted$data$LLOD_PROXY[[1]], 4 / sqrt(2))),
     "Missing ULOD must use the maximum quantified value proxy" =
@@ -258,7 +271,9 @@ if (all(vapply(runtime_pkgs, requireNamespace, logical(1), quietly = TRUE))) {
   model_env <- new.env(parent = globalenv())
   model_exprs <- parse(file = analysis_path)
   needed_models <- c(
-    "HPIV3_LMER_DF_METHOD", "analysis_emmeans", "fit_hpiv3_paired_model",
+    "HPIV3_LMER_DF_METHOD", "HPIV3_VARIANCE_REL_TOL",
+    "analysis_emmeans", "hpiv3_model_input_failure", "hpiv3_contrast_failure",
+    "compute_hpiv3_censoring_qc", "fit_hpiv3_paired_model",
     "fit_hpiv3_infection_models", "fit_hpiv3_sex_models",
     "fit_hpiv3_hormone_models", "fit_hpiv3_exposure_models",
     "fit_hpiv3_exposure_infection_interactions"
@@ -271,6 +286,93 @@ if (all(vapply(runtime_pkgs, requireNamespace, logical(1), quietly = TRUE))) {
       eval(expr, envir = model_env)
     }
   }
+  censoring_qc_fixture <- data.frame(
+    AIRWAY = "LAE", HORMONE = "NONE", TIMEPOINT = "24",
+    EXPOSURE = c("PBS_Control", "PBS_Control", "Peat_25", "Peat_25"),
+    INFECTION = "NONE", SEX = "M",
+    PROTEIN = c(1, 2, 3, 4),
+    CENSOR_IMPUTED__PROTEIN = c(TRUE, TRUE, FALSE, TRUE),
+    CENSOR_DETECTED__PROTEIN = c(TRUE, TRUE, FALSE, TRUE)
+  )
+  censoring_qc <- model_env$compute_hpiv3_censoring_qc(
+    censoring_qc_fixture, "PROTEIN"
+  )
+  constant_input <- data.frame(
+    PATIENTCODE = paste0("D", seq_len(6)),
+    EXPOSURE = rep(c("PBS_Control", "Peat_25"), each = 3),
+    log2_value = 5,
+    stringsAsFactors = FALSE
+  )
+  near_constant_input <- constant_input
+  near_constant_input$log2_value <- 5 + seq_len(nrow(near_constant_input)) * 1e-12
+  nonfinite_input <- constant_input
+  nonfinite_input$log2_value[[1]] <- Inf
+  constant_result <- model_env$fit_hpiv3_paired_model(
+    constant_input, log2_value ~ EXPOSURE, pairing_factor = "EXPOSURE"
+  )
+  near_constant_result <- model_env$fit_hpiv3_paired_model(
+    near_constant_input, log2_value ~ EXPOSURE, pairing_factor = "EXPOSURE"
+  )
+  nonfinite_result <- model_env$fit_hpiv3_paired_model(
+    nonfinite_input, log2_value ~ EXPOSURE, pairing_factor = "EXPOSURE"
+  )
+  bad_contrast <- model_env$hpiv3_contrast_failure(
+    data.frame(estimate = 0, SE = 0, p.value = 0, df = 5),
+    response = rep(5, 6)
+  )
+  good_contrast <- model_env$hpiv3_contrast_failure(
+    data.frame(estimate = 0.5, SE = 0.1, p.value = 0.01, df = 5),
+    response = rep(5, 6)
+  )
+  constant_model_results <- model_env$fit_hpiv3_infection_models(
+    data.frame(
+      PATIENTCODE = paste0("D", seq_len(6)),
+      AIRWAY = "LAE", HORMONE = "NONE", TIMEPOINT = "24",
+      EXPOSURE = "PBS_Control", SEX = "M",
+      INFECTION = rep(c("NONE", "HPIV3"), each = 3),
+      PROTEIN = 2^5
+    ),
+    "PROTEIN",
+    protein_status = data.frame(
+      PROTEIN = "PROTEIN", included = TRUE, exclusion_reason = NA_character_
+    ),
+    pseudocount = 0, alpha_q = 0.05
+  )
+  censored_heavy_fixture <- data.frame(
+    PATIENTCODE = paste0("D", seq_len(12)),
+    AIRWAY = "LAE", HORMONE = "NONE", TIMEPOINT = "24",
+    EXPOSURE = "PBS_Control", SEX = "M",
+    INFECTION = rep(c("NONE", "HPIV3"), each = 6),
+    PROTEIN = c(rep(1, 5), 2, rep(1, 5), 4),
+    CENSOR_IMPUTED__PROTEIN = c(rep(TRUE, 5), FALSE, rep(TRUE, 5), FALSE),
+    CENSOR_DETECTED__PROTEIN = c(rep(TRUE, 5), FALSE, rep(TRUE, 5), FALSE)
+  )
+  censored_heavy_results <- model_env$fit_hpiv3_infection_models(
+    censored_heavy_fixture, "PROTEIN",
+    protein_status = data.frame(
+      PROTEIN = "PROTEIN", included = TRUE, exclusion_reason = NA_character_
+    ),
+    pseudocount = 0.01, alpha_q = 0.05
+  )
+  stopifnot(
+    "Censoring QC must report fractions within model-relevant strata" =
+      nrow(censoring_qc) == 4L &&
+        all(c("EXPOSURE", "INFECTION", "SEX", "censoring_fraction") %in%
+              names(censoring_qc)) &&
+        all(censoring_qc$censoring_fraction[
+          as.character(censoring_qc$EXPOSURE) == "PBS_Control"
+        ] == 1) &&
+        all(censoring_qc$imputed_fraction[
+          as.character(censoring_qc$EXPOSURE) == "PBS_Control"
+        ] == 1),
+    "Censored-heavy comparisons remain auditable without an arbitrary censoring cutoff" =
+      all(censored_heavy_results$n_samples == 6L) &&
+        all(abs(censored_heavy_results$censoring_fraction - 5 / 6) < 1e-12) &&
+        all(censored_heavy_results$n_censored == 5L) &&
+        all(censored_heavy_results$model_status %in%
+              c("modeled", "modeled_fallback", "modeled_paired_fallback")) &&
+        all(is.finite(censored_heavy_results$p.value))
+  )
   interaction_fixture <- expand.grid(
     PATIENTCODE = paste0("D", seq_len(8)),
     EXPOSURE = c("PBS_Control", "Peat_25"),
@@ -426,7 +528,23 @@ if (all(vapply(runtime_pkgs, requireNamespace, logical(1), quietly = TRUE))) {
       is.null(single_paired$fit) && single_paired$paired &&
         single_paired$model_status == "failed",
     "Singular mixed models must use the donor-fixed paired fallback" =
-      paired_fallback$model_type == "lm_donor_fixed" && paired_fallback$paired
+      paired_fallback$model_type == "lm_donor_fixed" && paired_fallback$paired,
+    "Constant outcomes must fail before mixed or linear model fitting" =
+      is.null(constant_result$fit) &&
+        grepl("insufficient residual variation", constant_result$failure_reason),
+    "Near-zero residual variation must fail using a scale-aware tolerance" =
+      is.null(near_constant_result$fit) &&
+        grepl("insufficient residual variation", near_constant_result$failure_reason),
+    "Non-finite transformed outcomes must fail before fitting" =
+      is.null(nonfinite_result$fit) &&
+        grepl("non-finite", nonfinite_result$failure_reason),
+    "Zero-SE contrasts must be rejected but ordinary contrasts remain valid" =
+      !is.na(bad_contrast) && is.na(good_contrast),
+    "Degenerate model rows must not receive raw or adjusted significance" =
+      all(is.na(constant_model_results$p.value)) &&
+        all(is.na(constant_model_results$q.value)) &&
+        all(!constant_model_results$significant) &&
+        all(grepl("insufficient residual variation", constant_model_results$failure_reason))
   )
 }
 

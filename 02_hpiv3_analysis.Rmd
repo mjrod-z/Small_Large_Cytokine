@@ -69,11 +69,12 @@ This report expects two CSV inputs in `data/raw`:
 QC and modeling rules:
 
 - `SAMPLENAME` is split at the final underscore into `SAMPLEID` and `TIMEPOINT`.
-- Censored `<LLOD` measurements are substituted with LLOD/√2 when an analyte LLOD is available, otherwise with the minimum positive quantified value/√2. `>ULOD` measurements use ULOD×√2 when an analyte ULOD is available, otherwise the maximum positive quantified value×√2. Values with no usable bound or quantified value remain missing. Substitution counts and methods are saved in `hpiv3_censoring_qc.csv`; this is a documented single-value imputation, not a censored-likelihood model.
+- Censored `<LLOD` measurements are substituted with LLOD/√2 when an analyte LLOD is available, otherwise with the minimum positive quantified value/√2. `>ULOD` measurements use ULOD×√2 when an analyte ULOD is available, otherwise the maximum positive quantified value×√2. Values with no usable bound or quantified value remain missing. Substitution counts and methods are saved in `hpiv3_censoring_qc.csv`; model-stratum censoring counts and fractions are saved in `hpiv3_censoring_stratum_qc.csv`. This is a documented single-value imputation, not a censored-likelihood model.
 - Other non-numeric protein values are also converted to missing and reported.
 - Infection labels are normalized so `NO` and `NONE` become `NONE`; `HPIV3` is retained; unexpected labels stop the run.
 - Hormone levels are kept as `NONE` and `E2`. The `HPIV3_HORMONE_MODE` option (`"both"`, `"E2_only"`, or `"exclude_E2"`) subsets the data immediately after loading, before missingness QC, model fitting, and any plotting. Non-default modes write to `output/hpiv3/hormone_<mode>/` so they never overwrite the default outputs. Hormone (E2 vs NONE) models require both levels and are skipped otherwise.
-- Missingness QC is calculated after censor-limit substitution; censored values successfully substituted remain observed, while ordinary missing or non-numeric values remain missing. Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum.
+- Missingness QC is calculated after censor-limit substitution; censored values successfully substituted remain observed, while ordinary missing or non-numeric values remain missing. Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum. No arbitrary censoring-fraction exclusion threshold is imposed; censoring fractions remain visible in separate QC.
+- Each model checks finite outcomes and residual variation against the fixed-effect design before fitting. Residual RMS and contrast SE at or below `sqrt(machine epsilon) × max(1, max(abs(log2 outcome)))` are treated as numerically degenerate; invalid contrasts are marked failed with `NA` p-values before FDR adjustment. These numerical guards do not replace assay-specific censoring review.
 - Infection effects are modeled only in the PBS (`PBS_Control`) exposure group, not for Peat or Pine, on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE` within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × SEX` strata, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
 - Hormone effects are modeled as `E2` versus `NONE` within `AIRWAY × TIMEPOINT × EXPOSURE × INFECTION × SEX` strata, using the same random-intercept fallback.
 - Sex effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × INFECTION` strata.
@@ -95,6 +96,11 @@ hpiv3_qc <- hpiv3_bundle$qc
 save_table(
   hpiv3_qc$numeric_conversion,
   file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_censoring_qc.csv")
+)
+hpiv3_censoring_qc <- compute_hpiv3_censoring_qc(hpiv3_data, hpiv3_proteins)
+save_table(
+  hpiv3_censoring_qc,
+  file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_censoring_stratum_qc.csv")
 )
 
 cat("✓ HPIV3 inputs loaded\n")
@@ -949,6 +955,7 @@ cat("Outputs written under:", file.path(PATH_OUTPUT, HPIV3_OUTPUT_SUBDIR), "\n")
 cat("Generated files include:\n")
 cat("  - hpiv3_missingness_qc.csv\n")
 cat("  - hpiv3_censoring_qc.csv\n")
+cat("  - hpiv3_censoring_stratum_qc.csv\n")
 cat("  - hpiv3_protein_status.csv\n")
 cat("  - hpiv3_all_protein_model_results.csv\n")
 cat("  - hpiv3_sex_model_results.csv\n")

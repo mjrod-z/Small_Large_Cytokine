@@ -63,6 +63,7 @@ required_objects <- c(
   "build_sala_full",
   "build_hpiv3_analysis_data",
   "compute_hpiv3_missingness_qc",
+  "compute_hpiv3_censoring_qc",
   "fit_hpiv3_infection_models",
   "fit_hpiv3_hormone_models",
   "fit_hpiv3_exposure_models",

@@ -743,7 +743,128 @@ compute_hpiv3_missingness_qc <- function(data, protein_cols,
   list(qc = qc, protein_status = protein_status)
 }
 
+compute_hpiv3_censoring_qc <- function(
+    data, protein_cols,
+    strata_cols = c("AIRWAY", "HORMONE", "TIMEPOINT", "EXPOSURE", "INFECTION", "SEX")) {
+  stopifnot(is.data.frame(data))
+  protein_cols <- intersect(protein_cols, names(data))
+  strata_cols <- intersect(strata_cols, names(data))
+  qc_data <- if ("SEX" %in% names(data)) {
+    model_sex_data <- data %>%
+      dplyr::filter(is.na(SEX) | as.character(SEX) != "All")
+    dplyr::bind_rows(model_sex_data, dplyr::mutate(model_sex_data, SEX = "All"))
+  } else {
+    data
+  }
+  rows <- lapply(protein_cols, function(protein) {
+    flag_col <- paste0("CENSOR_IMPUTED__", protein)
+    detected_col <- paste0("CENSOR_DETECTED__", protein)
+    imputed <- if (!flag_col %in% names(data)) {
+      rep(FALSE, nrow(qc_data))
+    } else {
+      as.logical(qc_data[[flag_col]])
+    }
+    censored <- if (!detected_col %in% names(data)) imputed else {
+      as.logical(qc_data[[detected_col]])
+    }
+    imputed[is.na(imputed)] <- FALSE
+    censored[is.na(censored)] <- FALSE
+    dplyr::bind_cols(
+      qc_data[, strata_cols, drop = FALSE],
+      tibble::tibble(PROTEIN = protein, CENSORED = censored, IMPUTED = imputed)
+    )
+  })
+  if (length(rows) == 0L) {
+    return(tibble::tibble())
+  }
+  dplyr::bind_rows(rows) %>%
+    dplyr::group_by(PROTEIN, dplyr::across(dplyr::all_of(strata_cols))) %>%
+    dplyr::summarise(
+      n_samples = dplyr::n(),
+      n_censored = sum(CENSORED),
+      n_censored_imputed = sum(IMPUTED),
+      censoring_fraction = n_censored / n_samples,
+      imputed_fraction = n_censored_imputed / n_samples,
+      .groups = "drop"
+    )
+}
+
 HPIV3_LMER_DF_METHOD <- "kenward-roger"
+# Reject residual RMS/contrast SE at or below sqrt(machine epsilon) times the
+# response scale max(1, max(abs(y))); this is a numerical, not biological, cutoff.
+HPIV3_VARIANCE_REL_TOL <- sqrt(.Machine$double.eps)
+
+hpiv3_model_input_failure <- function(data, fixed_formula, include_donor = FALSE) {
+  check_formula <- if (include_donor) {
+    stats::update.formula(fixed_formula, . ~ . + PATIENTCODE)
+  } else {
+    fixed_formula
+  }
+  tryCatch({
+    model_frame <- stats::model.frame(
+      check_formula, data = data, na.action = stats::na.pass
+    )
+    response <- stats::model.response(model_frame)
+    if (!is.numeric(response) || length(response) == 0L ||
+        any(!is.finite(response))) {
+      return("non-finite or non-numeric transformed outcome")
+    }
+    design <- stats::model.matrix(stats::terms(check_formula), model_frame)
+    design_qr <- qr(design)
+    residual_df <- length(response) - design_qr$rank
+    if (residual_df <= 0L) {
+      return("no residual degrees of freedom for fixed-effect design")
+    }
+    residuals <- qr.resid(design_qr, response)
+    response_scale <- max(1, abs(response))
+    residual_rms <- sqrt(mean(residuals^2))
+    if (!is.finite(residual_rms) ||
+        residual_rms <= HPIV3_VARIANCE_REL_TOL * response_scale) {
+      return("insufficient residual variation for fixed-effect design")
+    }
+    NA_character_
+  }, error = function(e) {
+    paste0("model input validation failed: ", conditionMessage(e))
+  })
+}
+
+hpiv3_contrast_failure <- function(stats_row, response) {
+  required <- c("estimate", "SE", "p.value", "df")
+  if (!all(required %in% names(stats_row))) {
+    return("contrast summary is missing estimate, SE, p-value, or df")
+  }
+  values <- vapply(required, function(column) {
+    as.numeric(stats_row[[column]][[1]])
+  }, numeric(1))
+  names(values) <- required
+  if (any(!is.finite(values))) {
+    return("contrast estimate, SE, p-value, and df must be finite")
+  }
+  if (values[["SE"]] <= HPIV3_VARIANCE_REL_TOL * max(1, abs(response))) {
+    return("contrast SE is zero or numerically negligible")
+  }
+  if (values[["p.value"]] < 0 || values[["p.value"]] > 1) {
+    return("contrast p-value is outside [0, 1]")
+  }
+  if (values[["df"]] <= 0) {
+    return("contrast degrees of freedom must be positive")
+  }
+  NA_character_
+}
+
+hpiv3_censoring_summary <- function(data) {
+  censored <- if ("CENSORED" %in% names(data)) {
+    as.logical(data$CENSORED)
+  } else {
+    rep(FALSE, nrow(data))
+  }
+  censored[is.na(censored)] <- FALSE
+  n_censored <- sum(censored)
+  list(
+    n_censored = n_censored,
+    censoring_fraction = if (nrow(data) > 0L) n_censored / nrow(data) else NA_real_
+  )
+}
 
 analysis_emmeans <- function(object, specs, ...) {
   arguments <- list(object = object, specs = specs, ...)
@@ -763,12 +884,22 @@ fit_hpiv3_paired_model <- function(data, fixed_formula, pairing_factor) {
   paired_donors <- sum(donor_group_counts$n_levels > 1L)
   n_donors <- dplyr::n_distinct(data$PATIENTCODE)
   can_pair <- paired_donors > 0L
-  if (can_pair && n_donors < 2L) {
+  input_failure <- hpiv3_model_input_failure(data, fixed_formula)
+  if (!is.na(input_failure)) {
     return(list(
       fit = NULL, model_type = NA_character_, model_status = "failed",
-      paired = TRUE, paired_donors = paired_donors, singular_fit = NA,
-      failure_reason = "cross-level donor pairing exists but fewer than two donors are available"
+      paired = can_pair, paired_donors = paired_donors, singular_fit = NA,
+      failure_reason = input_failure
     ))
+  }
+  if (can_pair) {
+    if (n_donors < 2L) {
+      return(list(
+        fit = NULL, model_type = NA_character_, model_status = "failed",
+        paired = TRUE, paired_donors = paired_donors, singular_fit = NA,
+        failure_reason = "cross-level donor pairing exists but fewer than two donors are available"
+      ))
+    }
   }
   model_data <- data
   lmer_error <- NA_character_
@@ -800,6 +931,16 @@ fit_hpiv3_paired_model <- function(data, fixed_formula, pairing_factor) {
           singular_fit = FALSE, failure_reason = NA_character_
         ))
       }
+    }
+    paired_input_failure <- hpiv3_model_input_failure(
+      data, fixed_formula, include_donor = TRUE
+    )
+    if (!is.na(paired_input_failure)) {
+      return(list(
+        fit = NULL, model_type = NA_character_, model_status = "failed",
+        paired = TRUE, paired_donors = paired_donors, singular_fit = singular_fit,
+        failure_reason = paste0("paired fallback ", paired_input_failure)
+      ))
     }
     paired_formula <- stats::update.formula(
       fixed_formula,
@@ -925,12 +1066,15 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
         protein_rule <- protein_status %>% dplyr::filter(PROTEIN == protein)
         included <- if (nrow(protein_rule) == 1) isTRUE(protein_rule$included[[1]]) else TRUE
         exclusion_reason <- if (nrow(protein_rule) == 1) protein_rule$exclusion_reason[[1]] else NA_character_
+        censor_col <- paste0("CENSOR_DETECTED__", protein)
+        if (!censor_col %in% names(sex_data)) censor_col <- paste0("CENSOR_IMPUTED__", protein)
 
         dat <- sex_data %>%
           dplyr::transmute(
             PATIENTCODE = PATIENTCODE,
             INFECTION = factor(INFECTION, levels = c(control_level, case_level)),
-            VALUE = .data[[protein]]
+            VALUE = .data[[protein]],
+            CENSORED = if (censor_col %in% names(sex_data)) .data[[censor_col]] else FALSE
           ) %>%
           dplyr::filter(!is.na(PATIENTCODE), !is.na(INFECTION), !is.na(VALUE))
 
@@ -938,6 +1082,7 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
         n_none <- sum(dat$INFECTION == control_level)
         n_hpiv3 <- sum(dat$INFECTION == case_level)
         n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
+        censor_metrics <- hpiv3_censoring_summary(dat)
 
         result_row <- tibble::tibble(
           AIRWAY = as.character(airway_i),
@@ -951,6 +1096,8 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
           n_none = n_none,
           n_hpiv3 = n_hpiv3,
           n_donors = n_donors,
+          n_censored = censor_metrics$n_censored,
+          censoring_fraction = censor_metrics$censoring_fraction,
           n_paired_donors = 0L,
           paired_with_patientcode = FALSE,
           used_random_intercept = FALSE,
@@ -1049,6 +1196,12 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
         result_row$df <- stats_row$df[[1]]
         result_row$df_method <- if (used_lmer) HPIV3_LMER_DF_METHOD else "residual"
         result_row$singular_fit <- fit_info$singular_fit
+        contrast_failure <- hpiv3_contrast_failure(stats_rows, dat$log2_value)
+        if (!is.na(contrast_failure)) {
+          result_row$p.value <- NA_real_
+          result_row$model_status <- "failed"
+          result_row$failure_reason <- contrast_failure
+        }
 
         results[[idx]] <- result_row
         idx <- idx + 1L
@@ -1117,12 +1270,15 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       protein_rule <- protein_status %>% dplyr::filter(PROTEIN == protein)
       included <- if (nrow(protein_rule) == 1) isTRUE(protein_rule$included[[1]]) else TRUE
       exclusion_reason <- if (nrow(protein_rule) == 1) protein_rule$exclusion_reason[[1]] else NA_character_
+      censor_col <- paste0("CENSOR_DETECTED__", protein)
+      if (!censor_col %in% names(stratum_data)) censor_col <- paste0("CENSOR_IMPUTED__", protein)
 
       dat_raw <- stratum_data %>%
         dplyr::transmute(
           PATIENTCODE = PATIENTCODE,
           SEX = as.character(SEX),
-          VALUE = .data[[protein]]
+          VALUE = .data[[protein]],
+          CENSORED = if (censor_col %in% names(stratum_data)) .data[[censor_col]] else FALSE
         ) %>%
         dplyr::filter(!is.na(PATIENTCODE), !is.na(SEX), !is.na(VALUE))
 
@@ -1133,6 +1289,7 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       sex_counts <- table(dat$SEX)
       n_obs <- nrow(dat)
       n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
+      censor_metrics <- hpiv3_censoring_summary(dat)
       counts_label <- if (length(sex_counts) == 0) {
         NA_character_
       } else {
@@ -1152,6 +1309,8 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
         n_groups = length(sex_counts),
         group_counts = counts_label,
         n_donors = n_donors,
+        n_censored = censor_metrics$n_censored,
+        censoring_fraction = censor_metrics$censoring_fraction,
         n_paired_donors = 0L,
         paired_with_patientcode = FALSE,
         used_random_intercept = FALSE,
@@ -1277,6 +1436,14 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
         out_row$df <- stats_rows$df[[k]]
         out_row$df_method <- if (used_lmer) HPIV3_LMER_DF_METHOD else "residual"
         out_row$singular_fit <- fit_info$singular_fit
+        contrast_failure <- hpiv3_contrast_failure(
+          stats_rows[k, , drop = FALSE], dat_fit$log2_value
+        )
+        if (!is.na(contrast_failure)) {
+          out_row$p.value <- NA_real_
+          out_row$model_status <- "failed"
+          out_row$failure_reason <- contrast_failure
+        }
         results[[idx]] <- out_row
         idx <- idx + 1L
       }
@@ -1351,12 +1518,15 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
         protein_rule <- protein_status %>% dplyr::filter(PROTEIN == protein)
         included <- if (nrow(protein_rule) == 1) isTRUE(protein_rule$included[[1]]) else TRUE
         exclusion_reason <- if (nrow(protein_rule) == 1) protein_rule$exclusion_reason[[1]] else NA_character_
+        censor_col <- paste0("CENSOR_DETECTED__", protein)
+        if (!censor_col %in% names(sex_data)) censor_col <- paste0("CENSOR_IMPUTED__", protein)
 
         dat <- sex_data %>%
           dplyr::transmute(
             PATIENTCODE = PATIENTCODE,
             HORMONE = factor(as.character(HORMONE), levels = c(control_level, case_level)),
-            VALUE = .data[[protein]]
+            VALUE = .data[[protein]],
+            CENSORED = if (censor_col %in% names(sex_data)) .data[[censor_col]] else FALSE
           ) %>%
           dplyr::filter(!is.na(PATIENTCODE), !is.na(HORMONE), !is.na(VALUE))
 
@@ -1364,6 +1534,7 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
         n_none <- sum(dat$HORMONE == control_level)
         n_e2 <- sum(dat$HORMONE == case_level)
         n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
+        censor_metrics <- hpiv3_censoring_summary(dat)
 
         result_row <- tibble::tibble(
           AIRWAY = as.character(airway_i),
@@ -1379,6 +1550,8 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
           n_none = n_none,
           n_e2 = n_e2,
           n_donors = n_donors,
+          n_censored = censor_metrics$n_censored,
+          censoring_fraction = censor_metrics$censoring_fraction,
           n_paired_donors = 0L,
           paired_with_patientcode = FALSE,
           used_random_intercept = FALSE,
@@ -1477,6 +1650,12 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
         result_row$df <- stats_row$df[[1]]
         result_row$df_method <- if (used_lmer) HPIV3_LMER_DF_METHOD else "residual"
         result_row$singular_fit <- fit_info$singular_fit
+        contrast_failure <- hpiv3_contrast_failure(stats_row, dat$log2_value)
+        if (!is.na(contrast_failure)) {
+          result_row$p.value <- NA_real_
+          result_row$model_status <- "failed"
+          result_row$failure_reason <- contrast_failure
+        }
         results[[idx]] <- result_row
         idx <- idx + 1L
       }
@@ -1544,12 +1723,15 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       protein_rule <- protein_status %>% dplyr::filter(PROTEIN == protein)
       included <- if (nrow(protein_rule) == 1) isTRUE(protein_rule$included[[1]]) else TRUE
       exclusion_reason <- if (nrow(protein_rule) == 1) protein_rule$exclusion_reason[[1]] else NA_character_
+      censor_col <- paste0("CENSOR_DETECTED__", protein)
+      if (!censor_col %in% names(stratum_data)) censor_col <- paste0("CENSOR_IMPUTED__", protein)
 
       dat_raw <- stratum_data %>%
         dplyr::transmute(
           PATIENTCODE = PATIENTCODE,
           EXPOSURE = as.character(EXPOSURE),
-          VALUE = .data[[protein]]
+          VALUE = .data[[protein]],
+          CENSORED = if (censor_col %in% names(stratum_data)) .data[[censor_col]] else FALSE
         ) %>%
         dplyr::filter(!is.na(PATIENTCODE), !is.na(EXPOSURE), !is.na(VALUE))
 
@@ -1563,6 +1745,7 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       exposure_counts <- table(dat$EXPOSURE)
       n_obs <- nrow(dat)
       n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
+      censor_metrics <- hpiv3_censoring_summary(dat)
       counts_label <- if (length(exposure_counts) == 0) {
         NA_character_
       } else {
@@ -1582,6 +1765,8 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         n_groups = length(exposure_counts),
         group_counts = counts_label,
         n_donors = n_donors,
+        n_censored = censor_metrics$n_censored,
+        censoring_fraction = censor_metrics$censoring_fraction,
         n_pbs_donors = NA_integer_,
         n_paired_donors = NA_integer_,
         n_exposure_obs_paired = NA_integer_,
@@ -1650,6 +1835,9 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       result_row$n_groups <- length(paired_exposure_counts)
       result_row$group_counts <- paired_counts_label
       result_row$n_donors <- dplyr::n_distinct(dat_fit$PATIENTCODE)
+      censor_metrics <- hpiv3_censoring_summary(dat_fit)
+      result_row$n_censored <- censor_metrics$n_censored
+      result_row$censoring_fraction <- censor_metrics$censoring_fraction
       if (
         length(paired_exposure_counts) < 2L ||
         any(as.integer(paired_exposure_counts) < min_nonmissing_per_group)
@@ -1767,6 +1955,14 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         out_row$df <- stats_rows$df[[k]]
         out_row$df_method <- if (used_lmer) HPIV3_LMER_DF_METHOD else "residual"
         out_row$singular_fit <- fit_info$singular_fit
+        contrast_failure <- hpiv3_contrast_failure(
+          stats_rows[k, , drop = FALSE], dat_fit$log2_value
+        )
+        if (!is.na(contrast_failure)) {
+          out_row$p.value <- NA_real_
+          out_row$model_status <- "failed"
+          out_row$failure_reason <- contrast_failure
+        }
         results[[idx]] <- out_row
         idx <- idx + 1L
       }
@@ -1811,6 +2007,7 @@ fit_hpiv3_exposure_infection_interactions <- function(
       AIRWAY = character(), HORMONE = character(), TIMEPOINT = character(),
       SEX = character(), PROTEIN = character(), target_exposure = character(),
       comparison = character(), contrast = character(), n_samples = integer(),
+      n_censored = integer(), censoring_fraction = numeric(),
       group_counts = character(), n_donors = integer(), n_paired_donors = integer(),
       paired_with_patientcode = logical(), used_random_intercept = logical(),
       model_type = character(), model_status = character(), failure_reason = character(),
@@ -1842,12 +2039,15 @@ fit_hpiv3_exposure_infection_interactions <- function(
         rule <- protein_status %>% dplyr::filter(PROTEIN == protein)
         included <- if (nrow(rule) == 1L) isTRUE(rule$included[[1]]) else TRUE
         reason <- if (nrow(rule) == 1L) rule$exclusion_reason[[1]] else NA_character_
+        censor_col <- paste0("CENSOR_DETECTED__", protein)
+        if (!censor_col %in% names(stratum_data)) censor_col <- paste0("CENSOR_IMPUTED__", protein)
         dat <- stratum_data %>%
           dplyr::transmute(
             PATIENTCODE = as.character(PATIENTCODE),
             INFECTION = as.character(INFECTION),
             EXPOSURE = as.character(EXPOSURE),
-            VALUE = .data[[protein]]
+            VALUE = .data[[protein]],
+            CENSORED = if (censor_col %in% names(stratum_data)) .data[[censor_col]] else FALSE
           ) %>%
           dplyr::filter(
             !is.na(PATIENTCODE), INFECTION %in% c("NONE", "HPIV3"),
@@ -1868,6 +2068,7 @@ fit_hpiv3_exposure_infection_interactions <- function(
           paste0(count_table$Var1, "/", count_table$Var2, "=", count_table$Freq,
                  collapse = "; ")
         }
+        censor_metrics <- hpiv3_censoring_summary(dat)
         result_row <- tibble::tibble(
           AIRWAY = as.character(stratum$AIRWAY[[1]]),
           HORMONE = as.character(stratum$HORMONE[[1]]),
@@ -1878,6 +2079,8 @@ fit_hpiv3_exposure_infection_interactions <- function(
           comparison = "EXPOSURE_BY_INFECTION",
           contrast = paste0(target_exposure, " vs ", pbs_level, ": (HPIV3 - NONE)"),
           n_samples = nrow(dat),
+          n_censored = censor_metrics$n_censored,
+          censoring_fraction = censor_metrics$censoring_fraction,
           group_counts = counts_label,
           n_donors = dplyr::n_distinct(dat$PATIENTCODE),
           n_paired_donors = 0L,
@@ -1980,6 +2183,12 @@ fit_hpiv3_exposure_infection_interactions <- function(
           "residual"
         }
         result_row$singular_fit <- fit_info$singular_fit
+        contrast_failure <- hpiv3_contrast_failure(stats_row, dat$log2_value)
+        if (!is.na(contrast_failure)) {
+          result_row$p.value <- NA_real_
+          result_row$model_status <- "failed"
+          result_row$failure_reason <- contrast_failure
+        }
         results[[idx]] <- result_row
         idx <- idx + 1L
       }
