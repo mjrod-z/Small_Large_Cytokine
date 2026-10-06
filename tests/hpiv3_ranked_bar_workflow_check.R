@@ -366,9 +366,9 @@ if (all(vapply(runtime_pkgs, requireNamespace, logical(1), quietly = TRUE))) {
           as.character(censoring_qc$EXPOSURE) == "PBS_Control"
         ] == 1),
     "Censored-heavy comparisons remain auditable without an arbitrary censoring cutoff" =
-      all(censored_heavy_results$n_samples == 6L) &&
+      all(censored_heavy_results$n_samples == 12L) &&
         all(abs(censored_heavy_results$censoring_fraction - 5 / 6) < 1e-12) &&
-        all(censored_heavy_results$n_censored == 5L) &&
+        all(censored_heavy_results$n_censored == 10L) &&
         all(censored_heavy_results$model_status %in%
               c("modeled", "modeled_fallback", "modeled_paired_fallback")) &&
         all(is.finite(censored_heavy_results$p.value))
