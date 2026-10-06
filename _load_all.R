@@ -72,6 +72,7 @@ required_objects <- c(
   "plot_hpiv3_infection_dotplot",
   "plot_hpiv3_ranked_bars",
   "plot_hpiv3_volcano",
+  "plot_hpiv3_volcano_grid",
   "plot_hpiv3_rnaseq_sex_comparison",
   "plot_unique_protein_upset",
   "plot_unique_protein_euler",

@@ -1444,6 +1444,108 @@ plot_hpiv3_volcano <- function(model_results,
   p
 }
 
+# Combined 8-panel exposure volcano for ONE airway (and, optionally, one
+# hormone/timepoint). Rows: Male, Female. Columns: Peat, Pine (NONE), then
+# HPIV3 Peat, HPIV3 Pine. `ranked_results` must come from
+# prepare_hpiv3_ranked_exposure_results(), so every panel is Peat/Pine versus the
+# PBS baseline of the same sex and infection state.
+plot_hpiv3_volcano_grid <- function(ranked_results, airway, hormone = NULL,
+                                    timepoint = NULL, title = NULL) {
+  stopifnot(is.data.frame(ranked_results), length(airway) == 1L)
+  d <- ranked_results[as.character(ranked_results$AIRWAY) == as.character(airway), , drop = FALSE]
+  if (!is.null(hormone)) d <- d[as.character(d$HORMONE) == as.character(hormone), , drop = FALSE]
+  if (!is.null(timepoint)) d <- d[as.character(d$TIMEPOINT) == as.character(timepoint), , drop = FALSE]
+  d <- d[
+    as.character(d$SEX) %in% c("M", "F") &
+      as.character(d$INFECTION) %in% c("NONE", "HPIV3") &
+      grepl("^(Peat|Pine)", d$target_exposure, ignore.case = TRUE) &
+      is.finite(as.numeric(d$estimate)) & is.finite(as.numeric(d$p.value)),
+    , drop = FALSE
+  ]
+  if (nrow(d) == 0L) return(NULL)
+
+  fuel <- ifelse(grepl("^Peat", d$target_exposure, ignore.case = TRUE), "Peat", "Pine")
+  col_levels <- c("Peat", "Pine", "HPIV3 Peat", "HPIV3 Pine")
+  d$col_label <- factor(
+    ifelse(as.character(d$INFECTION) == "HPIV3", paste("HPIV3", fuel), fuel),
+    levels = col_levels
+  )
+  d$row_label <- factor(ifelse(as.character(d$SEX) == "M", "Male", "Female"),
+                        levels = c("Male", "Female"))
+  d$estimate <- as.numeric(d$estimate)
+  positive_p <- as.numeric(d$p.value)
+  positive_p <- positive_p[positive_p > 0]
+  p_floor <- if (length(positive_p) > 0L) min(positive_p) / 10 else .Machine$double.xmin
+  d$neg_log10_p <- hpiv3_neg_log10_p(d$p.value, p_floor)
+  sig <- !is.na(d$significant) & d$significant
+  d$direction <- dplyr::case_when(
+    sig & d$estimate > 0 ~ "Higher, significant",
+    sig & d$estimate < 0 ~ "Lower, significant",
+    TRUE ~ "Not significant"
+  )
+
+  counts <- d %>%
+    dplyr::group_by(row_label, col_label) %>%
+    dplyr::summarise(
+      n_up = sum(direction == "Higher, significant"),
+      n_down = sum(direction == "Lower, significant"),
+      x_min = min(estimate), x_max = max(estimate), y_max = max(neg_log10_p),
+      .groups = "drop"
+    )
+
+  p <- ggplot2::ggplot(d, ggplot2::aes(x = estimate, y = neg_log10_p, color = direction)) +
+    ggplot2::geom_vline(xintercept = 0, color = "grey60", linetype = "dashed") +
+    ggplot2::geom_point(alpha = 0.7, size = 1.8) +
+    ggplot2::geom_text(
+      data = counts, ggplot2::aes(x = x_max, y = y_max, label = paste0("UP: ", n_up)),
+      inherit.aes = FALSE, hjust = 1, vjust = 1.3, size = 3,
+      fontface = "bold", color = UP_COLOR_DEFAULT
+    ) +
+    ggplot2::geom_text(
+      data = counts, ggplot2::aes(x = x_min, y = y_max, label = paste0("DOWN: ", n_down)),
+      inherit.aes = FALSE, hjust = 0, vjust = 1.3, size = 3,
+      fontface = "bold", color = DOWN_COLOR_DEFAULT
+    ) +
+    ggplot2::scale_color_manual(
+      values = c(
+        "Higher, significant" = UP_COLOR_DEFAULT,
+        "Lower, significant" = DOWN_COLOR_DEFAULT,
+        "Not significant" = "grey70"
+      ),
+      drop = FALSE
+    ) +
+    ggplot2::facet_grid(row_label ~ col_label, scales = "free", drop = FALSE) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      strip.text = ggplot2::element_text(size = 10, face = "bold"),
+      panel.border = ggplot2::element_rect(color = "grey40", fill = NA, linewidth = 0.4),
+      panel.grid.minor = ggplot2::element_blank(),
+      legend.title = ggplot2::element_blank(),
+      legend.position = "bottom",
+      plot.background = ggplot2::element_rect(fill = "white", color = NA)
+    ) +
+    hpiv3_title_theme() +
+    ggplot2::labs(
+      title = wrap_plot_text(
+        if (is.null(title)) paste("Exposure vs same-group PBS \u2014 AIRWAY =", airway) else title,
+        width = 90
+      ),
+      subtitle = paste0("Significant = q.value < ", ALPHA_Q,
+                        " (BH-FDR within stratum); baseline = PBS of same sex and infection state"),
+      x = "Estimated log2 difference (exposure - PBS)",
+      y = expression(-log[10]("raw p-value"))
+    )
+
+  sig_df <- d[sig, , drop = FALSE]
+  if (nrow(sig_df) > 0L) {
+    p <- p + ggrepel::geom_text_repel(
+      data = sig_df, ggplot2::aes(label = PROTEIN), size = 2.8, max.overlaps = 30,
+      fontface = "bold", box.padding = 0.4, segment.color = "grey40", show.legend = FALSE
+    )
+  }
+  p
+}
+
 plot_hpiv3_infection_dotplot <- function(model_results, sex_group = "All", airway = NULL) {
   if (!is.null(airway) && length(airway) != 1) {
     stop("`airway` must be NULL or a single value.")
