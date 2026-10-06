@@ -1539,6 +1539,10 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         n_groups = length(exposure_counts),
         group_counts = counts_label,
         n_donors = n_donors,
+        n_pbs_donors = NA_integer_,
+        n_paired_donors = NA_integer_,
+        n_exposure_obs_paired = NA_integer_,
+        paired_with_patientcode = FALSE,
         used_random_intercept = FALSE,
         model_type = NA_character_,
         model_status = "skipped",
@@ -1577,15 +1581,44 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         next
       }
 
+      # Donor pairing: keep only donors with a PBS baseline in this stratum
+      pbs_donors <- unique(as.character(dat_fit$PATIENTCODE[as.character(dat_fit$EXPOSURE) == "PBS_Control"]))
+      if (length(pbs_donors) > 0) {
+        dat_fit <- dat_fit %>%
+          dplyr::filter(as.character(PATIENTCODE) %in% pbs_donors) %>%
+          droplevels()
+        if (length(unique(as.character(dat_fit$EXPOSURE))) < 2) {
+          result_row$n_pbs_donors <- length(pbs_donors)
+          result_row$n_paired_donors <- 0L
+          result_row$n_exposure_obs_paired <- 0L
+          result_row$failure_reason <- "no exposure observations from donors with a PBS baseline"
+          results[[idx]] <- result_row
+          idx <- idx + 1L
+          next
+        }
+      }
+      n_donors <- dplyr::n_distinct(dat_fit$PATIENTCODE)
+      repeated_donor <- anyDuplicated(as.character(dat_fit$PATIENTCODE)) > 0
+      is_pbs_fit <- as.character(dat_fit$EXPOSURE) == "PBS_Control"
+      exposure_donors <- unique(as.character(dat_fit$PATIENTCODE[!is_pbs_fit]))
+      result_row$n_donors <- n_donors
+      result_row$n_pbs_donors <- length(pbs_donors)
+      result_row$n_paired_donors <- length(intersect(pbs_donors, exposure_donors))
+      result_row$n_exposure_obs_paired <- sum(
+        !is_pbs_fit & as.character(dat_fit$PATIENTCODE) %in% pbs_donors
+      )
+      can_pair <- n_donors >= 2 && repeated_donor && result_row$n_paired_donors > 0
+
       dat_fit <- dat_fit %>% dplyr::mutate(log2_value = log2(as.numeric(VALUE) + pseudocount))
 
       fit <- NULL
       used_lmer <- FALSE
+      used_donor_fixed <- FALSE
       singular_fit <- FALSE
       lmer_error <- NA_character_
       lm_error <- NA_character_
 
-      if (n_donors >= 2 && repeated_donor) {
+      if (can_pair) {
         fit <- tryCatch(
           lme4::lmer(log2_value ~ EXPOSURE + (1 | PATIENTCODE), data = dat_fit),
           error = function(e) {
@@ -1602,13 +1635,27 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       }
 
       if (!used_lmer) {
-        fit <- tryCatch(
-          stats::lm(log2_value ~ EXPOSURE, data = dat_fit),
-          error = function(e) {
-            lm_error <<- conditionMessage(e)
-            NULL
-          }
-        )
+        # Prefer a donor-paired fallback (donor as fixed block) over an unpaired lm
+        if (can_pair) {
+          dat_fit$PATIENTCODE <- factor(as.character(dat_fit$PATIENTCODE))
+          fit <- tryCatch(
+            stats::lm(log2_value ~ EXPOSURE + PATIENTCODE, data = dat_fit),
+            error = function(e) {
+              lm_error <<- conditionMessage(e)
+              NULL
+            }
+          )
+          used_donor_fixed <- !is.null(fit)
+        }
+        if (is.null(fit)) {
+          fit <- tryCatch(
+            stats::lm(log2_value ~ EXPOSURE, data = dat_fit),
+            error = function(e) {
+              lm_error <<- conditionMessage(e)
+              NULL
+            }
+          )
+        }
         if (is.null(fit)) {
           base_reason <- if (singular_fit) {
             "singular mixed model and fallback linear model failed"
@@ -1678,12 +1725,29 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
         out_row <- result_row
         out_row$contrast <- as.character(stats_rows$contrast[[k]])
         out_row$used_random_intercept <- used_lmer
-        out_row$model_type <- if (used_lmer) "lmer" else "lm"
-        out_row$model_status <- if (used_lmer) "modeled" else "modeled_fallback"
-        out_row$failure_reason <- if (!used_lmer && singular_fit) {
-          "singular mixed model; used linear-model fallback"
-        } else if (!used_lmer && !(n_donors >= 2 && repeated_donor)) {
-          "random intercept unsupported; used linear-model fallback"
+        out_row$paired_with_patientcode <- used_lmer || used_donor_fixed
+        out_row$model_type <- if (used_lmer) {
+          "lmer"
+        } else if (used_donor_fixed) {
+          "lm_donor_fixed"
+        } else {
+          "lm_unpaired"
+        }
+        out_row$model_status <- if (used_lmer) {
+          "modeled"
+        } else if (used_donor_fixed) {
+          "modeled_paired_fallback"
+        } else {
+          "modeled_fallback"
+        }
+        out_row$failure_reason <- if (used_donor_fixed && singular_fit) {
+          "singular mixed model; used donor-fixed paired linear model"
+        } else if (used_donor_fixed) {
+          "mixed model failed; used donor-fixed paired linear model"
+        } else if (!used_lmer && singular_fit) {
+          "singular mixed model; used unpaired linear-model fallback"
+        } else if (!used_lmer) {
+          "donor pairing unsupported; used unpaired linear-model fallback"
         } else {
           NA_character_
         }
@@ -1991,17 +2055,40 @@ audit_hpiv3_exposure_baselines <- function(data, exposure_results, pbs_level = P
     dplyr::group_by(dplyr::across(dplyr::all_of(strata_cols))) %>%
     dplyr::summarise(
       n_pbs_same_infection = sum(as.character(EXPOSURE) == pbs_level),
+      n_donors_with_pbs = dplyr::n_distinct(
+        PATIENTCODE[as.character(EXPOSURE) == pbs_level & !is.na(PATIENTCODE)]
+      ),
+      n_exposure_obs = sum(as.character(EXPOSURE) != pbs_level),
+      n_exposure_obs_paired = sum(
+        as.character(EXPOSURE) != pbs_level &
+          as.character(PATIENTCODE) %in% as.character(PATIENTCODE[as.character(EXPOSURE) == pbs_level])
+      ),
+      .groups = "drop"
+    )
+  model_info <- exposure_results %>%
+    dplyr::filter(
+      as.character(comparison) == "EXPOSURE", !is.na(contrast),
+      model_status %in% c("modeled", "modeled_paired_fallback", "modeled_fallback")
+    ) %>%
+    dplyr::mutate(dplyr::across(dplyr::all_of(strata_cols), as.character)) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(c(strata_cols, "contrast")))) %>%
+    dplyr::summarise(
+      model_types = paste(sort(unique(model_type)), collapse = ";"),
+      n_unpaired_models = sum(!as.logical(paired_with_patientcode), na.rm = TRUE),
       .groups = "drop"
     )
   audit <- exposure_results %>%
     dplyr::filter(
       as.character(comparison) == "EXPOSURE", !is.na(contrast),
-      model_status %in% c("modeled", "modeled_fallback")
+      model_status %in% c("modeled", "modeled_paired_fallback", "modeled_fallback")
     ) %>%
     dplyr::mutate(dplyr::across(dplyr::all_of(strata_cols), as.character)) %>%
     dplyr::distinct(dplyr::across(dplyr::all_of(c(strata_cols, "contrast")))) %>%
     dplyr::left_join(counts, by = strata_cols) %>%
+    dplyr::left_join(model_info, by = c(strata_cols, "contrast")) %>%
     dplyr::mutate(
+      donor_pairing_possible = !is.na(n_donors_with_pbs) & n_donors_with_pbs > 0L &
+        !is.na(n_exposure_obs_paired) & n_exposure_obs_paired > 0L,
       baseline_is_pbs = grepl(pbs_level, contrast, fixed = TRUE),
       baseline_infection = INFECTION,
       baseline_matches_infection = baseline_is_pbs &
@@ -2009,7 +2096,10 @@ audit_hpiv3_exposure_baselines <- function(data, exposure_results, pbs_level = P
     )
   stopifnot(
     "Exposure baseline audit failed: a contrast lacks a same-infection PBS baseline" =
-      all(audit$baseline_matches_infection)
+      all(audit$baseline_matches_infection),
+    "Exposure baseline audit failed: donor pairing was possible but an unpaired model was used" =
+      all(!audit$donor_pairing_possible | is.na(audit$n_unpaired_models) |
+        audit$n_unpaired_models == 0L)
   )
   audit
 }
