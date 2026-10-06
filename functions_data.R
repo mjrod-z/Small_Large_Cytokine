@@ -193,6 +193,11 @@ coerce_hpiv3_protein_values <- function(data, protein_cols,
                                         llod_table = NULL, ulod_table = NULL) {
   qc_rows <- vector("list", length(protein_cols))
   out <- data
+  censor_flag_cols <- paste0("CENSOR_IMPUTED__", protein_cols)
+  detected_flag_cols <- paste0("CENSOR_DETECTED__", protein_cols)
+  if (any(c(censor_flag_cols, detected_flag_cols) %in% names(out))) {
+    stop("HPIV3 protein columns conflict with generated censoring indicator names.")
+  }
   llod_map <- if (!is.null(llod_table) &&
                   all(c("Analyte", "LLOD") %in% names(llod_table))) {
     stats::setNames(as.numeric(llod_table$LLOD), as.character(llod_table$Analyte))
@@ -237,12 +242,15 @@ coerce_hpiv3_protein_values <- function(data, protein_cols,
     }
     if (is.finite(left_limit)) numeric_vals[left_censored] <- left_limit / sqrt(2)
     if (is.finite(right_limit)) numeric_vals[right_censored] <- right_limit * sqrt(2)
+    censored_imputed <- censored & is.finite(numeric_vals)
     censoring_methods <- c(
       if (any(left_censored)) left_method,
       if (any(right_censored)) right_method
     )
 
     out[[col]] <- numeric_vals
+    out[[censor_flag_cols[[i]]]] <- censored_imputed
+    out[[detected_flag_cols[[i]]]] <- censored
     qc_rows[[i]] <- tibble::tibble(
       PROTEIN = col,
       n_rows = length(raw_chr),
@@ -250,6 +258,18 @@ coerce_hpiv3_protein_values <- function(data, protein_cols,
       n_right_censored = sum(right_censored, na.rm = TRUE),
       n_left_imputed = sum(left_censored & is.finite(left_limit), na.rm = TRUE),
       n_right_imputed = sum(right_censored & is.finite(right_limit), na.rm = TRUE),
+      n_censored = sum(censored, na.rm = TRUE),
+      n_censored_imputed = sum(censored_imputed, na.rm = TRUE),
+      censoring_fraction = if (length(raw_chr) > 0L) {
+        sum(censored, na.rm = TRUE) / length(raw_chr)
+      } else {
+        NA_real_
+      },
+      imputed_fraction = if (length(raw_chr) > 0L) {
+        sum(censored_imputed, na.rm = TRUE) / length(raw_chr)
+      } else {
+        NA_real_
+      },
       n_censored_unimputed = sum(censored & is.na(numeric_vals), na.rm = TRUE),
       censoring_method = if (length(censoring_methods) > 0L) {
         paste(censoring_methods, collapse = "; ")
@@ -632,7 +652,9 @@ build_hpiv3_analysis_data <- function(
     dplyr::select(
       SAMPLENAME, SAMPLEID, TIMEPOINT, PLATE, AIRWAY, CELLTYPE, INFECTION,
       PATIENTCODE, EXPOSURE, HORMONE, AGE, SEX, RACE, SMOKER,
-      dplyr::all_of(protein_cols)
+      dplyr::all_of(protein_cols),
+      dplyr::all_of(paste0("CENSOR_IMPUTED__", protein_cols)),
+      dplyr::all_of(paste0("CENSOR_DETECTED__", protein_cols))
     )
 
   list(
