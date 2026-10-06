@@ -189,35 +189,77 @@ normalize_hpiv3_hormone <- function(x) {
   factor(x_chr, levels = c("NONE", "E2"))
 }
 
-coerce_hpiv3_protein_values <- function(data, protein_cols) {
-  token_pattern <- "(?i)^\\s*(<\\s*llod|>\\s*ulod)\\s*$"
+coerce_hpiv3_protein_values <- function(data, protein_cols,
+                                        llod_table = NULL, ulod_table = NULL) {
   qc_rows <- vector("list", length(protein_cols))
   out <- data
+  llod_map <- if (!is.null(llod_table) &&
+                  all(c("Analyte", "LLOD") %in% names(llod_table))) {
+    stats::setNames(as.numeric(llod_table$LLOD), as.character(llod_table$Analyte))
+  } else {
+    numeric()
+  }
+  ulod_map <- if (!is.null(ulod_table) &&
+                  all(c("PROTEIN", "ULOD") %in% names(ulod_table))) {
+    stats::setNames(as.numeric(ulod_table$ULOD), as.character(ulod_table$PROTEIN))
+  } else {
+    numeric()
+  }
 
   for (i in seq_along(protein_cols)) {
     col <- protein_cols[[i]]
     raw_chr <- as.character(out[[col]])
     trimmed <- trimws(raw_chr)
     blank_or_na <- is.na(raw_chr) | trimmed == ""
-    censored <- grepl(token_pattern, raw_chr, perl = TRUE)
+    left_censored <- grepl("(?i)^\\s*<\\s*llod\\s*$", raw_chr, perl = TRUE)
+    right_censored <- grepl("(?i)^\\s*>\\s*ulod\\s*$", raw_chr, perl = TRUE)
+    censored <- left_censored | right_censored
 
     cleaned_chr <- raw_chr
     cleaned_chr[blank_or_na | censored] <- NA_character_
 
     numeric_vals <- suppressWarnings(as.numeric(cleaned_chr))
     other_non_numeric <- !is.na(cleaned_chr) & is.na(numeric_vals)
+    quantified <- numeric_vals[is.finite(numeric_vals) & numeric_vals > 0]
+    left_limit <- if (col %in% names(llod_map)) unname(llod_map[col]) else NA_real_
+    if (length(left_limit) == 0L || !is.finite(left_limit) || left_limit <= 0) {
+      left_limit <- if (length(quantified) > 0L) min(quantified) else NA_real_
+      left_method <- "minimum quantified value proxy"
+    } else {
+      left_method <- "analyte LLOD reference"
+    }
+    right_limit <- if (col %in% names(ulod_map)) unname(ulod_map[col]) else NA_real_
+    if (length(right_limit) == 0L || !is.finite(right_limit) || right_limit <= 0) {
+      right_limit <- if (length(quantified) > 0L) max(quantified) else NA_real_
+      right_method <- "maximum quantified value proxy"
+    } else {
+      right_method <- "analyte ULOD reference"
+    }
+    if (is.finite(left_limit)) numeric_vals[left_censored] <- left_limit / sqrt(2)
+    if (is.finite(right_limit)) numeric_vals[right_censored] <- right_limit * sqrt(2)
 
     out[[col]] <- numeric_vals
     qc_rows[[i]] <- tibble::tibble(
       PROTEIN = col,
       n_rows = length(raw_chr),
-      n_censored_to_na = sum(censored, na.rm = TRUE),
+      n_left_censored = sum(left_censored, na.rm = TRUE),
+      n_right_censored = sum(right_censored, na.rm = TRUE),
+      n_left_imputed = sum(left_censored & is.finite(left_limit), na.rm = TRUE),
+      n_right_imputed = sum(right_censored & is.finite(right_limit), na.rm = TRUE),
+      n_censored_unimputed = sum(censored & is.na(numeric_vals), na.rm = TRUE),
+      censoring_method = paste(
+        if (any(left_censored)) left_method else NA_character_,
+        if (any(right_censored)) right_method else NA_character_,
+        sep = "; "
+      ),
+      n_censored_to_na = sum(censored & is.na(numeric_vals), na.rm = TRUE),
       n_other_non_numeric_to_na = sum(other_non_numeric, na.rm = TRUE),
       n_missing_after_conversion = sum(is.na(numeric_vals))
     )
   }
 
   qc <- dplyr::bind_rows(qc_rows)
+  qc$censoring_method <- gsub("^NA; |; NA$", "", qc$censoring_method)
   bad_numeric <- qc %>% dplyr::filter(n_other_non_numeric_to_na > 0)
   if (nrow(bad_numeric) > 0) {
     warning(
@@ -516,7 +558,11 @@ build_hpiv3_analysis_data <- function(
     stop("HPIV3 protein data did not contain any protein concentration columns.")
   }
 
-  numeric_conversion <- coerce_hpiv3_protein_values(protein_data, protein_cols)
+  numeric_conversion <- coerce_hpiv3_protein_values(
+    protein_data,
+    protein_cols,
+    llod_table = if (exists("cytokine_llod", inherits = TRUE)) cytokine_llod else NULL
+  )
   protein_data <- numeric_conversion$data
 
   protein_data <- protein_data %>%
