@@ -69,16 +69,16 @@ This report expects two CSV inputs in `data/raw`:
 QC and modeling rules:
 
 - `SAMPLENAME` is split at the final underscore into `SAMPLEID` and `TIMEPOINT`.
-- Text values matching `<LLOD` or `>ULOD` (case/whitespace-insensitive) are treated as missing before numeric conversion.
+- Censored `<LLOD` measurements are substituted with LLOD/√2 when an analyte LLOD is available, otherwise with the minimum positive quantified value/√2. `>ULOD` measurements use ULOD×√2 when an analyte ULOD is available, otherwise the maximum positive quantified value×√2. Values with no usable bound or quantified value remain missing. Substitution counts and methods are saved in `hpiv3_censoring_qc.csv`; this is a documented single-value imputation, not a censored-likelihood model.
 - Other non-numeric protein values are also converted to missing and reported.
 - Infection labels are normalized so `NO` and `NONE` become `NONE`; `HPIV3` is retained; unexpected labels stop the run.
 - Hormone levels are kept as `NONE` and `E2`. The `HPIV3_HORMONE_MODE` option (`"both"`, `"E2_only"`, or `"exclude_E2"`) subsets the data immediately after loading, before missingness QC, model fitting, and any plotting. Non-default modes write to `output/hpiv3/hormone_<mode>/` so they never overwrite the default outputs. Hormone (E2 vs NONE) models require both levels and are skipped otherwise.
-- Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum.
+- Missingness QC is calculated after censor-limit substitution; censored values successfully substituted remain observed, while ordinary missing or non-numeric values remain missing. Proteins are excluded if missingness exceeds the configured threshold in any `AIRWAY × HORMONE × TIMEPOINT` stratum.
 - Infection effects are modeled only in the PBS (`PBS_Control`) exposure group, not for Peat or Pine, on `log2(pg/mL + pseudocount)` as `HPIV3` versus `NONE` within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × SEX` strata, using a `PATIENTCODE` random intercept where supported and a recorded fallback otherwise.
 - Hormone effects are modeled as `E2` versus `NONE` within `AIRWAY × TIMEPOINT × EXPOSURE × INFECTION × SEX` strata, using the same random-intercept fallback.
 - Sex effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × INFECTION` strata.
-- Sex, hormone, and exposure models are fitted separately within each `AIRWAY × INFECTION` subset (`fit_hpiv3_by_airway_infection()`), so `NONE` and `HPIV3` samples are never pooled in those comparisons. Only the infection model (HPIV3 vs NONE) uses both infection states by design.
-- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata, including pooled `SEX = "All"` results; only Peat-vs-PBS and Pine-vs-PBS contrasts are tested. Every exposure contrast is referenced to the PBS group of the same airway, hormone, timepoint, sex, and infection state (e.g. Male HPIV3 Peat vs Male HPIV3 PBS); Within each stratum the models are donor-paired by `PATIENTCODE` (only donors with a PBS baseline are used): a `PATIENTCODE` random-intercept model (`lmer`) is used when non-singular, otherwise a donor-fixed paired model (`lm(log2_value ~ EXPOSURE + PATIENTCODE)`); a plain unpaired `lm` is used only when donor pairing is impossible. `model_type` and `paired_with_patientcode` record the choice. An explicit audit step verifies the PBS baseline and donor pairing.
+- Sex, hormone, and exposure effects are estimated within infection strata; separate stratum-specific p-values are not tests of effect modification. A separate exposure-by-infection interaction model tests whether Peat/Pine-versus-PBS effects differ between `HPIV3` and `NONE`, and supplies the inferential basis for differential-response claims.
+- The exposure models re-check group counts after restricting to donors with a PBS baseline in the same infection stratum. Across infection, sex, hormone, exposure, and interaction models, mixed models use Kenward–Roger degrees of freedom (`pbkrtest`); results include the df method and contrast df. With at least two donors, any observed cross-level donor pairing triggers a mixed model and, if needed, a donor-fixed paired linear fallback; if the paired fallback fails, no unpaired model is substituted. A single donor with cross-level measurements is marked failed rather than analyzed as unpaired. Unpaired linear models are used only when cross-level donor pairing is unavailable. Model status, failure reason, and pairing fields are recorded.
 
 # Load and prepare HPIV3 data
 
@@ -92,10 +92,17 @@ hpiv3_data <- hpiv3_bundle$data
 hpiv3_data <- filter_hpiv3_hormone_mode(hpiv3_data, HPIV3_HORMONE_MODE)
 hpiv3_proteins <- hpiv3_bundle$protein_cols
 hpiv3_qc <- hpiv3_bundle$qc
+save_table(
+  hpiv3_qc$numeric_conversion,
+  file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_censoring_qc.csv")
+)
 
 cat("✓ HPIV3 inputs loaded\n")
 cat("  Rows           :", nrow(hpiv3_data), "\n")
 cat("  Protein columns:", length(hpiv3_proteins), "\n")
+cat("  Censored values imputed:",
+    sum(hpiv3_qc$numeric_conversion$n_left_imputed, na.rm = TRUE) +
+      sum(hpiv3_qc$numeric_conversion$n_right_imputed, na.rm = TRUE), "\n")
 cat("  Airway levels  :", paste(levels(hpiv3_data$AIRWAY), collapse = " | "), "\n")
 cat("  Hormone levels :", paste(unique(as.character(hpiv3_data$HORMONE)), collapse = " | "),
     " (mode:", HPIV3_HORMONE_MODE, ")\n")
@@ -151,10 +158,12 @@ cat("  Significant q<", ALPHA_Q, ":", sum(hpiv3_model_results$significant, na.rm
 # HPIV3 sex, exposure and hormone models within airway × infection subsets
 
 Sex, exposure, and hormone models are fitted separately within each observed
-`AIRWAY × INFECTION` subset. The infection model above is the only one that
-uses both infection states together. Within a subset, exposure contrasts are
-Peat/Pine versus the PBS group of that same subset (same infection state), and
-the audit below confirms this against the input data.
+`AIRWAY × INFECTION` subset. The infection main-effect model above compares
+both infection states only within PBS; separately, the formal exposure-by-infection
+interaction model below jointly tests whether same-infection PBS-referenced
+exposure effects differ. Within each infection subset, exposure contrasts are
+Peat/Pine versus the PBS group of that same subset, and the audit below confirms
+this against the input data.
 
 ```{r hpiv3-noninfection-models}
 hpiv3_sex_results <- fit_hpiv3_by_airway_infection(
@@ -177,6 +186,20 @@ hpiv3_exposure_results <- fit_hpiv3_by_airway_infection(
 )
 save_table(hpiv3_exposure_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_model_results.csv"))
 
+hpiv3_exposure_infection_interaction_results <-
+  fit_hpiv3_exposure_infection_interactions(
+    hpiv3_data,
+    hpiv3_proteins,
+    protein_status = hpiv3_protein_status,
+    pseudocount = HPIV3_PSEUDOCOUNT,
+    alpha_q = ALPHA_Q,
+    pbs_level = PBS_LEVEL
+  )
+save_table(
+  hpiv3_exposure_infection_interaction_results,
+  file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_exposure_infection_interaction_results.csv")
+)
+
 if (dplyr::n_distinct(as.character(hpiv3_data$HORMONE)) < 2L) {
   cat("Hormone (E2 vs NONE) models skipped: hormone mode '", HPIV3_HORMONE_MODE,
       "' leaves a single hormone stratum.\n", sep = "")
@@ -196,6 +219,10 @@ save_table(hpiv3_hormone_results, file.path(HPIV3_OUTPUT_SUBDIR, "hpiv3_hormone_
 cat("✓ Non-infection modeling complete\n")
 cat("  Sex modeled rows     :", sum(!is.na(hpiv3_sex_results$p.value)), "\n")
 cat("  Exposure modeled rows:", sum(!is.na(hpiv3_exposure_results$p.value)), "\n")
+cat("  Exposure-by-infection interaction rows:",
+    sum(!is.na(hpiv3_exposure_infection_interaction_results$p.value)), "\n")
+cat("  Significant interaction rows:",
+    sum(hpiv3_exposure_infection_interaction_results$significant, na.rm = TRUE), "\n")
 cat("  Hormone modeled rows :",
     if (nrow(hpiv3_hormone_results) > 0L) sum(!is.na(hpiv3_hormone_results$p.value)) else 0L, "\n")
 ```
@@ -526,17 +553,17 @@ hpiv3_grid_count <- save_hpiv3_volcano_grids(
 cat("8-panel volcano grids written:", hpiv3_grid_count, "\n")
 ```
 
-# Infection-stratified exposure overlaps
+# Descriptive infection-stratified exposure overlaps
 
-Each Euler plot compares significant PBS-referenced exposure responses between
-uninfected (`NONE`) and HPIV3-infected samples within one airway, hormone,
-timepoint, and sex stratum. Shared proteins suggest a response present in both
-baseline and infected settings; proteins unique to HPIV3 may reflect
-infection-specific priming, while proteins unique to `NONE` may represent
-baseline-only responses. Membership CSVs list the proteins and their infection
-set membership for auditability. Sets are skipped when either infection group
-has fewer than `HPIV3_EULER_MIN_SIG` (default 2) significant modeled proteins or lacks modeled results.
-Skipped strata and reasons are listed after the loop and saved to
+Each Euler plot shows the overlap between proteins significant in separate
+same-infection PBS-referenced exposure models. The plot and membership CSVs are
+descriptive only: unique membership does not establish a difference between
+infection states. Differential exposure responses are tested by the formal
+exposure-by-infection contrasts in
+`hpiv3_exposure_infection_interaction_results.csv`; the membership CSVs also
+include the matching interaction estimate and adjusted p-value. Sets are skipped
+when either infection group has fewer than `HPIV3_EULER_MIN_SIG` (default 2)
+significant modeled proteins or lacks modeled results. Skipped strata and reasons are listed after the loop and saved to
 `output/hpiv3/euler/hpiv3_euler_skipped_strata.csv`.
 Euler membership is based on significance regardless of direction; the CSV
 also records each group's estimated direction and adjusted p-value.
@@ -641,6 +668,24 @@ for (euler_index in seq_len(nrow(hpiv3_euler_strata))) {
      modeled_euler_results %>%
        dplyr::select(PROTEIN, INFECTION, contrast, estimate, q.value),
      by = c("PROTEIN", "sig_group" = "INFECTION")
+   ) %>%
+   dplyr::left_join(
+     hpiv3_exposure_infection_interaction_results %>%
+       dplyr::filter(
+         AIRWAY == euler_key$AIRWAY[[1]],
+         HORMONE == euler_key$HORMONE[[1]],
+         TIMEPOINT == euler_key$TIMEPOINT[[1]],
+         SEX == euler_key$SEX[[1]],
+         target_exposure == euler_key$target_exposure[[1]]
+       ) %>%
+       dplyr::select(
+         PROTEIN,
+         interaction_estimate = estimate,
+         interaction_p.value = p.value,
+         interaction_q.value = q.value,
+         interaction_significant = significant
+       ),
+     by = "PROTEIN"
    ) %>%
    dplyr::mutate(
      AIRWAY = euler_key$AIRWAY[[1]],
@@ -903,10 +948,12 @@ for (stratum_index in seq_len(nrow(heatmap_strata))) {
 cat("Outputs written under:", file.path(PATH_OUTPUT, HPIV3_OUTPUT_SUBDIR), "\n")
 cat("Generated files include:\n")
 cat("  - hpiv3_missingness_qc.csv\n")
+cat("  - hpiv3_censoring_qc.csv\n")
 cat("  - hpiv3_protein_status.csv\n")
 cat("  - hpiv3_all_protein_model_results.csv\n")
 cat("  - hpiv3_sex_model_results.csv\n")
 cat("  - hpiv3_exposure_model_results.csv\n")
+cat("  - hpiv3_exposure_infection_interaction_results.csv\n")
 cat("  - hpiv3_hormone_model_results.csv\n")
 cat("  - hpiv3_exposure_baseline_audit.csv\n")
 cat("  - hpiv3_ranked_exposure_model_results.csv\n")

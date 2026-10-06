@@ -237,6 +237,10 @@ coerce_hpiv3_protein_values <- function(data, protein_cols,
     }
     if (is.finite(left_limit)) numeric_vals[left_censored] <- left_limit / sqrt(2)
     if (is.finite(right_limit)) numeric_vals[right_censored] <- right_limit * sqrt(2)
+    censoring_methods <- c(
+      if (any(left_censored)) left_method,
+      if (any(right_censored)) right_method
+    )
 
     out[[col]] <- numeric_vals
     qc_rows[[i]] <- tibble::tibble(
@@ -247,11 +251,11 @@ coerce_hpiv3_protein_values <- function(data, protein_cols,
       n_left_imputed = sum(left_censored & is.finite(left_limit), na.rm = TRUE),
       n_right_imputed = sum(right_censored & is.finite(right_limit), na.rm = TRUE),
       n_censored_unimputed = sum(censored & is.na(numeric_vals), na.rm = TRUE),
-      censoring_method = paste(
-        if (any(left_censored)) left_method else NA_character_,
-        if (any(right_censored)) right_method else NA_character_,
-        sep = "; "
-      ),
+      censoring_method = if (length(censoring_methods) > 0L) {
+        paste(censoring_methods, collapse = "; ")
+      } else {
+        NA_character_
+      },
       n_censored_to_na = sum(censored & is.na(numeric_vals), na.rm = TRUE),
       n_other_non_numeric_to_na = sum(other_non_numeric, na.rm = TRUE),
       n_missing_after_conversion = sum(is.na(numeric_vals))
@@ -259,7 +263,6 @@ coerce_hpiv3_protein_values <- function(data, protein_cols,
   }
 
   qc <- dplyr::bind_rows(qc_rows)
-  qc$censoring_method <- gsub("^NA; |; NA$", "", qc$censoring_method)
   bad_numeric <- qc %>% dplyr::filter(n_other_non_numeric_to_na > 0)
   if (nrow(bad_numeric) > 0) {
     warning(

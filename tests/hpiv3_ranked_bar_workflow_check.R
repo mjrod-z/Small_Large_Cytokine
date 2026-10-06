@@ -10,6 +10,7 @@ root <- candidate_roots[vapply(
 stopifnot(!is.na(root))
 
 analysis_path <- file.path(root, "functions_analysis.R")
+data_path <- file.path(root, "functions_data.R")
 plots_path <- file.path(root, "functions_plots.R")
 report_path <- file.path(root, "02_hpiv3_analysis.Rmd")
 rnaseq_report_path <- file.path(root, "03_rnaseq_hpiv3_analysis.Rmd")
@@ -20,7 +21,9 @@ report_text <- paste(readLines(report_path, warn = FALSE), collapse = "\n")
 rnaseq_report_text <- paste(readLines(rnaseq_report_path, warn = FALSE), collapse = "\n")
 loader_text <- paste(readLines(loader_path, warn = FALSE), collapse = "\n")
 
-for (path in c(analysis_path, plots_path, loader_path)) parse(file = path)
+data_text <- paste(readLines(data_path, warn = FALSE), collapse = "\n")
+
+for (path in c(analysis_path, data_path, plots_path, loader_path)) parse(file = path)
 rmd_lines <- readLines(report_path, warn = FALSE)
 ranked_chunk_starts <- which(startsWith(rmd_lines, "```{r hpiv3-ranked-"))
 stopifnot(length(ranked_chunk_starts) == 4L)
@@ -45,6 +48,12 @@ euler_chunk_end <- if (is.na(euler_chunk_start)) {
 }
 stopifnot(!is.na(euler_chunk_start), !is.na(euler_chunk_end))
 parse(text = rmd_lines[(euler_chunk_start + 1L):(euler_chunk_end - 1L)])
+model_chunk_start <- match("```{r hpiv3-noninfection-models}", rmd_lines)
+model_chunk_end <- which(
+  seq_along(rmd_lines) > model_chunk_start & rmd_lines == "```"
+)[1]
+stopifnot(!is.na(model_chunk_end))
+parse(text = rmd_lines[(model_chunk_start + 1L):(model_chunk_end - 1L)])
 
 exposure_function_start <- regexpr(
   "fit_hpiv3_exposure_models <- function",
@@ -75,8 +84,8 @@ stopifnot(
   "Hormone models must emit pooled and sex-specific groups" =
     grepl('sex_groups <- c\\("All", intersect\\(c\\("F", "M"\\)', analysis_text),
   "Hormone models must retain mixed and fallback linear model paths" =
-    grepl("lme4::lmer\\(log2_value ~ HORMONE", analysis_text) &&
-      grepl("stats::lm\\(log2_value ~ HORMONE", analysis_text),
+    grepl('dat, log2_value ~ HORMONE, pairing_factor = "HORMONE"', analysis_text, fixed = TRUE) &&
+      grepl("fit_hpiv3_paired_model <- function", analysis_text, fixed = TRUE),
   "Exposure models must create pooled All-sex input rows" =
     grepl('mutate\\(SEX = "All"\\)', analysis_text),
   "Exposure contrasts must compare treatments with PBS only" =
@@ -88,13 +97,35 @@ stopifnot(
       "distinct\\(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION\\)",
       exposure_function_text
     ),
-  "Exposure models must be donor-paired by PATIENTCODE with an explicit paired fallback" =
-    grepl("lme4::lmer(log2_value ~ EXPOSURE + (1 | PATIENTCODE)", exposure_function_text, fixed = TRUE) &&
-      grepl("stats::lm(log2_value ~ EXPOSURE + PATIENTCODE", exposure_function_text, fixed = TRUE) &&
+  "All HPIV3 models must share paired-first model selection and avoid unpaired fallback when pairing is available" =
+    grepl("fit_hpiv3_paired_model <- function", analysis_text, fixed = TRUE) &&
+      grepl("lme4::lmer(random_formula", analysis_text, fixed = TRUE) &&
+      grepl("stats::lm(paired_formula", analysis_text, fixed = TRUE) &&
+      grepl("paired model failed; unpaired fallback not used", analysis_text, fixed = TRUE) &&
       grepl("paired_with_patientcode", exposure_function_text, fixed = TRUE) &&
-      grepl('"lm_donor_fixed"', exposure_function_text, fixed = TRUE) &&
-      grepl('"lm_unpaired"', exposure_function_text, fixed = TRUE) &&
+      grepl('"lm_donor_fixed"', analysis_text, fixed = TRUE) &&
+      grepl('"lm_unpaired"', analysis_text, fixed = TRUE) &&
       grepl("n_paired_donors", exposure_function_text, fixed = TRUE),
+  "Exposure models must re-check per-level minimum counts after same-infection PBS donor filtering" =
+    grepl("paired_exposure_counts <- table(dat_fit$EXPOSURE)", exposure_function_text, fixed = TRUE) &&
+      grepl("after PBS-donor filtering", exposure_function_text, fixed = TRUE),
+  "Mixed-model contrasts must use explicit Kenward-Roger df and report contrast df" =
+    grepl('HPIV3_LMER_DF_METHOD <- "kenward-roger"', analysis_text, fixed = TRUE) &&
+      grepl("arguments$lmer.df <- HPIV3_LMER_DF_METHOD", analysis_text, fixed = TRUE) &&
+      grepl("df_method = NA_character_", analysis_text, fixed = TRUE) &&
+      grepl("stats_row$df", analysis_text, fixed = TRUE) &&
+      grepl('"pbkrtest"', loader_text, fixed = TRUE),
+  "A formal exposure-by-infection model and result export must support differential-response claims" =
+    grepl("fit_hpiv3_exposure_infection_interactions <- function", analysis_text, fixed = TRUE) &&
+      grepl('interaction = c("trt.vs.ctrl", "revpairwise")', analysis_text, fixed = TRUE) &&
+      grepl("hpiv3_exposure_infection_interaction_results.csv", report_text, fixed = TRUE) &&
+      grepl("interaction_q.value", report_text, fixed = TRUE),
+  "Censored HPIV3 measurements must be substituted and auditable rather than all converted to missing" =
+    grepl("n_left_imputed", data_text, fixed = TRUE) &&
+      grepl("left_limit / sqrt(2)", data_text, fixed = TRUE) &&
+      grepl("right_limit * sqrt(2)", data_text, fixed = TRUE) &&
+      grepl("hpiv3_censoring_qc.csv", report_text, fixed = TRUE) &&
+      grepl("unique membership does not establish a difference", report_text, fixed = TRUE),
   "Exposure baseline audit must report donor pairing and reject unpaired fits when pairing is possible" =
     grepl("n_donors_with_pbs", analysis_text, fixed = TRUE) &&
       grepl("n_exposure_obs_paired", analysis_text, fixed = TRUE) &&
@@ -192,6 +223,212 @@ stopifnot(
       grepl("plot_volcano_deg(", rnaseq_report_text, fixed = TRUE) &&
       grepl('RNA_FAMILIES <- c("EXPOSURE", "HORMONE", "INFECTION"', rnaseq_report_text, fixed = TRUE)
 )
+
+# Optional runtime regression checks for censor substitution, post-baseline
+# count checks, pairing fallback, and the exposure-by-infection contrast.
+runtime_pkgs <- c("dplyr", "tibble", "lme4", "emmeans", "pbkrtest")
+if (all(vapply(runtime_pkgs, requireNamespace, logical(1), quietly = TRUE))) {
+  suppressPackageStartupMessages(library(dplyr))
+  data_env <- new.env(parent = globalenv())
+  sys.source(data_path, envir = data_env)
+  converted <- data_env$coerce_hpiv3_protein_values(
+    data.frame(
+      LLOD_REF = c("<LLOD", "2"),
+      LLOD_PROXY = c("<LLOD", "4"),
+      ULOD_PROXY = c(">ULOD", "8"),
+      NO_BOUND = c("<LLOD", NA),
+      stringsAsFactors = FALSE
+    ),
+    c("LLOD_REF", "LLOD_PROXY", "ULOD_PROXY", "NO_BOUND"),
+    llod_table = data.frame(Analyte = "LLOD_REF", LLOD = 1),
+    ulod_table = NULL
+  )
+  stopifnot(
+    "Reference LLOD must be imputed at LLOD/sqrt(2)" =
+      isTRUE(all.equal(converted$data$LLOD_REF[[1]], 1 / sqrt(2))),
+    "Missing LLOD must use the minimum quantified value proxy" =
+      isTRUE(all.equal(converted$data$LLOD_PROXY[[1]], 4 / sqrt(2))),
+    "Missing ULOD must use the maximum quantified value proxy" =
+      isTRUE(all.equal(converted$data$ULOD_PROXY[[1]], 8 * sqrt(2))),
+    "Censored values without any usable bound must remain missing" =
+      is.na(converted$data$NO_BOUND[[1]]) &&
+        converted$qc$n_censored_unimputed[[4]] == 1L
+  )
+
+  model_env <- new.env(parent = globalenv())
+  model_exprs <- parse(file = analysis_path)
+  needed_models <- c(
+    "HPIV3_LMER_DF_METHOD", "analysis_emmeans", "fit_hpiv3_paired_model",
+    "fit_hpiv3_infection_models", "fit_hpiv3_sex_models",
+    "fit_hpiv3_hormone_models", "fit_hpiv3_exposure_models",
+    "fit_hpiv3_exposure_infection_interactions"
+  )
+  for (expr in model_exprs) {
+    if (
+      is.call(expr) && identical(expr[[1]], as.name("<-")) &&
+        is.symbol(expr[[2]]) && as.character(expr[[2]]) %in% needed_models
+    ) {
+      eval(expr, envir = model_env)
+    }
+  }
+  interaction_fixture <- expand.grid(
+    PATIENTCODE = paste0("D", seq_len(8)),
+    EXPOSURE = c("PBS_Control", "Peat_25"),
+    INFECTION = c("NONE", "HPIV3"),
+    AIRWAY = "LAE", HORMONE = "NONE", TIMEPOINT = "24", SEX = "M",
+    stringsAsFactors = FALSE
+  ) %>%
+    dplyr::mutate(
+      donor_effect = as.numeric(factor(PATIENTCODE)) / 20,
+      log2_value = 5 + donor_effect +
+        0.5 * (EXPOSURE == "Peat_25") +
+        0.7 * (INFECTION == "HPIV3") +
+        0.9 * (EXPOSURE == "Peat_25" & INFECTION == "HPIV3") +
+        0.02 * (as.numeric(interaction(PATIENTCODE, EXPOSURE, INFECTION)) %% 3 - 1),
+      PROTEIN = 2^log2_value
+    ) %>%
+    dplyr::bind_rows(
+      data.frame(
+        PATIENTCODE = "D9", EXPOSURE = "Peat_25", INFECTION = "HPIV3",
+        AIRWAY = "LAE", HORMONE = "NONE", TIMEPOINT = "24", SEX = "M",
+        PROTEIN = 2^7, stringsAsFactors = FALSE
+      )
+    )
+  interaction_results <- model_env$fit_hpiv3_exposure_infection_interactions(
+    interaction_fixture, "PROTEIN",
+    protein_status = data.frame(
+      PROTEIN = "PROTEIN", included = TRUE, exclusion_reason = NA_character_
+    ),
+    pseudocount = 0.01, alpha_q = 0.05, min_nonmissing_per_group = 2L,
+    pbs_level = "PBS_Control"
+  )
+  modeled_interaction <- interaction_results %>%
+    dplyr::filter(SEX == "M", model_status %in% c("modeled", "modeled_paired_fallback"))
+  stopifnot(
+    "Interaction model must yield a positive differential exposure response" =
+      nrow(modeled_interaction) == 1L && modeled_interaction$estimate[[1]] > 0.5,
+    "Mixed-model interaction output must report Kenward-Roger df" =
+      modeled_interaction$df_method[[1]] == "kenward-roger" &&
+        is.finite(modeled_interaction$df[[1]]),
+    "Interaction fit must exclude exposure observations lacking same-infection PBS" =
+      modeled_interaction$n_samples[[1]] == 32L
+  )
+  protein_status <- data.frame(
+    PROTEIN = "PROTEIN", included = TRUE, exclusion_reason = NA_character_
+  )
+  infection_results <- model_env$fit_hpiv3_infection_models(
+    interaction_fixture %>% dplyr::filter(EXPOSURE == "PBS_Control"),
+    "PROTEIN", protein_status = protein_status,
+    pseudocount = 0.01, alpha_q = 0.05
+  )
+  exposure_results <- model_env$fit_hpiv3_exposure_models(
+    interaction_fixture, "PROTEIN", protein_status = protein_status,
+    pseudocount = 0.01, alpha_q = 0.05
+  )
+  hormone_fixture <- expand.grid(
+    PATIENTCODE = paste0("D", seq_len(8)),
+    HORMONE = c("NONE", "E2"), AIRWAY = "LAE", TIMEPOINT = "24",
+    EXPOSURE = "PBS_Control", INFECTION = "NONE", SEX = "M",
+    stringsAsFactors = FALSE
+  ) %>%
+    dplyr::mutate(
+      donor = as.numeric(factor(PATIENTCODE)),
+      log2_value = 5 + donor / 20 + 0.4 * (HORMONE == "E2") +
+        0.02 * (donor %% 3 - 1) * ifelse(HORMONE == "E2", 1, -1),
+      PROTEIN = 2^log2_value
+    )
+  hormone_results <- model_env$fit_hpiv3_hormone_models(
+    hormone_fixture, "PROTEIN", protein_status = protein_status,
+    pseudocount = 0.01, alpha_q = 0.05
+  )
+  sex_fixture <- expand.grid(
+    PATIENTCODE = paste0("D", seq_len(8)),
+    SEX = c("F", "M"), AIRWAY = "LAE", HORMONE = "NONE",
+    TIMEPOINT = "24", EXPOSURE = "PBS_Control", INFECTION = "NONE",
+    stringsAsFactors = FALSE
+  ) %>%
+    dplyr::mutate(
+      donor = as.numeric(factor(PATIENTCODE)),
+      log2_value = 5 + donor / 20 + 0.3 * (SEX == "M") +
+        0.02 * (donor %% 3 - 1) * ifelse(SEX == "M", 1, -1),
+      PROTEIN = 2^log2_value
+    )
+  sex_results <- model_env$fit_hpiv3_sex_models(
+    sex_fixture, "PROTEIN", protein_status = protein_status,
+    pseudocount = 0.01, alpha_q = 0.05
+  )
+  for (model_output in list(
+    infection_results, exposure_results, hormone_results, sex_results
+  )) {
+    mixed_rows <- model_output %>% dplyr::filter(model_type == "lmer")
+    stopifnot(
+      "Every mixed-model contrast must use Kenward-Roger and report finite df" =
+        nrow(mixed_rows) > 0L &&
+          all(mixed_rows$df_method == "kenward-roger") &&
+          all(is.finite(mixed_rows$df))
+    )
+  }
+
+  thin_fixture <- data.frame(
+    PATIENTCODE = c("D1", "D2", "D3", "D1", "D4"),
+    EXPOSURE = c("PBS_Control", "PBS_Control", "PBS_Control", "Peat_25", "Peat_25"),
+    INFECTION = "NONE", AIRWAY = "LAE", HORMONE = "NONE", TIMEPOINT = "24",
+    SEX = "M", PROTEIN = c(1, 2, 3, 4, 5), stringsAsFactors = FALSE
+  )
+  thin_result <- model_env$fit_hpiv3_exposure_models(
+    thin_fixture, "PROTEIN",
+    protein_status = data.frame(
+      PROTEIN = "PROTEIN", included = TRUE, exclusion_reason = NA_character_
+    ),
+    pseudocount = 0.01, alpha_q = 0.05, min_nonmissing_per_group = 2L
+  )
+  stopifnot(
+    "Exposure counts must be re-checked after PBS-donor filtering" =
+      all(grepl("after PBS-donor filtering", thin_result$failure_reason))
+  )
+  unpaired_fixture <- expand.grid(
+    PATIENTCODE = paste0("D", seq_len(8)),
+    EXPOSURE = c("PBS_Control", "Peat_25"),
+    stringsAsFactors = FALSE
+  ) %>%
+    dplyr::filter(
+      (as.numeric(factor(PATIENTCODE)) <= 4 & EXPOSURE == "PBS_Control") |
+        (as.numeric(factor(PATIENTCODE)) > 4 & EXPOSURE == "Peat_25")
+    ) %>%
+    dplyr::mutate(log2_value = seq_len(dplyr::n()))
+  unpaired <- model_env$fit_hpiv3_paired_model(
+    unpaired_fixture,
+    log2_value ~ EXPOSURE, pairing_factor = "EXPOSURE"
+  )
+  single_paired <- model_env$fit_hpiv3_paired_model(
+    interaction_fixture %>% dplyr::filter(PATIENTCODE == "D1") %>%
+      dplyr::mutate(PAIR_LEVEL = interaction(EXPOSURE, INFECTION)),
+    log2_value ~ EXPOSURE, pairing_factor = "PAIR_LEVEL"
+  )
+  fallback_fixture <- interaction_fixture %>%
+    dplyr::filter(PATIENTCODE != "D9") %>%
+    dplyr::mutate(
+      log2_value = 5 + 0.5 * (EXPOSURE == "Peat_25") +
+        0.7 * (INFECTION == "HPIV3") +
+        0.9 * (EXPOSURE == "Peat_25" & INFECTION == "HPIV3") +
+        0.05 * (as.numeric(factor(PATIENTCODE)) %% 3 - 1) *
+          ifelse(as.numeric(factor(interaction(EXPOSURE, INFECTION))) %% 2 == 0, 1, -1),
+      PAIR_LEVEL = interaction(EXPOSURE, INFECTION)
+    )
+  paired_fallback <- model_env$fit_hpiv3_paired_model(
+    fallback_fixture, log2_value ~ EXPOSURE * INFECTION,
+    pairing_factor = "PAIR_LEVEL"
+  )
+  stopifnot(
+    "Unpaired lm is reserved for data with no cross-level donor pairing" =
+      unpaired$model_type == "lm_unpaired" && !unpaired$paired,
+    "One paired donor must not silently trigger an unpaired fallback" =
+      is.null(single_paired$fit) && single_paired$paired &&
+        single_paired$model_status == "failed",
+    "Singular mixed models must use the donor-fixed paired fallback" =
+      paired_fallback$model_type == "lm_donor_fixed" && paired_fallback$paired
+  )
+}
 
 # ---- Behavioural checks (need ggplot2/dplyr/tibble/ggrepel; skipped otherwise) ----
 behaviour_pkgs <- c("ggplot2", "dplyr", "tibble", "ggrepel")

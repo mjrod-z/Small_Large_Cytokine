@@ -761,7 +761,15 @@ fit_hpiv3_paired_model <- function(data, fixed_formula, pairing_factor) {
       .groups = "drop"
     )
   paired_donors <- sum(donor_group_counts$n_levels > 1L)
-  can_pair <- dplyr::n_distinct(data$PATIENTCODE) >= 2L && paired_donors >= 2L
+  n_donors <- dplyr::n_distinct(data$PATIENTCODE)
+  can_pair <- paired_donors > 0L
+  if (can_pair && n_donors < 2L) {
+    return(list(
+      fit = NULL, model_type = NA_character_, model_status = "failed",
+      paired = TRUE, paired_donors = paired_donors, singular_fit = NA,
+      failure_reason = "cross-level donor pairing exists but fewer than two donors are available"
+    ))
+  }
   model_data <- data
   lmer_error <- NA_character_
   lm_error <- NA_character_
@@ -930,7 +938,6 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
         n_none <- sum(dat$INFECTION == control_level)
         n_hpiv3 <- sum(dat$INFECTION == case_level)
         n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
-        repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
 
         result_row <- tibble::tibble(
           AIRWAY = as.character(airway_i),
@@ -1014,6 +1021,8 @@ fit_hpiv3_infection_models <- function(data, protein_cols,
           }
         )
         if (is.null(contrast)) {
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- "failed"
           result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
             "emmeans contrast failed"
           } else {
@@ -1124,7 +1133,6 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       sex_counts <- table(dat$SEX)
       n_obs <- nrow(dat)
       n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
-      repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
       counts_label <- if (length(sex_counts) == 0) {
         NA_character_
       } else {
@@ -1175,6 +1183,14 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       dat_fit <- dat %>%
         dplyr::filter(as.character(SEX) %in% valid_levels) %>%
         droplevels()
+      sex_counts <- table(dat_fit$SEX)
+      n_obs <- nrow(dat_fit)
+      n_donors <- dplyr::n_distinct(dat_fit$PATIENTCODE)
+      counts_label <- paste0(names(sex_counts), "=", as.integer(sex_counts), collapse = "; ")
+      result_row$n_samples <- n_obs
+      result_row$n_groups <- length(sex_counts)
+      result_row$group_counts <- counts_label
+      result_row$n_donors <- n_donors
 
       if (length(unique(as.character(dat_fit$SEX))) < 2) {
         result_row$failure_reason <- paste0(
@@ -1218,6 +1234,8 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
       )
 
       if (is.null(contrast)) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- "failed"
         result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
           "emmeans contrast failed"
         } else {
@@ -1233,6 +1251,8 @@ fit_hpiv3_sex_models <- function(data, protein_cols,
 
       stats_rows <- as.data.frame(summary(contrast))
       if (nrow(stats_rows) == 0) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- "failed"
         result_row$failure_reason <- "no pairwise sex contrasts available"
         result_row$paired_with_patientcode <- fit_info$paired
         result_row$n_paired_donors <- fit_info$paired_donors
@@ -1344,7 +1364,6 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
         n_none <- sum(dat$HORMONE == control_level)
         n_e2 <- sum(dat$HORMONE == case_level)
         n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
-        repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
 
         result_row <- tibble::tibble(
           AIRWAY = as.character(airway_i),
@@ -1430,6 +1449,8 @@ fit_hpiv3_hormone_models <- function(data, protein_cols,
           }
         )
         if (is.null(contrast)) {
+          result_row$model_type <- fit_info$model_type
+          result_row$model_status <- "failed"
           result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
             "emmeans contrast failed"
           } else {
@@ -1542,7 +1563,6 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       exposure_counts <- table(dat$EXPOSURE)
       n_obs <- nrow(dat)
       n_donors <- dplyr::n_distinct(dat$PATIENTCODE)
-      repeated_donor <- anyDuplicated(as.character(dat$PATIENTCODE)) > 0
       counts_label <- if (length(exposure_counts) == 0) {
         NA_character_
       } else {
@@ -1629,12 +1649,18 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       result_row$n_samples <- nrow(dat_fit)
       result_row$n_groups <- length(paired_exposure_counts)
       result_row$group_counts <- paired_counts_label
+      result_row$n_donors <- dplyr::n_distinct(dat_fit$PATIENTCODE)
       if (
         length(paired_exposure_counts) < 2L ||
         any(as.integer(paired_exposure_counts) < min_nonmissing_per_group)
       ) {
         result_row$n_pbs_donors <- length(pbs_donors)
-        result_row$n_paired_donors <- 0L
+        result_row$n_paired_donors <- length(intersect(
+          pbs_donors,
+          unique(as.character(dat_fit$PATIENTCODE[
+            as.character(dat_fit$EXPOSURE) != "PBS_Control"
+          ]))
+        ))
         result_row$n_exposure_obs_paired <- sum(
           as.character(dat_fit$EXPOSURE) != "PBS_Control"
         )
@@ -1698,6 +1724,8 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
       )
 
       if (is.null(contrast)) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- "failed"
         result_row$failure_reason <- if (is.na(contrast_error) || !nzchar(contrast_error)) {
           "emmeans contrast failed"
         } else {
@@ -1713,6 +1741,8 @@ fit_hpiv3_exposure_models <- function(data, protein_cols,
 
       stats_rows <- as.data.frame(summary(contrast))
       if (nrow(stats_rows) == 0) {
+        result_row$model_type <- fit_info$model_type
+        result_row$model_status <- "failed"
         result_row$failure_reason <- "no PBS-referenced exposure contrasts available"
         result_row$paired_with_patientcode <- fit_info$paired
         result_row$n_paired_donors <- fit_info$paired_donors
@@ -1776,6 +1806,19 @@ fit_hpiv3_exposure_infection_interactions <- function(
     !is.na(target_exposures) & target_exposures != pbs_level &
       grepl(target_pattern, target_exposures, ignore.case = TRUE)
   ]
+  if (length(target_exposures) == 0L || nrow(strata) == 0L) {
+    return(tibble::tibble(
+      AIRWAY = character(), HORMONE = character(), TIMEPOINT = character(),
+      SEX = character(), PROTEIN = character(), target_exposure = character(),
+      comparison = character(), contrast = character(), n_samples = integer(),
+      group_counts = character(), n_donors = integer(), n_paired_donors = integer(),
+      paired_with_patientcode = logical(), used_random_intercept = logical(),
+      model_type = character(), model_status = character(), failure_reason = character(),
+      estimate = numeric(), SE = numeric(), p.value = numeric(), df = numeric(),
+      df_method = character(), singular_fit = logical(), q.value = numeric(),
+      significant = logical()
+    ))
+  }
   if (is.null(protein_status)) {
     protein_status <- tibble::tibble(
       PROTEIN = protein_cols, included = TRUE, exclusion_reason = NA_character_
@@ -1818,15 +1861,12 @@ fit_hpiv3_exposure_infection_interactions <- function(
             INFECTION = factor(INFECTION, levels = c("NONE", "HPIV3"))
           )
         cell_counts <- table(dat$EXPOSURE, dat$INFECTION)
-        counts_label <- if (length(cell_counts) == 0L) {
+        count_table <- as.data.frame(as.table(cell_counts))
+        counts_label <- if (nrow(count_table) == 0L) {
           NA_character_
         } else {
-          paste(
-            apply(cell_counts, 1L, function(row) {
-              paste0(names(row), "=", as.integer(row))
-            }),
-            collapse = "; "
-          )
+          paste0(count_table$Var1, "/", count_table$Var2, "=", count_table$Freq,
+                 collapse = "; ")
         }
         result_row <- tibble::tibble(
           AIRWAY = as.character(stratum$AIRWAY[[1]]),
@@ -1893,8 +1933,9 @@ fit_hpiv3_exposure_infection_interactions <- function(
           emm <- analysis_emmeans(
             fit_info$fit, ~ EXPOSURE * INFECTION, weights = "equal"
           )
+          # Reverse the infection contrast so estimates are (HPIV3 response - NONE response).
           emmeans::contrast(
-            emm, interaction = c("trt.vs.ctrl", "pairwise"), adjust = "none"
+            emm, interaction = c("trt.vs.ctrl", "revpairwise"), adjust = "none"
           )
         }, error = function(e) {
           contrast_error <<- conditionMessage(e)
@@ -1916,6 +1957,9 @@ fit_hpiv3_exposure_infection_interactions <- function(
           result_row$failure_reason <- "interaction contrast was not uniquely estimable"
           result_row$model_type <- fit_info$model_type
           result_row$model_status <- "failed"
+          result_row$n_paired_donors <- fit_info$paired_donors
+          result_row$paired_with_patientcode <- fit_info$paired
+          result_row$singular_fit <- fit_info$singular_fit
           results[[idx]] <- result_row
           idx <- idx + 1L
           next
@@ -2252,7 +2296,11 @@ audit_hpiv3_exposure_baselines <- function(data, exposure_results, pbs_level = P
     dplyr::group_by(dplyr::across(dplyr::all_of(c(strata_cols, "contrast")))) %>%
     dplyr::summarise(
       model_types = paste(sort(unique(model_type)), collapse = ";"),
-      n_unpaired_models = sum(!as.logical(paired_with_patientcode), na.rm = TRUE),
+      n_pairable_models = sum(n_paired_donors > 0L, na.rm = TRUE),
+      n_unpaired_models = sum(
+        !as.logical(paired_with_patientcode) & n_paired_donors > 0L,
+        na.rm = TRUE
+      ),
       .groups = "drop"
     )
   audit <- exposure_results %>%
@@ -2265,8 +2313,7 @@ audit_hpiv3_exposure_baselines <- function(data, exposure_results, pbs_level = P
     dplyr::left_join(counts, by = strata_cols) %>%
     dplyr::left_join(model_info, by = c(strata_cols, "contrast")) %>%
     dplyr::mutate(
-      donor_pairing_possible = !is.na(n_donors_with_pbs) & n_donors_with_pbs > 0L &
-        !is.na(n_exposure_obs_paired) & n_exposure_obs_paired > 0L,
+      donor_pairing_possible = !is.na(n_pairable_models) & n_pairable_models > 0L,
       baseline_is_pbs = grepl(pbs_level, contrast, fixed = TRUE),
       baseline_infection = INFECTION,
       baseline_matches_infection = baseline_is_pbs &
