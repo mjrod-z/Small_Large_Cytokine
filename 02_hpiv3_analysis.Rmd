@@ -78,7 +78,7 @@ QC and modeling rules:
 - Hormone effects are modeled as `E2` versus `NONE` within `AIRWAY × TIMEPOINT × EXPOSURE × INFECTION × SEX` strata, using the same random-intercept fallback.
 - Sex effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × EXPOSURE × INFECTION` strata.
 - Sex, hormone, and exposure models are fitted separately within each `AIRWAY × INFECTION` subset (`fit_hpiv3_by_airway_infection()`), so `NONE` and `HPIV3` samples are never pooled in those comparisons. Only the infection model (HPIV3 vs NONE) uses both infection states by design.
-- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata, including pooled `SEX = "All"` results; only Peat-vs-PBS and Pine-vs-PBS contrasts are tested. Every exposure contrast is referenced to the PBS group of the same airway, hormone, timepoint, sex, and infection state (e.g. Male HPIV3 Peat vs Male HPIV3 PBS); an explicit audit step verifies this.
+- Exposure effects are modeled within `AIRWAY × HORMONE × TIMEPOINT × SEX × INFECTION` strata, including pooled `SEX = "All"` results; only Peat-vs-PBS and Pine-vs-PBS contrasts are tested. Every exposure contrast is referenced to the PBS group of the same airway, hormone, timepoint, sex, and infection state (e.g. Male HPIV3 Peat vs Male HPIV3 PBS); Within each stratum the models are donor-paired by `PATIENTCODE` (only donors with a PBS baseline are used): a `PATIENTCODE` random-intercept model (`lmer`) is used when non-singular, otherwise a donor-fixed paired model (`lm(log2_value ~ EXPOSURE + PATIENTCODE)`); a plain unpaired `lm` is used only when donor pairing is impossible. `model_type` and `paired_with_patientcode` record the choice. An explicit audit step verifies the PBS baseline and donor pairing.
 
 # Load and prepare HPIV3 data
 
@@ -207,7 +207,10 @@ infection state (and the same airway, hormone, timepoint, and sex). The audit
 checks that each modeled contrast's stratum has PBS samples in the input data
 with that identical infection state, and that no PBS baseline from another
 infection state could have been used. The audit stops the run on any failure
-and is saved to `hpiv3_exposure_baseline_audit.csv`.
+and also reports, per stratum, how many donors have PBS and how many exposure
+observations are paired to a donor PBS baseline, and stops if an unpaired model
+was used where donor pairing was possible. It is saved to
+`hpiv3_exposure_baseline_audit.csv`.
 
 ```{r hpiv3-exposure-baseline-audit}
 hpiv3_exposure_baseline_audit <- audit_hpiv3_exposure_baselines(
@@ -567,7 +570,7 @@ for (euler_index in seq_len(nrow(hpiv3_euler_strata))) {
  )
  modeled_euler_results <- euler_results %>%
    dplyr::filter(
-     model_status %in% c("modeled", "modeled_fallback"),
+     model_status %in% c("modeled", "modeled_paired_fallback", "modeled_fallback"),
      !is.na(p.value)
    )
  modeled_infections <- unique(as.character(modeled_euler_results$INFECTION))

@@ -88,6 +88,17 @@ stopifnot(
       "distinct\\(AIRWAY, HORMONE, TIMEPOINT, SEX, INFECTION\\)",
       exposure_function_text
     ),
+  "Exposure models must be donor-paired by PATIENTCODE with an explicit paired fallback" =
+    grepl("lme4::lmer(log2_value ~ EXPOSURE + (1 | PATIENTCODE)", exposure_function_text, fixed = TRUE) &&
+      grepl("stats::lm(log2_value ~ EXPOSURE + PATIENTCODE", exposure_function_text, fixed = TRUE) &&
+      grepl("paired_with_patientcode", exposure_function_text, fixed = TRUE) &&
+      grepl('"lm_donor_fixed"', exposure_function_text, fixed = TRUE) &&
+      grepl('"lm_unpaired"', exposure_function_text, fixed = TRUE) &&
+      grepl("n_paired_donors", exposure_function_text, fixed = TRUE),
+  "Exposure baseline audit must report donor pairing and reject unpaired fits when pairing is possible" =
+    grepl("n_donors_with_pbs", analysis_text, fixed = TRUE) &&
+      grepl("n_exposure_obs_paired", analysis_text, fixed = TRUE) &&
+      grepl("donor pairing was possible but an unpaired model was used", analysis_text, fixed = TRUE),
   "Ranked bars must use estimated effects and direction/significance fills" =
     grepl("geom_col\\(width = 0.75\\)", plots_text) &&
       grepl('"Higher, significant"', plots_text) &&
