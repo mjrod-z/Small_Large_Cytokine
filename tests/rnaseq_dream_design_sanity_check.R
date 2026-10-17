@@ -41,11 +41,11 @@ rmd_text <- paste(rmd_lines, collapse = "\n")
 analysis_path <- file.path(dirname(rmd_path), "functions_analysis.R")
 analysis_expressions <- parse(analysis_path)
 helper_env <- new.env(parent = globalenv())
-for (expression in analysis_expressions) {
-  if (is.call(expression) && identical(expression[[1]], as.name("<-")) &&
-      is.symbol(expression[[2]]) && is.call(expression[[3]]) &&
-      identical(expression[[3]][[1]], as.name("function"))) {
-    eval(expression, envir = helper_env)
+for (expr in analysis_expressions) {
+  if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
+      is.symbol(expr[[2]]) && is.call(expr[[3]]) &&
+      identical(expr[[3]][[1]], as.name("function"))) {
+    eval(expr, envir = helper_env)
   }
 }
 

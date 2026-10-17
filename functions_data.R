@@ -732,9 +732,9 @@ filter_rnaseq_count_matrix <- function(
     drop = FALSE
   ]
   library_sizes <- colSums(count_matrix)
+  # Zero-library columns contain only zeros; a unit denominator keeps their CPM at zero.
   safe_library_sizes <- ifelse(library_sizes == 0, 1, library_sizes)
   cpm_matrix <- sweep(count_matrix, 2, safe_library_sizes / 1e6, "/")
-  cpm_matrix[, library_sizes == 0] <- 0
 
   stratum_values <- unique(sample_metadata[, strata_cols, drop = FALSE])
   stratum_qc_rows <- if (include_qc) vector("list", nrow(stratum_values)) else NULL

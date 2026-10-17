@@ -40,11 +40,23 @@ with_qc <- do.call(
   c(list(count_matrix, sample_metadata), thresholds)
 )
 stopifnot(
+  "Fixture contains zero-library samples" =
+    all(colSums(count_matrix)[c("S2", "S4")] == 0),
   "Genes passing CPM in a 50% stratum and total-count threshold are included" =
     identical(
       with_qc$gene_status$included[match(rownames(count_matrix), with_qc$gene_status$GENEID)],
       c(TRUE, TRUE, FALSE)
     ),
+  "Zero-library samples contribute finite zero CPM to the LAE fraction" = {
+    lae_gene <- with_qc$stratum_qc[
+      !is.na(with_qc$stratum_qc$AIRWAY) &
+        as.character(with_qc$stratum_qc$AIRWAY) == "LAE" &
+        with_qc$stratum_qc$GENEID == "gene_lae",
+    ]
+    nrow(lae_gene) == 1 &&
+      lae_gene$fraction_above_cpm == 0.5 &&
+      lae_gene$passes_stratum
+  },
   "NA-valued airway strata are represented in filtering QC" =
     any(is.na(with_qc$stratum_qc$AIRWAY)),
   "Zero-library samples produce finite QC fractions" =
