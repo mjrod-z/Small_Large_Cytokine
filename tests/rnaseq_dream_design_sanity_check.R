@@ -133,7 +133,7 @@ stopifnot(
     }, logical(1)))
 )
 
-# Selector constants referenced by the extracted helpers.
+# Factor levels and contrasts passed explicitly to the shared contrast helpers.
 RNA_HORMONE_LEVELS <- c("NONE", "E2")
 RNA_EXPOSURE_LEVELS <- c("PBS", "PEAT", "PINE")
 RNA_FACTOR_LEVELS <- list(HORMONE = RNA_HORMONE_LEVELS, EXPOSURE = RNA_EXPOSURE_LEVELS)

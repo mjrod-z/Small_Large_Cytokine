@@ -148,10 +148,12 @@ teerchange_plot <- plot_teer_ldh(
   "teerchange_boxplot_all.png", "TEERCHANGE",
   sig_annotations = build_teer_sig_annotations(
     teer_ldh_lmer_results, "TEERCHANGE",
+    alpha_q = ALPHA_Q,
     colors = c(All = SIG_COLOR_ALL, M = SIG_COLOR_M, F = SIG_COLOR_F)
   ),
   sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F),
-  grid_break = 100
+  grid_break = 100,
+  alpha_q = ALPHA_Q
 )
 ldh_plot <- plot_teer_ldh(
   SALA_TEER_analyzed, "LDH",
@@ -159,10 +161,12 @@ ldh_plot <- plot_teer_ldh(
   "ldh_boxplot_all.png", "LDH (%)",
   sig_annotations = build_teer_sig_annotations(
     teer_ldh_lmer_results, "LDH",
+    alpha_q = ALPHA_Q,
     colors = c(All = SIG_COLOR_ALL, M = SIG_COLOR_M, F = SIG_COLOR_F)
   ),
   sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F),
-  grid_break = 20
+  grid_break = 20,
+  alpha_q = ALPHA_Q
 )
 ```
 
