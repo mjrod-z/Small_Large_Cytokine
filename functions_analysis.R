@@ -70,6 +70,9 @@ selector_comparison_description <- function(test, selected_metadata,
   paste0(paste(observed[-1], collapse = " / "), " vs ", observed[[1]])
 }
 
+# spec requires SUBSET, TESTS, REPORT_WITHIN, EXPOSURE_CONTRASTS, spec_tag,
+# AIRWAY, SEX_STRATUM, and FAMILY. Metadata requires keep_sample, SAMPLENAME,
+# and selector columns; returns NULL when no samples or valid tests remain.
 validate_rnaseq_spec <- function(spec, sample_metadata, count_matrix_all,
                                  factor_levels, selector_factors) {
   subset <- spec$SUBSET
@@ -186,7 +189,6 @@ validate_rnaseq_spec <- function(spec, sample_metadata, count_matrix_all,
   )
 }
 
-# BEGIN RNA-seq contrast helpers
 observed_factor_levels <- function(data, factor_name, factor_levels) {
   intersect(factor_levels[[factor_name]],
             unique(stats::na.omit(as.character(data[[factor_name]]))))
@@ -368,7 +370,6 @@ fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split
     model_data = model_data
   )
 }
-# END RNA-seq contrast helpers
 # END RNA-seq selector and contrast helpers
 
 run_teer_ldh_models <- function(data, response_name, alpha_q = ALPHA_Q) {

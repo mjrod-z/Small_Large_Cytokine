@@ -733,7 +733,9 @@ if (!RUN_RNASEQ_CAMPAIGN) {
     get_fit <- function(core_factors) {
       cache_key <- paste(sort(core_factors), collapse = "|")
       if (!is.null(fit_cache[[cache_key]])) {
-        return(fit_cache[[cache_key]])
+        cached_fit <- fit_cache[[cache_key]]
+        model_data <<- cached_fit$model_data
+        return(cached_fit)
       }
       result <- fit_rnaseq_design(core_factors, model_data, model_factors, dge_split)
       model_data <<- result$model_data
