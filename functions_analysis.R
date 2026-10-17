@@ -308,6 +308,37 @@ make_rnaseq_failure_row <- function(spec, test, context, reason, label = "",
   )
 }
 
+append_rnaseq_failure <- function(failure_rows, spec, test, context, reason,
+                                  label = "", model_formula = NA_character_,
+                                  model_terms = NA_character_,
+                                  n_samples = NA_integer_) {
+  failure_rows[[length(failure_rows) + 1L]] <- make_rnaseq_failure_row(
+    spec, test, context, reason, label, model_formula, model_terms, n_samples
+  )
+  failure_rows
+}
+
+append_rnaseq_contrast_failure <- function(failure_rows, spec, test, context,
+                                           fit, reason, label) {
+  append_rnaseq_failure(
+    failure_rows, spec, test, context, reason, label,
+    model_formula = fit$formula_label,
+    model_terms = fit$term_labels,
+    n_samples = fit$n_samples
+  )
+}
+
+get_or_fit_rnaseq_design <- function(core_factors, model_data, model_factors,
+                                    dge_split, fit_cache) {
+  cache_key <- paste(sort(core_factors), collapse = "|")
+  fit <- fit_cache[[cache_key]]
+  if (is.null(fit)) {
+    fit <- fit_rnaseq_design(core_factors, model_data, model_factors, dge_split)
+    fit_cache[[cache_key]] <- fit
+  }
+  list(fit = fit, model_data = fit$model_data, fit_cache = fit_cache)
+}
+
 fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split) {
   other_terms <- setdiff(model_factors, core_factors)
   group_col <- paste0("GROUP__", paste(sort(core_factors), collapse = "_"))

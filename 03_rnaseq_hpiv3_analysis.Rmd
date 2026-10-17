@@ -637,15 +637,6 @@ if (!RUN_RNASEQ_CAMPAIGN) {
   result_rows <- list()
   failure_rows <- list()
   current_campaign_spec <- NULL
-  record_failure <- function(test, context, reason, label = "",
-                             model_formula = NA_character_,
-                             model_terms = NA_character_,
-                             n_samples = NA_integer_) {
-    failure_rows[[length(failure_rows) + 1L]] <<- make_rnaseq_failure_row(
-      current_campaign_spec, test, context, reason, label,
-      model_formula, model_terms, n_samples
-    )
-  }
   # Each VALIDATED_RNASEQ_SPECS entry is one (AIRWAY, SEX stratum, FAMILY)
   # combination with its own already-SUBSET-filtered selected_metadata and
   # count_matrix (built in the selector-validation chunk), so AIRWAY/SEX
@@ -677,7 +668,10 @@ if (!RUN_RNASEQ_CAMPAIGN) {
     )]
     if (nrow(model_data) == 0 || length(model_factors) == 0) {
       for (test in VALID_TESTS) {
-        record_failure(test, split_context, "No complete samples or varying GROUP factors remain for this spec.")
+        failure_rows <- append_rnaseq_failure(
+          failure_rows, current_campaign_spec, test, split_context,
+          "No complete samples or varying GROUP factors remain for this spec."
+        )
       }
       next
     }
@@ -704,7 +698,10 @@ if (!RUN_RNASEQ_CAMPAIGN) {
     keep_genes <- gene_filter$keep_genes
     if (!any(keep_genes)) {
       for (test in VALID_TESTS) {
-        record_failure(test, split_context, "No genes passed the CPM and total-count filters for this spec.")
+        failure_rows <- append_rnaseq_failure(
+          failure_rows, current_campaign_spec, test, split_context,
+          "No genes passed the CPM and total-count filters for this spec."
+        )
       }
       next
     }
@@ -715,8 +712,10 @@ if (!RUN_RNASEQ_CAMPAIGN) {
     }, error = function(e) e)
     if (inherits(dge_attempt, "error")) {
       for (test in VALID_TESTS) {
-        record_failure(test, split_context,
-                       paste0("TMM normalization failed: ", conditionMessage(dge_attempt)))
+        failure_rows <- append_rnaseq_failure(
+          failure_rows, current_campaign_spec, test, split_context,
+          paste0("TMM normalization failed: ", conditionMessage(dge_attempt))
+        )
       }
       next
     }
@@ -731,32 +730,28 @@ if (!RUN_RNASEQ_CAMPAIGN) {
     # unbalanced with respect to it. Fits are cached by their factor set so
     # repeated TESTS/REPORT_WITHIN combinations reuse the same voom/dream fit.
     fit_cache <- list()
-    get_fit <- function(core_factors) {
-      cache_key <- paste(sort(core_factors), collapse = "|")
-      if (!is.null(fit_cache[[cache_key]])) {
-        return(fit_cache[[cache_key]])
-      }
-      result <- fit_rnaseq_design(core_factors, model_data, model_factors, dge_split)
-      fit_cache[[cache_key]] <<- result
-      result
-    }
 
     for (test in VALID_TESTS) {
       test_factors_i <- strsplit(test, ":", fixed = TRUE)[[1]]
       if (any(!test_factors_i %in% model_factors)) {
-        record_failure(
-          test, split_context,
+        failure_rows <- append_rnaseq_failure(
+          failure_rows, current_campaign_spec, test, split_context,
           paste0("Test factors do not vary within this spec: ",
                  paste(setdiff(test_factors_i, model_factors), collapse = ", "))
         )
         next
       }
 
-      baseline_fit <- get_fit(test_factors_i)
-      model_data <- baseline_fit$model_data
+      fit_state <- get_or_fit_rnaseq_design(
+        test_factors_i, model_data, model_factors, dge_split, fit_cache
+      )
+      baseline_fit <- fit_state$fit
+      fit_cache <- fit_state$fit_cache
+      model_data <- fit_state$model_data
       if (!baseline_fit$ok) {
-        record_failure(
-          test, split_context, baseline_fit$reason, "",
+        failure_rows <- append_rnaseq_failure(
+          failure_rows, current_campaign_spec, test, split_context,
+          baseline_fit$reason, "",
           model_formula = baseline_fit$formula_label,
           model_terms = baseline_fit$term_labels
         )
@@ -772,14 +767,14 @@ if (!RUN_RNASEQ_CAMPAIGN) {
         within_factors_i <- intersect(REPORT_WITHIN, model_factors)
         effect_factors_within <- setdiff(test_factors_i, within_factors_i)
         if (length(within_factors_i) == 0) {
-          record_failure(
-            test, split_context,
+          failure_rows <- append_rnaseq_failure(
+            failure_rows, current_campaign_spec, test, split_context,
             "REPORT_WITHIN factors do not vary within this spec; no simple-effect contrasts were attempted.",
             "within"
           )
         } else if (length(effect_factors_within) == 0) {
-          record_failure(
-            test, split_context,
+          failure_rows <- append_rnaseq_failure(
+            failure_rows, current_campaign_spec, test, split_context,
             "REPORT_WITHIN conditions every test factor; no simple-effect contrast remains."
           )
         } else {
@@ -794,13 +789,17 @@ if (!RUN_RNASEQ_CAMPAIGN) {
           within_fit <- if (length(augmentation_factors) == 0) {
             baseline_fit
           } else {
-            fit <- get_fit(union(test_factors_i, within_factors_i))
-            model_data <- fit$model_data
-            fit
+            within_fit_state <- get_or_fit_rnaseq_design(
+              union(test_factors_i, within_factors_i),
+              model_data, model_factors, dge_split, fit_cache
+            )
+            fit_cache <- within_fit_state$fit_cache
+            model_data <- within_fit_state$model_data
+            within_fit_state$fit
           }
           if (!within_fit$ok) {
-            record_failure(
-              test, split_context,
+            failure_rows <- append_rnaseq_failure(
+              failure_rows, current_campaign_spec, test, split_context,
               paste0("REPORT_WITHIN simple effects require [",
                      paste(union(test_factors_i, within_factors_i), collapse = ", "),
                      "] to be jointly estimable: ", within_fit$reason),
@@ -835,13 +834,6 @@ if (!RUN_RNASEQ_CAMPAIGN) {
         effect_factors <- spec$effect_factors
         conditions <- spec$conditions
         fit_i <- spec$fit
-        record_contrast_failure <- function(reason, label) {
-          record_failure(
-            test, split_context, reason, label,
-            model_formula = fit_i$formula_label, model_terms = fit_i$term_labels,
-            n_samples = fit_i$n_samples
-          )
-        }
         if (length(effect_factors) == 0) next
         effect_levels <- lapply(effect_factors, function(factor_name) {
           observed_factor_levels(model_data, factor_name, RNA_FACTOR_LEVELS)
@@ -869,7 +861,10 @@ if (!RUN_RNASEQ_CAMPAIGN) {
           )
           contrast_id <- paste(current_campaign_spec$spec_tag, test, split_context, label, sep = " | ")
           if (is.null(weights_result$weights)) {
-            record_contrast_failure(weights_result$reason, label)
+            failure_rows <- append_rnaseq_contrast_failure(
+              failure_rows, current_campaign_spec, test, split_context, fit_i,
+              weights_result$reason, label
+            )
             next
           }
           used_groups <- which(abs(weights_result$weights) > 1e-12)
@@ -902,7 +897,8 @@ if (!RUN_RNASEQ_CAMPAIGN) {
             error = function(e) e
           )
           if (inherits(contrast_matrix, "error")) {
-            record_contrast_failure(
+            failure_rows <- append_rnaseq_contrast_failure(
+              failure_rows, current_campaign_spec, test, split_context, fit_i,
               paste0("Contrast is not estimable: ", conditionMessage(contrast_matrix)),
               label
             )
@@ -918,7 +914,8 @@ if (!RUN_RNASEQ_CAMPAIGN) {
             limma::eBayes(fit_L)
           }, error = function(e) e)
           if (inherits(contrast_fit, "error")) {
-            record_contrast_failure(
+            failure_rows <- append_rnaseq_contrast_failure(
+              failure_rows, current_campaign_spec, test, split_context, fit_i,
               paste0("Contrast fit failed: ", conditionMessage(contrast_fit)),
               label
             )
@@ -932,7 +929,10 @@ if (!RUN_RNASEQ_CAMPAIGN) {
             error = function(e) e
           )
           if (inherits(top_i, "error")) {
-            record_contrast_failure(paste0("topTable failed: ", conditionMessage(top_i)), label)
+            failure_rows <- append_rnaseq_contrast_failure(
+              failure_rows, current_campaign_spec, test, split_context, fit_i,
+              paste0("topTable failed: ", conditionMessage(top_i)), label
+            )
             next
           }
           positive_groups <- used_groups[weights_result$weights[used_groups] > 0]
