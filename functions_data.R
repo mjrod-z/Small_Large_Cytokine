@@ -705,8 +705,8 @@ filter_rnaseq_count_matrix <- function(
   count_matrix <- as.matrix(count_matrix)
   if (is.null(rownames(count_matrix)) || is.null(colnames(count_matrix)) ||
       anyNA(count_matrix) || any(!is.finite(count_matrix)) ||
-      any(count_matrix < 0) || any(count_matrix != floor(count_matrix))) {
-    stop("count_matrix must be a named matrix of finite, non-negative integer counts.")
+      any(count_matrix < 0)) {
+    stop("count_matrix must be a named matrix of finite, non-negative counts.")
   }
   if (!is.data.frame(sample_metadata) || length(strata_cols) == 0 ||
       !all(c("SAMPLENAME", strata_cols) %in% names(sample_metadata))) {

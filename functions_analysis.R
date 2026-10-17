@@ -328,7 +328,7 @@ append_rnaseq_contrast_failure <- function(failure_rows, spec, test, context,
   )
 }
 
-# Returns the updated cache explicitly; fit$model_data contains the fit's GROUP columns.
+# Returns the updated cache explicitly; fit$model_data retains fit-specific GROUP columns.
 get_or_fit_rnaseq_design <- function(core_factors, model_data, model_factors,
                                     dge_split, fit_cache) {
   cache_key <- paste(sort(core_factors), collapse = "|")
@@ -337,7 +337,7 @@ get_or_fit_rnaseq_design <- function(core_factors, model_data, model_factors,
     fit <- fit_rnaseq_design(core_factors, model_data, model_factors, dge_split)
     fit_cache[[cache_key]] <- fit
   }
-  list(fit = fit, model_data = fit$model_data, fit_cache = fit_cache)
+  list(fit = fit, fit_cache = fit_cache)
 }
 
 fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split) {

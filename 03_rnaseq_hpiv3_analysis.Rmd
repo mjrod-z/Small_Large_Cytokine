@@ -747,7 +747,6 @@ if (!RUN_RNASEQ_CAMPAIGN) {
       )
       baseline_fit <- fit_state$fit
       fit_cache <- fit_state$fit_cache
-      model_data <- fit_state$model_data
       if (!baseline_fit$ok) {
         failure_rows <- append_rnaseq_failure(
           failure_rows, current_campaign_spec, test, split_context,
@@ -794,7 +793,6 @@ if (!RUN_RNASEQ_CAMPAIGN) {
               model_data, model_factors, dge_split, fit_cache
             )
             fit_cache <- within_fit_state$fit_cache
-            model_data <- within_fit_state$model_data
             within_fit_state$fit
           }
           if (!within_fit$ok) {
