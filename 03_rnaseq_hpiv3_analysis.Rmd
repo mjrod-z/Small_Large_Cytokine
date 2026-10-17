@@ -698,7 +698,8 @@ if (!RUN_RNASEQ_CAMPAIGN) {
       strata_cols = c("AIRWAY", "HORMONE"),
       cpm_threshold = RNA_CPM_THRESHOLD,
       min_sample_fraction = RNA_MIN_SAMPLE_FRACTION,
-      min_total_count = RNA_MIN_TOTAL_COUNT
+      min_total_count = RNA_MIN_TOTAL_COUNT,
+      include_qc = FALSE
     )
     keep_genes <- gene_filter$keep_genes
     if (!any(keep_genes)) {

@@ -146,12 +146,11 @@ RNA_EXPOSURE_LEVELS <- c("PBS", "PEAT", "PINE")
 RNA_FACTOR_LEVELS <- list(HORMONE = RNA_HORMONE_LEVELS, EXPOSURE = RNA_EXPOSURE_LEVELS)
 EXPOSURE_CONTRASTS <- c("PEAT-PBS", "PINE-PBS")
 
-list2env(as.list(helper_env), envir = globalenv())
 stopifnot(
-  is.function(observed_factor_levels),
-  is.function(factor_contrast_options),
-  is.function(contrast_label_for),
-  is.function(build_contrast_weights)
+  is.function(helper_env$observed_factor_levels),
+  is.function(helper_env$factor_contrast_options),
+  is.function(helper_env$contrast_label_for),
+  is.function(helper_env$build_contrast_weights)
 )
 
 # ---------------------------------------------------------------------------
@@ -193,11 +192,11 @@ stopifnot(
     qr(design)$rank == ncol(design)
 )
 
-effect_levels <- observed_factor_levels(model_data, "HORMONE", RNA_FACTOR_LEVELS)
-vectors <- list(factor_contrast_options(
+effect_levels <- helper_env$observed_factor_levels(model_data, "HORMONE", RNA_FACTOR_LEVELS)
+vectors <- list(helper_env$factor_contrast_options(
   "HORMONE", effect_levels, EXPOSURE_CONTRASTS, RNA_FACTOR_LEVELS
 )[[1]])
-weights_result <- build_contrast_weights(
+weights_result <- helper_env$build_contrast_weights(
   effect_factors = "HORMONE", vectors = vectors, conditions = character(),
   model_factors = core_factors, group_cells = group_cells
 )
@@ -249,7 +248,7 @@ stopifnot(
 
 # A DiD contrast entirely within PBS/PINE (both HORMONE levels present) must
 # be estimable:
-pbs_pine_weights <- build_contrast_weights(
+pbs_pine_weights <- helper_env$build_contrast_weights(
   effect_factors = "HORMONE",
   vectors = list(stats::setNames(c(1, -1), c("E2", "NONE"))),
   conditions = c(EXPOSURE = "PINE"),
@@ -262,7 +261,7 @@ stopifnot(
 
 # A simple effect that truly requires the missing HORMONE=E2/EXPOSURE=PEAT
 # cell must fail with a clear reason, not a silent/incorrect result:
-peat_weights <- build_contrast_weights(
+peat_weights <- helper_env$build_contrast_weights(
   effect_factors = "HORMONE",
   vectors = list(stats::setNames(c(1, -1), c("E2", "NONE"))),
   conditions = c(EXPOSURE = "PEAT"),

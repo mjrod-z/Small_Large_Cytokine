@@ -700,7 +700,8 @@ filter_rnaseq_count_matrix <- function(
     strata_cols = c("AIRWAY", "HORMONE"),
     cpm_threshold = RNA_CPM_THRESHOLD,
     min_sample_fraction = RNA_MIN_SAMPLE_FRACTION,
-    min_total_count = RNA_MIN_TOTAL_COUNT) {
+    min_total_count = RNA_MIN_TOTAL_COUNT,
+    include_qc = TRUE) {
   count_matrix <- as.matrix(count_matrix)
   if (is.null(rownames(count_matrix)) || is.null(colnames(count_matrix)) ||
       anyNA(count_matrix) || any(!is.finite(count_matrix)) ||
@@ -735,7 +736,8 @@ filter_rnaseq_count_matrix <- function(
   cpm_matrix[, library_sizes == 0] <- 0
 
   stratum_values <- unique(sample_metadata[, strata_cols, drop = FALSE])
-  stratum_qc_rows <- vector("list", nrow(stratum_values))
+  stratum_qc_rows <- if (include_qc) vector("list", nrow(stratum_values)) else NULL
+  passes_any_stratum <- rep(FALSE, nrow(count_matrix))
   for (i in seq_len(nrow(stratum_values))) {
     stratum_i <- stratum_values[i, , drop = FALSE]
     sample_idx <- rep(TRUE, nrow(sample_metadata))
@@ -754,17 +756,24 @@ filter_rnaseq_count_matrix <- function(
     } else {
       rowMeans(cpm_matrix[, sample_names_i, drop = FALSE] >= cpm_threshold)
     }
-    stratum_row <- tibble::tibble(GENEID = rownames(cpm_matrix))
-    for (column in strata_cols) {
-      stratum_row[[column]] <- as.character(stratum_i[[column]][[1]])
+    passes_stratum <- fraction_above >= min_sample_fraction
+    passes_any_stratum <- passes_any_stratum | passes_stratum
+    if (include_qc) {
+      stratum_row <- tibble::tibble(GENEID = rownames(cpm_matrix))
+      for (column in strata_cols) {
+        stratum_row[[column]] <- as.character(stratum_i[[column]][[1]])
+      }
+      stratum_row$n_samples <- length(sample_names_i)
+      stratum_row$fraction_above_cpm <- fraction_above
+      stratum_row$passes_stratum <- passes_stratum
+      stratum_qc_rows[[i]] <- stratum_row
     }
-    stratum_row$n_samples <- length(sample_names_i)
-    stratum_row$fraction_above_cpm <- fraction_above
-    stratum_row$passes_stratum <- fraction_above >= min_sample_fraction
-    stratum_qc_rows[[i]] <- stratum_row
+  }
+  total_counts <- rowSums(count_matrix)
+  if (!include_qc) {
+    return(list(keep_genes = total_counts >= min_total_count & passes_any_stratum))
   }
   stratum_qc <- dplyr::bind_rows(stratum_qc_rows)
-  total_counts <- rowSums(count_matrix)
   gene_status <- stratum_qc %>%
     dplyr::group_by(GENEID) %>%
     dplyr::summarise(
