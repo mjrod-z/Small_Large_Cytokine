@@ -407,7 +407,7 @@ build_teer_sig_annotations <- function(results, response_name,
 plot_teer_ldh <- function(data, response_name, title, filename, y_label,
                           sig_annotations = NULL, grid_break = NULL,
                           sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F),
-                          output_path = PATH_OUTPUT_FIGURES,
+                          output_path = PATH_OUTPUT_FIGS,
                           alpha_q = ALPHA_Q) {
   if (!all(c("M", "F") %in% names(sig_colors))) {
     stop("sig_colors must include named colors for M and F.")

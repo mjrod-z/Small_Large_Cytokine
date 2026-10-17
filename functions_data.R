@@ -697,10 +697,10 @@ build_hpiv3_analysis_data <- function(
 filter_rnaseq_count_matrix <- function(
     count_matrix,
     sample_metadata,
-    strata_cols = c("AIRWAY", "HORMONE"),
-    cpm_threshold = RNA_CPM_THRESHOLD,
-    min_sample_fraction = RNA_MIN_SAMPLE_FRACTION,
-    min_total_count = RNA_MIN_TOTAL_COUNT,
+    strata_cols,
+    cpm_threshold,
+    min_sample_fraction,
+    min_total_count,
     include_qc = TRUE) {
   count_matrix <- as.matrix(count_matrix)
   if (is.null(rownames(count_matrix)) || is.null(colnames(count_matrix)) ||
