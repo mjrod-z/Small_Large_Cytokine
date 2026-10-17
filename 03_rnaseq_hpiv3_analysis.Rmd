@@ -440,58 +440,16 @@ knitr::kable(
 # Low-abundance filtering and QC summaries
 
 ```{r rnaseq-filtering}
-library_sizes <- colSums(count_matrix)
-cpm_matrix <- sweep(count_matrix, 2, library_sizes / 1e6, "/")
-cpm_matrix[, library_sizes == 0] <- 0
-strata_cols <- c("AIRWAY", "HORMONE")
-strata_values <- unique(selected_metadata[, strata_cols, drop = FALSE])
-stratum_filter_rows <- vector("list", nrow(strata_values))
-
-for (i in seq_len(nrow(strata_values))) {
-  stratum_i <- strata_values[i, , drop = FALSE]
-  sample_idx <- rep(TRUE, nrow(selected_metadata))
-  for (col in strata_cols) {
-    value_i <- as.character(stratum_i[[col]][[1]])
-    if (is.na(value_i)) {
-      sample_idx <- sample_idx & is.na(selected_metadata[[col]])
-    } else {
-      sample_idx <- sample_idx & !is.na(selected_metadata[[col]]) &
-        as.character(selected_metadata[[col]]) == value_i
-    }
-  }
-  sample_names_i <- selected_metadata$SAMPLENAME[sample_idx]
-  fraction_above <- if (length(sample_names_i) == 0) {
-    rep(0, nrow(cpm_matrix))
-  } else {
-    rowMeans(cpm_matrix[, sample_names_i, drop = FALSE] >= RNA_CPM_THRESHOLD)
-  }
-  stratum_filter_rows[[i]] <- tibble::tibble(
-    GENEID = rownames(cpm_matrix),
-    AIRWAY = as.character(stratum_i$AIRWAY[[1]]),
-    HORMONE = as.character(stratum_i$HORMONE[[1]]),
-    n_samples = length(sample_names_i),
-    fraction_above_cpm = fraction_above,
-    passes_stratum = fraction_above >= RNA_MIN_SAMPLE_FRACTION
-  )
-}
-
-rnaseq_stratum_qc <- dplyr::bind_rows(stratum_filter_rows)
-total_count <- rowSums(count_matrix)
-rnaseq_gene_status <- rnaseq_stratum_qc %>%
-  dplyr::group_by(GENEID) %>%
-  dplyr::summarise(
-    max_fraction_above_cpm = max(fraction_above_cpm, na.rm = TRUE),
-    passes_any_stratum = any(passes_stratum),
-    .groups = "drop"
-  ) %>%
-  dplyr::mutate(
-    total_count = unname(total_count[match(GENEID, names(total_count))]),
-    passes_total_count = total_count >= RNA_MIN_TOTAL_COUNT,
-    included = passes_any_stratum & passes_total_count,
-    cpm_threshold = RNA_CPM_THRESHOLD,
-    min_sample_fraction = RNA_MIN_SAMPLE_FRACTION,
-    min_total_count = RNA_MIN_TOTAL_COUNT
-  )
+rnaseq_filter <- filter_rnaseq_count_matrix(
+  count_matrix,
+  selected_metadata,
+  strata_cols = c("AIRWAY", "HORMONE"),
+  cpm_threshold = RNA_CPM_THRESHOLD,
+  min_sample_fraction = RNA_MIN_SAMPLE_FRACTION,
+  min_total_count = RNA_MIN_TOTAL_COUNT
+)
+rnaseq_stratum_qc <- rnaseq_filter$stratum_qc
+rnaseq_gene_status <- rnaseq_filter$gene_status
 
 save_table(rnaseq_stratum_qc,
            file.path(RNA_OUTPUT_SUBDIR, "hpiv3_rnaseq_gene_filter_by_stratum.csv"))
@@ -734,22 +692,15 @@ if (!RUN_RNASEQ_CAMPAIGN) {
     }
 
     split_counts <- campaign_spec$count_matrix[, model_data$SAMPLENAME, drop = FALSE]
-    cpm_split <- sweep(split_counts, 2, colSums(split_counts) / 1e6, "/")
-    cpm_split[, colSums(split_counts) == 0] <- 0
-    filter_strata <- interaction(
-      addNA(factor(as.character(model_data$AIRWAY))),
-      addNA(factor(as.character(model_data$HORMONE))),
-      drop = TRUE,
-      lex.order = TRUE
+    gene_filter <- filter_rnaseq_count_matrix(
+      split_counts,
+      model_data,
+      strata_cols = c("AIRWAY", "HORMONE"),
+      cpm_threshold = RNA_CPM_THRESHOLD,
+      min_sample_fraction = RNA_MIN_SAMPLE_FRACTION,
+      min_total_count = RNA_MIN_TOTAL_COUNT
     )
-    passes_cpm <- rep(FALSE, nrow(split_counts))
-    for (stratum in levels(filter_strata)) {
-      sample_idx <- which(filter_strata == stratum)
-      passes_cpm <- passes_cpm |
-        rowMeans(cpm_split[, sample_idx, drop = FALSE] >= RNA_CPM_THRESHOLD) >=
-          RNA_MIN_SAMPLE_FRACTION
-    }
-    keep_genes <- rowSums(split_counts) >= RNA_MIN_TOTAL_COUNT & passes_cpm
+    keep_genes <- gene_filter$keep_genes
     if (!any(keep_genes)) {
       for (test in VALID_TESTS) {
         record_failure(test, split_context, "No genes passed the CPM and total-count filters for this spec.")
