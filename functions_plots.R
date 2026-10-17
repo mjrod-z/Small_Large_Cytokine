@@ -506,6 +506,7 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
         ggplot2::aes(x = EXPOSURE, y = y_star, label = sig_label, color = sig_color),
         size = 5, fontface = "bold", inherit.aes = FALSE
       ) +
+      # Keep significance-star colors separate from the SEX colors used for points.
       ggplot2::scale_color_identity()
   }
   save_plot(filename, p, width = 12, height = 8, dpi = 300,

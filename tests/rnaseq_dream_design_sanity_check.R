@@ -38,16 +38,16 @@ stopifnot(
 rmd_lines <- readLines(rmd_path, warn = FALSE)
 rmd_text <- paste(rmd_lines, collapse = "\n")
 
-analysis_lines <- readLines(file.path(dirname(rmd_path), "functions_analysis.R"), warn = FALSE)
-analysis_start <- match("# BEGIN RNA-seq selector and contrast helpers", analysis_lines)
-analysis_end <- match("# END RNA-seq selector and contrast helpers", analysis_lines)
-stopifnot(
-  "Cannot locate extracted RNA-seq helpers in functions_analysis.R" =
-    !is.na(analysis_start) && !is.na(analysis_end) && analysis_end > analysis_start
-)
+analysis_path <- file.path(dirname(rmd_path), "functions_analysis.R")
+analysis_expressions <- parse(analysis_path)
 helper_env <- new.env(parent = globalenv())
-eval(parse(text = analysis_lines[seq.int(analysis_start + 1L, analysis_end - 1L)]),
-     envir = helper_env)
+for (expression in analysis_expressions) {
+  if (is.call(expression) && identical(expression[[1]], as.name("<-")) &&
+      is.symbol(expression[[2]]) && is.call(expression[[3]]) &&
+      identical(expression[[3]][[1]], as.name("function"))) {
+    eval(expression, envir = helper_env)
+  }
+}
 
 selector_start <- match("```{r analysis-selector}", rmd_lines)
 selector_end <- if (is.na(selector_start)) {
