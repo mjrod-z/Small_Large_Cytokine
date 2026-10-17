@@ -377,6 +377,153 @@ add_rescaled_size <- function(df, value_col,
   df
 }
 
+build_teer_sig_annotations <- function(results, response_name,
+                                       alpha_q = ALPHA_Q,
+                                       colors = c(All = "#D7191C", M = "#2C7BB6",
+                                                  F = "#9B59B6")) {
+  results %>%
+    dplyr::filter(response == response_name, significant == TRUE) %>%
+    dplyr::mutate(
+      sig_label = dplyr::case_when(
+        p_adj < 0.001 ~ "***", p_adj < 0.01 ~ "**", p_adj < alpha_q ~ "*",
+        TRUE ~ ""
+      ),
+      sig_color = dplyr::case_when(
+        SEX == "All" ~ colors[["All"]],
+        SEX == "M" ~ colors[["M"]],
+        SEX == "F" ~ colors[["F"]],
+        TRUE ~ NA_character_
+      ),
+      EXPOSURE = exposure
+    ) %>%
+    dplyr::filter(sig_label != "") %>%
+    dplyr::select(CELLTYPE, HORMONE, EXPOSURE, SEX, sig_label, sig_color)
+}
+
+plot_teer_ldh <- function(data, response_name, title, filename, y_label,
+                          sig_annotations = NULL, grid_break = NULL,
+                          sig_colors = c(M = "#2C7BB6", F = "#9B59B6")) {
+  d <- data %>%
+    dplyr::filter(!is.na(.data[[response_name]])) %>%
+    dplyr::mutate(
+      EXPOSURE = factor(EXPOSURE, levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)),
+      CELLTYPE = factor(as.character(CELLTYPE), levels = c("LAE", "SAE")),
+      HORMONE = factor(as.character(HORMONE), levels = c("NONE", "Estradiol")),
+      SEX = factor(as.character(SEX), levels = SEX_LEVELS)
+    )
+  bg_df <- tidyr::expand_grid(
+    CELLTYPE = factor(c("LAE", "SAE"), levels = c("LAE", "SAE")),
+    HORMONE = factor(c("NONE", "Estradiol"), levels = c("NONE", "Estradiol"))
+  ) %>%
+    dplyr::mutate(panel_fill = dplyr::if_else(
+      HORMONE == "Estradiol", ESTRADIOL_FILL_DEFAULT, "white"
+    ))
+  p <- ggplot2::ggplot(d, ggplot2::aes(x = EXPOSURE, y = .data[[response_name]])) +
+    ggplot2::geom_rect(
+      data = bg_df, ggplot2::aes(fill = panel_fill),
+      xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+      inherit.aes = FALSE, show.legend = FALSE
+    ) +
+    ggplot2::scale_fill_identity() +
+    ggnewscale::new_scale_fill() +
+    ggplot2::geom_boxplot(ggplot2::aes(fill = EXPOSURE),
+                          outlier.shape = NA, alpha = 0.25, na.rm = TRUE) +
+    ggplot2::geom_jitter(ggplot2::aes(color = SEX, shape = SEX),
+                         width = 0.12, height = 0, alpha = 0.8, size = 1.8,
+                         na.rm = TRUE) +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+    ggplot2::facet_grid(CELLTYPE ~ HORMONE, drop = FALSE) +
+    ggplot2::scale_fill_manual(values = color_exposure, drop = FALSE) +
+    ggplot2::scale_color_manual(
+      name = "Sex", values = sig_colors, drop = FALSE
+    ) +
+    ggplot2::scale_shape_manual(name = "Sex", values = c(M = 16, F = 17),
+                                drop = FALSE) +
+    ggplot2::scale_x_discrete(drop = FALSE) +
+    ggplot2::scale_y_continuous(
+      breaks = if (is.null(grid_break)) ggplot2::waiver() else
+        scales::breaks_width(grid_break),
+      expand = ggplot2::expansion(mult = c(0.02, 0.15))
+    ) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.background = ggplot2::element_rect(fill = NA, color = "grey35", linewidth = 1.2),
+      panel.grid.major.x = ggplot2::element_blank(),
+      panel.grid.major.y = if (is.null(grid_break)) ggplot2::element_blank() else
+        ggplot2::element_line(color = "grey85"),
+      panel.grid.minor = ggplot2::element_blank(),
+      axis.line.x = ggplot2::element_line(color = "grey35", linewidth = 0.6),
+      axis.ticks.x = ggplot2::element_line(color = "grey35", linewidth = 0.6),
+      axis.ticks.length.x = grid::unit(4, "pt"),
+      strip.background = ggplot2::element_rect(fill = "grey35", color = "grey35", linewidth = 1.2),
+      strip.text = ggplot2::element_text(color = "white", face = "bold", size = 11),
+      axis.text.x = ggplot2::element_text(angle = 30, hjust = 1, face = "bold", size = 11),
+      axis.text.y = ggplot2::element_text(face = "bold", size = 10),
+      axis.title.y = ggplot2::element_text(face = "bold"),
+      plot.title = ggplot2::element_text(face = "bold", size = 13, hjust = 0.5),
+      legend.position = "bottom"
+    ) +
+    ggplot2::labs(
+      title = title, x = NULL, y = y_label,
+      caption = paste0(
+        "Points are individual samples; boxplots show median, IQR (box), ",
+        "and whiskers extending to 1.5x IQR.\n",
+        "Points: blue circles = M, purple triangles = F. ",
+        "Significance stars: red = significant overall, blue = significant in Males only, ",
+        "purple = significant in Females only (FDR-adjusted p < 0.05)."
+      )
+    )
+  if (!is.null(sig_annotations) && nrow(sig_annotations) > 0) {
+    facet_range <- d %>%
+      dplyr::group_by(CELLTYPE, HORMONE) %>%
+      dplyr::summarise(y_range = diff(range(.data[[response_name]], na.rm = TRUE)),
+                       .groups = "drop")
+    y_max_by_facet <- d %>%
+      dplyr::group_by(CELLTYPE, HORMONE, EXPOSURE) %>%
+      dplyr::summarise(y_max = max(.data[[response_name]], na.rm = TRUE),
+                       .groups = "drop") %>%
+      dplyr::left_join(facet_range, by = c("CELLTYPE", "HORMONE"))
+    star_data <- sig_annotations %>%
+      dplyr::inner_join(y_max_by_facet,
+                        by = c("CELLTYPE", "HORMONE", "EXPOSURE")) %>%
+      dplyr::mutate(SEX = factor(SEX, levels = c("All", "M", "F"))) %>%
+      dplyr::arrange(CELLTYPE, HORMONE, EXPOSURE, SEX) %>%
+      dplyr::group_by(CELLTYPE, HORMONE, EXPOSURE) %>%
+      dplyr::mutate(stack_pos = dplyr::row_number(),
+                    y_star = y_max + y_range * (0.05 + 0.07 * (stack_pos - 1))) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(EXPOSURE = factor(EXPOSURE,
+                                      levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)))
+    p <- p + ggplot2::geom_text(
+      data = star_data, ggplot2::aes(x = EXPOSURE, y = y_star, label = sig_label),
+      color = star_data$sig_color, size = 5, fontface = "bold",
+      inherit.aes = FALSE
+    )
+  }
+  save_plot(filename, p, width = 12, height = 8, dpi = 300, bg = "white")
+  p
+}
+
+make_plot_df <- function(df, grp_vars, sig_join, sig_col, cyt_order,
+                         e2_label, panel_fill_none,
+                         estradiol_fill = ESTRADIOL_FILL_DEFAULT) {
+  df %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(grp_vars))) %>%
+    dplyr::summarise(mean_log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
+    dplyr::mutate(CYTOKINE = factor(as.character(CYTOKINE), levels = cyt_order)) %>%
+    add_rescaled_size("mean_log2FC", transform = "none", out_col = "size_val") %>%
+    dplyr::left_join(sig_join, by = grp_vars) %>%
+    dplyr::mutate(
+      q = ifelse(is.na(q), 1, q),
+      !!sig_col := ifelse(is.na(.data[[sig_col]]), FALSE, .data[[sig_col]]),
+      panel_fill = ifelse(as.character(HORMONE) == e2_label,
+                          estradiol_fill, panel_fill_none),
+      direction = dplyr::case_when(
+        mean_log2FC > 0 ~ "Up", mean_log2FC < 0 ~ "Down", TRUE ~ "Zero"
+      )
+    )
+}
+
 # ── Cytokine dotplot (pooled or sex-stratified) ───────────────────────────────
 # Call once per exposure inside a loop; returns a combined cowplot grid.
 # Requires: plot_df_pooled, plot_df_sex, cyt_order, cyt_levels,

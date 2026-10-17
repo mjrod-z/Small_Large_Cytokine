@@ -63,7 +63,6 @@ set.seed(4454)
 #                   level actually observed (PBS, PEAT, PINE), again with
 #                   PBS included as its own EXPOSURE stratum.
 RUN_RNASEQ_CAMPAIGN <- TRUE
-RUN_DREAM_MODELS <- RUN_RNASEQ_CAMPAIGN  # legacy alias used in report text below
 EXPOSURE_CONTRASTS <- c("PEAT-PBS", "PINE-PBS")
 MIN_PATIENTS_CONFIDENT <- 4L
 MAX_VOLCANO_PANELS <- 24L
@@ -75,38 +74,6 @@ RNA_SEX_LEVELS <- c("M", "F")
 RNA_AIRWAY_LEVELS <- c("LAE", "SAE")
 RNA_SEX_STRATA <- c("All", "M", "F")
 RNA_FAMILIES <- c("EXPOSURE", "HORMONE", "INFECTION", "EXPOSURE_INFECTED", "HORMONE_INFECTED")
-
-family_spec <- function(family) {
-  switch(
-    family,
-    EXPOSURE = list(
-      infection_levels = "NONE",
-      tests = "EXPOSURE",
-      report_within = character()
-    ),
-    EXPOSURE_INFECTED = list(
-      infection_levels = "HPIV3",
-      tests = "EXPOSURE",
-      report_within = character()
-    ),
-    HORMONE = list(
-      infection_levels = "NONE",
-      tests = "HORMONE",
-      report_within = "EXPOSURE"
-    ),
-    HORMONE_INFECTED = list(
-      infection_levels = "HPIV3",
-      tests = "HORMONE",
-      report_within = "EXPOSURE"
-    ),
-    INFECTION = list(
-      infection_levels = c("NONE", "HPIV3"),
-      tests = "INFECTION",
-      report_within = "EXPOSURE"
-    ),
-    stop("Unknown FAMILY: ", family)
-  )
-}
 
 RNA_CAMPAIGN_GRID <- expand.grid(
   AIRWAY = RNA_AIRWAY_LEVELS,
@@ -167,7 +134,7 @@ cat("✓ HPIV3 RNA-seq report configuration loaded\n")
 cat("  Counts          :", RNA_COUNT_FILE, "\n")
 cat("  Metadata        :", RNA_METADATA_FILE, "\n")
 cat("  Output directory:", file.path(PATH_OUTPUT, RNA_OUTPUT_SUBDIR), "\n")
-cat("  DREAM models    :", RUN_DREAM_MODELS, "(disabled by default)\n")
+cat("  DREAM campaign  :", RUN_RNASEQ_CAMPAIGN, "\n")
 ```
 
 # Analysis specifications at a glance

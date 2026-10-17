@@ -9,6 +9,332 @@ suppressPackageStartupMessages({
   library(ARTool)
 })
 
+family_spec <- function(family) {
+  switch(
+    family,
+    EXPOSURE = list(infection_levels = "NONE", tests = "EXPOSURE",
+                    report_within = character()),
+    EXPOSURE_INFECTED = list(infection_levels = "HPIV3", tests = "EXPOSURE",
+                             report_within = character()),
+    HORMONE = list(infection_levels = "NONE", tests = "HORMONE",
+                   report_within = "EXPOSURE"),
+    HORMONE_INFECTED = list(infection_levels = "HPIV3", tests = "HORMONE",
+                            report_within = "EXPOSURE"),
+    INFECTION = list(infection_levels = c("NONE", "HPIV3"), tests = "INFECTION",
+                     report_within = "EXPOSURE"),
+    stop("Unknown FAMILY: ", family)
+  )
+}
+
+selector_slug <- function(x) {
+  value <- if (is.null(x)) {
+    "all"
+  } else if (length(x) == 0) {
+    "none"
+  } else {
+    paste(x, collapse = "-")
+  }
+  tolower(gsub("[^A-Za-z0-9-]+", "-", value))
+}
+
+validate_factor_vector <- function(values, label, factor_names, allow_null = FALSE) {
+  if (is.null(values) && allow_null) return(invisible(NULL))
+  if (!is.character(values) || anyNA(values) || anyDuplicated(values) ||
+      any(!values %in% factor_names)) {
+    stop(label, " must contain unique recognized factor names: ",
+         paste(factor_names, collapse = ", "))
+  }
+  invisible(TRUE)
+}
+
+selector_comparison_description <- function(test, selected_metadata,
+                                             exposure_contrasts,
+                                             factor_levels) {
+  factors <- strsplit(test, ":", fixed = TRUE)[[1]]
+  if (length(factors) > 1) {
+    description <- "estimable contrasts across observed joint factor levels"
+    if ("EXPOSURE" %in% factors) {
+      description <- paste0(description, "; exposure pairs: ",
+                            paste(exposure_contrasts, collapse = ", "))
+    }
+    return(description)
+  }
+  factor <- factors[[1]]
+  if (factor == "EXPOSURE") return(paste(exposure_contrasts, collapse = ", "))
+  observed <- intersect(
+    factor_levels[[factor]],
+    unique(stats::na.omit(as.character(selected_metadata[[factor]])))
+  )
+  if (length(observed) < 2) return("no varying levels remain after sample selection")
+  paste0(paste(observed[-1], collapse = " / "), " vs ", observed[[1]])
+}
+
+validate_rnaseq_spec <- function(spec, sample_metadata, count_matrix_all,
+                                 factor_levels, selector_factors) {
+  subset <- spec$SUBSET
+  tests <- spec$TESTS
+  report_within <- spec$REPORT_WITHIN
+  exposure_contrasts <- spec$EXPOSURE_CONTRASTS
+
+  if (!is.list(subset) || is.null(names(subset)) ||
+      any(!nzchar(names(subset))) || anyDuplicated(names(subset))) {
+    stop("SUBSET must be a named list with unique recognized factor names.")
+  }
+  unknown <- setdiff(names(subset), selector_factors)
+  if (length(unknown) > 0) {
+    stop("Unknown SUBSET factors: ", paste(unknown, collapse = ", "))
+  }
+  for (factor_name in names(subset)) {
+    values <- subset[[factor_name]]
+    if (!is.null(values) &&
+        (!is.character(values) || length(values) == 0 || anyNA(values) ||
+         anyDuplicated(values) ||
+         any(!values %in% factor_levels[[factor_name]]))) {
+      stop("Invalid SUBSET values for ", factor_name, "; expected: ",
+           paste(factor_levels[[factor_name]], collapse = ", "))
+    }
+  }
+  validate_factor_vector(report_within, "REPORT_WITHIN", selector_factors)
+  if (!is.character(tests) || length(tests) == 0 || anyNA(tests) ||
+      anyDuplicated(tests)) {
+    stop("TESTS must be a non-empty character vector of unique factor or interaction names.")
+  }
+  test_factors <- lapply(tests, function(test) strsplit(test, ":", fixed = TRUE)[[1]])
+  for (i in seq_along(tests)) {
+    factors <- test_factors[[i]]
+    if (length(factors) < 1 || length(factors) > length(selector_factors) ||
+        anyDuplicated(factors) || any(!factors %in% selector_factors)) {
+      stop("Invalid TESTS entry '", tests[[i]],
+           "'. Use one or more unique factors joined by ':'.")
+    }
+  }
+  valid_exposure_pairs <- c("PEAT-PBS", "PINE-PBS")
+  if (!is.character(exposure_contrasts) || length(exposure_contrasts) == 0 ||
+      anyNA(exposure_contrasts) || anyDuplicated(exposure_contrasts)) {
+    stop("EXPOSURE_CONTRASTS must be a non-empty vector of unique exposure pairs.")
+  }
+  if (any(!exposure_contrasts %in% valid_exposure_pairs)) {
+    stop("Unrecognized EXPOSURE_CONTRASTS value(s): ",
+         paste(setdiff(exposure_contrasts, valid_exposure_pairs), collapse = ", "))
+  }
+
+  selected <- sample_metadata %>% dplyr::filter(keep_sample)
+  for (factor_name in names(subset)) {
+    values <- subset[[factor_name]]
+    if (!is.null(values)) {
+      selected <- selected %>%
+        dplyr::filter(as.character(.data[[factor_name]]) %in% values)
+    }
+  }
+  if (nrow(selected) == 0) {
+    message("Spec '", spec$spec_tag, "': no samples remain after SUBSET; skipping.")
+    return(NULL)
+  }
+  varying <- selector_factors[vapply(selector_factors, function(factor_name) {
+    length(unique(stats::na.omit(as.character(selected[[factor_name]])))) >= 2
+  }, logical(1))]
+  valid <- vapply(test_factors, function(factors) all(factors %in% varying), logical(1))
+  for (test in tests[!valid]) {
+    message("Spec '", spec$spec_tag, "': dropping TESTS entry '", test,
+            "': at least one factor does not vary after SUBSET.")
+  }
+  valid_tests <- tests[valid]
+  if (length(valid_tests) == 0) {
+    message("Spec '", spec$spec_tag, "': no valid DREAM tests remain; skipping.")
+    return(NULL)
+  }
+
+  selected <- selected %>%
+    dplyr::arrange(match(SAMPLENAME, colnames(count_matrix_all)))
+  count_matrix <- count_matrix_all[, selected$SAMPLENAME, drop = FALSE]
+  subset_tag <- selector_slug(paste(
+    names(subset), vapply(subset, selector_slug, character(1)),
+    sep = "=", collapse = "_"
+  ))
+  selector_tag <- paste0(
+    "hpiv3_rnaseq_dream_", tolower(spec$spec_tag),
+    "_subset-", subset_tag,
+    "_tests-", selector_slug(paste(valid_tests, collapse = "_")),
+    "_within-", selector_slug(report_within),
+    "_exposure-", selector_slug(exposure_contrasts)
+  )
+  summary_rows <- tibble::tibble(
+    spec_tag = spec$spec_tag,
+    airway = spec$AIRWAY,
+    sex_stratum = spec$SEX_STRATUM,
+    family = spec$FAMILY,
+    test = valid_tests,
+    factors = vapply(valid_tests, function(test) {
+      paste(strsplit(test, ":", fixed = TRUE)[[1]], collapse = " x ")
+    }, character(1)),
+    test_type = ifelse(grepl(":", valid_tests, fixed = TRUE),
+                       "Explicit interaction",
+                       "Main effect (adjusted for other varying factors)"),
+    report_within = selector_slug(report_within),
+    comparisons = vapply(
+      valid_tests, selector_comparison_description, character(1),
+      selected_metadata = selected, exposure_contrasts = exposure_contrasts,
+      factor_levels = factor_levels
+    )
+  )
+  list(
+    spec = spec, selected_metadata = selected, count_matrix = count_matrix,
+    VALID_TESTS = valid_tests, REPORT_WITHIN = report_within,
+    EXPOSURE_CONTRASTS = exposure_contrasts, varying_factors = varying,
+    selector_tag = selector_tag, summary_rows = summary_rows
+  )
+}
+
+# BEGIN RNA-seq contrast helpers
+observed_factor_levels <- function(data, factor_name, factor_levels) {
+  intersect(factor_levels[[factor_name]],
+            unique(stats::na.omit(as.character(data[[factor_name]]))))
+}
+
+factor_contrast_options <- function(factor_name, levels, exposure_contrasts,
+                                    factor_levels) {
+  if (factor_name == "EXPOSURE") {
+    return(lapply(exposure_contrasts, function(pair) {
+      pair_levels <- strsplit(pair, "-", fixed = TRUE)[[1]]
+      stats::setNames(c(1, -1), pair_levels)
+    }))
+  }
+  reference <- factor_levels[[factor_name]][factor_levels[[factor_name]] %in% levels][1]
+  targets <- setdiff(levels, reference)
+  lapply(targets, function(target) stats::setNames(c(1, -1), c(target, reference)))
+}
+
+contrast_label_for <- function(effect_factors, vectors, conditions) {
+  effects <- vapply(seq_along(effect_factors), function(i) {
+    weights <- vectors[[i]]
+    paste0(effect_factors[[i]], "=", names(weights)[[1]], "-", names(weights)[[2]])
+  }, character(1))
+  within <- if (length(conditions) == 0) character() else {
+    paste0("within ", names(conditions), "=", unname(conditions))
+  }
+  paste(c(effects, within), collapse = " | ")
+}
+
+build_contrast_weights <- function(effect_factors, vectors, conditions,
+                                   model_factors, group_cells) {
+  nuisance_factors <- setdiff(model_factors, c(effect_factors, names(conditions)))
+  nuisance_contexts <- if (length(nuisance_factors) == 0) {
+    data.frame(.context = 1L)
+  } else {
+    unique(group_cells[, nuisance_factors, drop = FALSE])
+  }
+  effect_grid <- expand.grid(lapply(vectors, names), KEEP.OUT.ATTRS = FALSE,
+                             stringsAsFactors = FALSE)
+  names(effect_grid) <- effect_factors
+  weights <- numeric(nrow(group_cells))
+  n_complete_contexts <- 0L
+  for (context_i in seq_len(nrow(nuisance_contexts))) {
+    context_weights <- numeric(nrow(group_cells))
+    context_complete <- TRUE
+    for (effect_i in seq_len(nrow(effect_grid))) {
+      target <- as.list(effect_grid[effect_i, , drop = FALSE])
+      target[names(conditions)] <- as.list(conditions)
+      if (length(nuisance_factors) > 0) {
+        target[nuisance_factors] <-
+          as.list(nuisance_contexts[context_i, nuisance_factors, drop = FALSE])
+      }
+      matches <- rep(TRUE, nrow(group_cells))
+      for (factor_name in model_factors) {
+        matches <- matches & as.character(group_cells[[factor_name]]) ==
+          as.character(target[[factor_name]])
+      }
+      cell_i <- which(matches)
+      if (length(cell_i) != 1) {
+        context_complete <- FALSE
+        break
+      }
+      cell_weight <- prod(vapply(seq_along(vectors), function(i) {
+        vectors[[i]][as.character(effect_grid[[effect_factors[[i]]]][[effect_i]])]
+      }, numeric(1)))
+      context_weights[cell_i] <- context_weights[cell_i] + cell_weight
+    }
+    if (context_complete) {
+      weights <- weights + context_weights
+      n_complete_contexts <- n_complete_contexts + 1L
+    }
+  }
+  if (n_complete_contexts == 0L) {
+    return(list(weights = NULL, reason = "Required contrast cells are missing or empty."))
+  }
+  list(weights = weights / n_complete_contexts, reason = NULL)
+}
+
+intersection_patients <- function(group_indices, group_cells, metadata) {
+  if (length(group_indices) == 0) return(character())
+  patient_sets <- lapply(group_indices, function(i) {
+    as.character(metadata$PATIENTCODE[metadata$GROUP == group_cells$GROUP[[i]]])
+  })
+  Reduce(intersect, patient_sets, init = patient_sets[[1]])
+}
+
+patients_by_sex <- function(group_indices, group_cells, metadata) {
+  if (length(group_indices) == 0) return(list())
+  if (!"SEX" %in% names(group_cells)) {
+    return(list(all = intersection_patients(group_indices, group_cells, metadata)))
+  }
+  sex_levels <- unique(as.character(group_cells$SEX[group_indices]))
+  stats::setNames(lapply(sex_levels, function(sex_level) {
+    sex_groups <- group_indices[as.character(group_cells$SEX[group_indices]) == sex_level]
+    intersection_patients(sex_groups, group_cells, metadata)
+  }), sex_levels)
+}
+# END RNA-seq contrast helpers
+
+run_teer_ldh_models <- function(data, response_name, alpha_q = ALPHA_Q) {
+  strata <- tidyr::expand_grid(
+    CELLTYPE = CELLTYPE_LEVELS,
+    HORMONE = HORMONE_LEVELS,
+    SEX = c("All", SEX_LEVELS)
+  )
+  results <- purrr::map_dfr(seq_len(nrow(strata)), function(i) {
+    s <- strata[i, ]
+    d <- data %>% dplyr::filter(CELLTYPE == s$CELLTYPE, HORMONE == s$HORMONE)
+    model_data <- if (s$SEX == "All") d else d %>% dplyr::filter(SEX == s$SEX)
+    model_data <- model_data %>%
+      dplyr::mutate(EXPOSURE = droplevels(EXPOSURE))
+    if (nrow(model_data) == 0 ||
+        dplyr::n_distinct(model_data$EXPOSURE, na.rm = TRUE) < 2 ||
+        !PBS_LEVEL %in% as.character(model_data$EXPOSURE)) {
+      return(tibble::tibble())
+    }
+    fit <- try(
+      exposure_lmer_pairwise(model_data, group = "All", adjust_method = "fdr",
+                             response_columns = response_name, ctrl_level = PBS_LEVEL),
+      silent = TRUE
+    )
+    if (inherits(fit, "try-error") || nrow(fit) == 0) return(tibble::tibble())
+    fit %>%
+      dplyr::mutate(
+        CELLTYPE = s$CELLTYPE, HORMONE = s$HORMONE, SEX = s$SEX,
+        response = response_name,
+        exposure = sub(paste0(" - ", PBS_LEVEL, "$"), "", contrast),
+        p_adj = p.value, p_adjustment_method = "fdr",
+        p_adjustment = paste(
+          "emmeans FDR within each CELLTYPE × HORMONE × SEX model call"
+        ),
+        significant = !is.na(p.value) & p.value < alpha_q
+      )
+  })
+  cat("  ", response_name, "analyzed rows:",
+      sum(!is.na(data[[response_name]])), "\n", sep = "")
+  cat("  ", response_name, "significant contrasts:",
+      sum(results$significant, na.rm = TRUE), "\n", sep = "")
+  results
+}
+
+fmt_mean_sd <- function(x, digits = 3) {
+  m <- mean(x, na.rm = TRUE)
+  s <- stats::sd(x, na.rm = TRUE)
+  if (is.na(m)) return(NA_character_)
+  sprintf(paste0("%.", digits, "f \u00b1 %.", digits, "f"),
+          m, ifelse(is.na(s), 0, s))
+}
+
 # ── Hormone label recoding ────────────────────────────────────────────────────
 
 recode_hormone_labels <- function(df, exp_short, e2_label, hormone_levels) {

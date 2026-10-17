@@ -118,6 +118,7 @@ build_sala_full <- function(sala_avg, metadata) {
       } else {
         joined[[field]] <- joined[[meta_field]]
       }
+
     }
   }
 
@@ -135,6 +136,30 @@ build_sala_full <- function(sala_avg, metadata) {
   }
 
   joined
+}
+
+ensure_all_analyzed_for_export <- function(df,
+                                           cytokine_col = "CYTOKINE",
+                                           q_col = "q",
+                                           sig_col = "sig",
+                                           ref_cytokines = NULL) {
+  stopifnot(cytokine_col %in% names(df))
+  if (!q_col %in% names(df)) df[[q_col]] <- NA_real_
+  if (!sig_col %in% names(df)) df[[sig_col]] <- NA
+
+  if (!is.null(ref_cytokines)) {
+    missing_cyts <- setdiff(ref_cytokines, unique(df[[cytokine_col]]))
+    if (length(missing_cyts) > 0) {
+      stub <- tibble::tibble(!!cytokine_col := missing_cyts)
+      df <- dplyr::bind_rows(df, stub)
+    }
+  }
+
+  df %>%
+    dplyr::mutate(
+      analyzed_by_model = !is.na(.data[[q_col]]),
+      !!sig_col := dplyr::coalesce(.data[[sig_col]], FALSE)
+    )
 }
 
 extract_hpiv3_sample_components <- function(sample_names) {
