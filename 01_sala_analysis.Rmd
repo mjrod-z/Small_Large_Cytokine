@@ -142,16 +142,6 @@ ldh_lmer_results <- run_teer_ldh_models(SALA_TEER_analyzed, "LDH")
 teer_ldh_lmer_results <- dplyr::bind_rows(teer_lmer_results, ldh_lmer_results)
 save_table(teer_ldh_lmer_results, "TEERCHANGE_LDH_lmer_results.csv")
 
-# Significance-star colors for the SEX-stratified contrasts shown on the
-# TEER/LDH boxplots. These are defined separately from UP_COLOR/DOWN_COLOR
-# (used elsewhere for up/down direction) so the two color conventions don't
-# get confused, even though SIG_COLOR_M intentionally reuses DOWN_COLOR's hex
-# here with a different meaning ("significant in Males only", not "Down").
-SIG_COLOR_ALL <- "#D7191C"  # SEX == "All" (pooled) significant -- matches UP_COLOR
-SIG_COLOR_M   <- "#2C7BB6"  # SEX == "M" significant -- matches DOWN_COLOR's hex,
-                             # but here means "male-only significant", not "Down"
-SIG_COLOR_F   <- "#9B59B6"  # SEX == "F" significant -- purple/magenta
-
 teerchange_plot <- plot_teer_ldh(
   SALA_TEER_analyzed, "TEERCHANGE",
   "TEERCHANGE (POST - PRE) by exposure",

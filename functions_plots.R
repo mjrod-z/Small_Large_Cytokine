@@ -7,6 +7,10 @@
 UP_COLOR_DEFAULT   <- "#D7191C"
 DOWN_COLOR_DEFAULT <- "#2C7BB6"
 ESTRADIOL_FILL_DEFAULT <- "#E8F5E9"
+# TEER/LDH significance colors encode sex strata, not up/down effect direction.
+SIG_COLOR_ALL <- UP_COLOR_DEFAULT
+SIG_COLOR_M <- DOWN_COLOR_DEFAULT
+SIG_COLOR_F <- "#9B59B6"
 
 # ── Label helpers ───────────────────────────────────────────────────────────────
 
@@ -379,8 +383,8 @@ add_rescaled_size <- function(df, value_col,
 
 build_teer_sig_annotations <- function(results, response_name,
                                        alpha_q = ALPHA_Q,
-                                       colors = c(All = "#D7191C", M = "#2C7BB6",
-                                                  F = "#9B59B6")) {
+                                       colors = c(All = SIG_COLOR_ALL, M = SIG_COLOR_M,
+                                                  F = SIG_COLOR_F)) {
   results %>%
     dplyr::filter(response == response_name, significant == TRUE) %>%
     dplyr::mutate(
@@ -402,7 +406,7 @@ build_teer_sig_annotations <- function(results, response_name,
 
 plot_teer_ldh <- function(data, response_name, title, filename, y_label,
                           sig_annotations = NULL, grid_break = NULL,
-                          sig_colors = c(M = "#2C7BB6", F = "#9B59B6")) {
+                          sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F)) {
   d <- data %>%
     dplyr::filter(!is.na(.data[[response_name]])) %>%
     dplyr::mutate(

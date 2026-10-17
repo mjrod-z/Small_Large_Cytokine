@@ -834,9 +834,10 @@ if (!RUN_RNASEQ_CAMPAIGN) {
         effect_factors <- spec$effect_factors
         conditions <- spec$conditions
         fit_i <- spec$fit
+        contrast_model_data <- fit_i$model_data
         if (length(effect_factors) == 0) next
         effect_levels <- lapply(effect_factors, function(factor_name) {
-          observed_factor_levels(model_data, factor_name, RNA_FACTOR_LEVELS)
+          observed_factor_levels(contrast_model_data, factor_name, RNA_FACTOR_LEVELS)
         })
         names(effect_levels) <- effect_factors
         contrast_options <- lapply(seq_along(effect_factors), function(i) {
@@ -891,7 +892,7 @@ if (!RUN_RNASEQ_CAMPAIGN) {
           contrast_matrix <- tryCatch(
             variancePartition::makeContrastsDream(
               fit_i$full_formula,
-              model_data,
+              contrast_model_data,
               contrasts = stats::setNames(contrast_expression, "selected_contrast")
             ),
             error = function(e) e
@@ -909,7 +910,8 @@ if (!RUN_RNASEQ_CAMPAIGN) {
           # so the contrast matrix must instead be passed via dream()'s L= argument.
           contrast_fit <- tryCatch({
             fit_L <- variancePartition::dream(
-              fit_i$voom_i, fit_i$full_formula, data = model_data, L = contrast_matrix
+              fit_i$voom_i, fit_i$full_formula,
+              data = contrast_model_data, L = contrast_matrix
             )
             limma::eBayes(fit_L)
           }, error = function(e) e)
@@ -937,7 +939,9 @@ if (!RUN_RNASEQ_CAMPAIGN) {
           }
           positive_groups <- used_groups[weights_result$weights[used_groups] > 0]
           negative_groups <- used_groups[weights_result$weights[used_groups] < 0]
-          support_by_sex <- patients_by_sex(used_groups, fit_i$group_cells, model_data)
+          support_by_sex <- patients_by_sex(
+            used_groups, fit_i$group_cells, contrast_model_data
+          )
           if ("SEX" %in% effect_factors && "SEX" %in% fit_i$core_factors) {
             n_patients_contrast <- min(lengths(support_by_sex))
             sex_effect_i <- match("SEX", effect_factors)
@@ -948,12 +952,20 @@ if (!RUN_RNASEQ_CAMPAIGN) {
             arm2_groups <- used_groups[
               as.character(fit_i$group_cells$SEX[used_groups]) == sex_levels_i[[2]]
             ]
-            arm1_patients <- intersection_patients(arm1_groups, fit_i$group_cells, model_data)
-            arm2_patients <- intersection_patients(arm2_groups, fit_i$group_cells, model_data)
+            arm1_patients <- intersection_patients(
+              arm1_groups, fit_i$group_cells, contrast_model_data
+            )
+            arm2_patients <- intersection_patients(
+              arm2_groups, fit_i$group_cells, contrast_model_data
+            )
           } else {
             n_patients_contrast <- length(unique(unlist(support_by_sex, use.names = FALSE)))
-            arm1_by_sex <- patients_by_sex(positive_groups, fit_i$group_cells, model_data)
-            arm2_by_sex <- patients_by_sex(negative_groups, fit_i$group_cells, model_data)
+            arm1_by_sex <- patients_by_sex(
+              positive_groups, fit_i$group_cells, contrast_model_data
+            )
+            arm2_by_sex <- patients_by_sex(
+              negative_groups, fit_i$group_cells, contrast_model_data
+            )
             arm1_patients <- unique(unlist(arm1_by_sex, use.names = FALSE))
             arm2_patients <- unique(unlist(arm2_by_sex, use.names = FALSE))
           }
