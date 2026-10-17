@@ -408,6 +408,17 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
                           sig_annotations = NULL, grid_break = NULL,
                           sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F),
                           output_path = PATH_OUTPUT_FIGURES) {
+  if (!all(c("M", "F") %in% names(sig_colors))) {
+    stop("sig_colors must include named colors for M and F.")
+  }
+  star_color_caption <- "none"
+  if (!is.null(sig_annotations) && nrow(sig_annotations) > 0) {
+    star_colors <- unique(sig_annotations[c("SEX", "sig_color")])
+    star_color_caption <- paste(
+      paste0(star_colors$SEX, "=", star_colors$sig_color),
+      collapse = ", "
+    )
+  }
   d <- data %>%
     dplyr::filter(!is.na(.data[[response_name]])) %>%
     dplyr::mutate(
@@ -473,9 +484,9 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
       caption = paste0(
         "Points are individual samples; boxplots show median, IQR (box), ",
         "and whiskers extending to 1.5x IQR.\n",
-        "Points: blue circles = M, purple triangles = F. ",
-        "Significance stars: red = significant overall, blue = significant in Males only, ",
-        "purple = significant in Females only (FDR-adjusted p < 0.05)."
+        "Points: M circles (", sig_colors[["M"]], "), F triangles (",
+        sig_colors[["F"]], "). Significance-star colors by stratum: ",
+        star_color_caption, " (FDR-adjusted p < 0.05)."
       )
     )
   if (!is.null(sig_annotations) && nrow(sig_annotations) > 0) {
