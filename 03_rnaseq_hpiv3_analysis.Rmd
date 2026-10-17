@@ -939,7 +939,8 @@ if (!RUN_RNASEQ_CAMPAIGN) {
           positive_groups <- used_groups[weights_result$weights[used_groups] > 0]
           negative_groups <- used_groups[weights_result$weights[used_groups] < 0]
           support_by_sex <- patients_by_sex(
-            used_groups, fit_i$group_cells, contrast_model_data
+            used_groups, fit_i$group_cells, contrast_model_data,
+            metadata_group_col = fit_i$group_col
           )
           if ("SEX" %in% effect_factors && "SEX" %in% fit_i$core_factors) {
             n_patients_contrast <- min(lengths(support_by_sex))
@@ -952,18 +953,22 @@ if (!RUN_RNASEQ_CAMPAIGN) {
               as.character(fit_i$group_cells$SEX[used_groups]) == sex_levels_i[[2]]
             ]
             arm1_patients <- intersection_patients(
-              arm1_groups, fit_i$group_cells, contrast_model_data
+              arm1_groups, fit_i$group_cells, contrast_model_data,
+              metadata_group_col = fit_i$group_col
             )
             arm2_patients <- intersection_patients(
-              arm2_groups, fit_i$group_cells, contrast_model_data
+              arm2_groups, fit_i$group_cells, contrast_model_data,
+              metadata_group_col = fit_i$group_col
             )
           } else {
             n_patients_contrast <- length(unique(unlist(support_by_sex, use.names = FALSE)))
             arm1_by_sex <- patients_by_sex(
-              positive_groups, fit_i$group_cells, contrast_model_data
+              positive_groups, fit_i$group_cells, contrast_model_data,
+              metadata_group_col = fit_i$group_col
             )
             arm2_by_sex <- patients_by_sex(
-              negative_groups, fit_i$group_cells, contrast_model_data
+              negative_groups, fit_i$group_cells, contrast_model_data,
+              metadata_group_col = fit_i$group_col
             )
             arm1_patients <- unique(unlist(arm1_by_sex, use.names = FALSE))
             arm2_patients <- unique(unlist(arm2_by_sex, use.names = FALSE))

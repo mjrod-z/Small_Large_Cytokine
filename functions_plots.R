@@ -1072,14 +1072,23 @@ plot_sala_factor_pca <- function(pca_df, pc_labels,
     hormone = panel("HORMONE", c(NONE = "grey50", Estradiol = "#4DAF4A"),
                     "Hormone", "PCA — By Hormone")
   )
+  plot_file_names <- c(
+    exposure = "pca_by_exposure.png",
+    airway = "pca_by_airway.png",
+    sex = "pca_by_sex.png",
+    hormone = "pca_by_hormone.png"
+  )
+  if (!setequal(names(plots), names(plot_file_names))) {
+    stop("PCA plot names and individual output filenames must stay in sync.")
+  }
   combined <- cowplot::plot_grid(
     plotlist = plots, nrow = 2, ncol = 2, labels = "AUTO", label_size = 14
   )
   if (!is.null(output_path)) {
     save_plot("pca_by_exposure_airway_sex_hormone.png", combined,
               width = 14, height = 10, dpi = 300, bg = "white", path = output_path)
-    for (name in names(plots)) {
-      save_plot(paste0("pca_by_", name, ".png"), plots[[name]], width = 7, height = 6,
+    for (name in names(plot_file_names)) {
+      save_plot(plot_file_names[[name]], plots[[name]], width = 7, height = 6,
                 dpi = 300, bg = "white", path = output_path)
     }
   }

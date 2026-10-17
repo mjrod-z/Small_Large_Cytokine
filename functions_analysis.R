@@ -267,23 +267,29 @@ build_contrast_weights <- function(effect_factors, vectors, conditions,
   list(weights = weights / n_complete_contexts, reason = NULL)
 }
 
-intersection_patients <- function(group_indices, group_cells, metadata) {
+intersection_patients <- function(group_indices, group_cells, metadata,
+                                  metadata_group_col = "GROUP") {
   if (length(group_indices) == 0) return(character())
   patient_sets <- lapply(group_indices, function(i) {
-    as.character(metadata$PATIENTCODE[metadata$GROUP == group_cells$GROUP[[i]]])
+    as.character(metadata$PATIENTCODE[
+      metadata[[metadata_group_col]] == group_cells$GROUP[[i]]
+    ])
   })
   Reduce(intersect, patient_sets, init = patient_sets[[1]])
 }
 
-patients_by_sex <- function(group_indices, group_cells, metadata) {
+patients_by_sex <- function(group_indices, group_cells, metadata,
+                            metadata_group_col = "GROUP") {
   if (length(group_indices) == 0) return(list())
   if (!"SEX" %in% names(group_cells)) {
-    return(list(all = intersection_patients(group_indices, group_cells, metadata)))
+    return(list(all = intersection_patients(
+      group_indices, group_cells, metadata, metadata_group_col
+    )))
   }
   sex_levels <- unique(as.character(group_cells$SEX[group_indices]))
   stats::setNames(lapply(sex_levels, function(sex_level) {
     sex_groups <- group_indices[as.character(group_cells$SEX[group_indices]) == sex_level]
-    intersection_patients(sex_groups, group_cells, metadata)
+    intersection_patients(sex_groups, group_cells, metadata, metadata_group_col)
   }), sex_levels)
 }
 
@@ -357,7 +363,6 @@ fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split
     unname(group_name_map[as.character(group_raw)]),
     levels = unname(group_name_map)
   )
-  model_data$GROUP <- model_data[[group_col]]
   group_cells <- unique(model_data[, c(core_factors, group_col), drop = FALSE])
   names(group_cells)[names(group_cells) == group_col] <- "GROUP"
   term_labels <- paste(c(paste(core_factors, collapse = ":"), other_terms), collapse = " + ")
@@ -372,6 +377,7 @@ fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split
         "]; the requested factor combination is not estimable for this spec."
       ),
       formula_label = formula_label, term_labels = term_labels,
+      group_col = group_col,
       model_data = model_data
     ))
   }
@@ -392,7 +398,7 @@ fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split
     return(list(
       ok = FALSE, reason = conditionMessage(fit_attempt),
       formula_label = paste(deparse(full_formula), collapse = " "),
-      term_labels = term_labels, model_data = model_data
+      term_labels = term_labels, group_col = group_col, model_data = model_data
     ))
   }
   list(
@@ -400,7 +406,7 @@ fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split
     group_coef_map = stats::setNames(group_design_cols, levels(model_data[[group_col]])),
     voom_i = fit_attempt, full_formula = full_formula,
     formula_label = paste(deparse(full_formula), collapse = " "),
-    term_labels = term_labels, n_samples = nrow(model_data),
+    term_labels = term_labels, n_samples = nrow(model_data), group_col = group_col,
     model_data = model_data
   )
 }

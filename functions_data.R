@@ -704,7 +704,7 @@ filter_rnaseq_count_matrix <- function(
     include_qc = TRUE) {
   count_matrix <- as.matrix(count_matrix)
   if (is.null(rownames(count_matrix)) || is.null(colnames(count_matrix)) ||
-      anyNA(count_matrix) || any(!is.finite(count_matrix)) ||
+      any(!is.finite(count_matrix)) ||
       any(count_matrix < 0)) {
     stop("count_matrix must be a named matrix of finite, non-negative counts.")
   }
