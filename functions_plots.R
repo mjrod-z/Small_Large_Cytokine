@@ -927,7 +927,246 @@ plot_all_cytokine_single_combo_bars <- function(
       stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
     }
   }
-  
+
+  plot_sala_variance_summary <- function(vp_summary, vp_plots,
+                                        exposure_levels = ALL_HIGH_DOSE_EXPOSURES,
+                                        output_path = NULL) {
+    p_vp_combined <- cowplot::plot_grid(
+      plotlist = vp_plots, nrow = 2, ncol = 2, labels = "AUTO", label_size = 12
+    )
+    p_smoker_dot <- vp_summary %>%
+      dplyr::select(Cytokine, Exposure, SMOKER) %>%
+      dplyr::mutate(
+        Exposure = factor(Exposure, levels = exposure_levels),
+        Cytokine = reorder(Cytokine, SMOKER, FUN = mean)
+      ) %>%
+      ggplot2::ggplot(ggplot2::aes(x = Exposure, y = Cytokine,
+                                   size = SMOKER, color = SMOKER)) +
+      ggplot2::geom_point(alpha = 0.85) +
+      ggplot2::scale_size_continuous(name = "% Variance", range = c(1, 8),
+                                     limits = c(0, NA)) +
+      ggplot2::scale_color_gradient(low = "grey80", high = UP_COLOR_DEFAULT,
+                                    name = "% Variance") +
+      ggplot2::labs(title = "SMOKER contribution to cytokine variance by fuel type",
+                    x = NULL, y = "Cytokine") +
+      ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::theme(
+        plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+        panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.grid.major = ggplot2::element_line(color = "gray88"),
+        axis.text.x = ggplot2::element_text(angle = 30, hjust = 1, face = "bold"),
+        axis.text.y = ggplot2::element_text(face = "bold"),
+        legend.position = "right"
+      )
+    if (!is.null(output_path)) {
+      save_plot("smoker_variance_partition_all_exposures.png", p_vp_combined,
+                width = 14, height = 10, dpi = 300, bg = "white", path = output_path)
+      save_plot("smoker_variance_summary_dotplot.png", p_smoker_dot,
+                width = 8, height = 7, dpi = 300, bg = "white", path = output_path)
+    }
+    list(variance_grid = p_vp_combined, smoker_dotplot = p_smoker_dot)
+  }
+
+  plot_sala_smoker_pca <- function(pca_df, variance_explained, last_exposure,
+                                   output_path = NULL,
+                                   exposure_colors = EXPOSURE_COLORS_DEEP) {
+    p_pca_smoker <- ggplot2::ggplot(
+      pca_df, ggplot2::aes(PC1, PC2, fill = SMOKER, color = SMOKER, shape = SEX)
+    ) +
+      ggplot2::stat_ellipse(ggplot2::aes(group = SMOKER), geom = "polygon",
+                            alpha = 0.12, linewidth = 0.6, show.legend = FALSE) +
+      ggplot2::geom_point(size = 3, alpha = 0.85, stroke = 0.8) +
+      ggplot2::scale_fill_manual(values = c(Y = UP_COLOR_DEFAULT, N = DOWN_COLOR_DEFAULT),
+                                 labels = c(Y = "Smoker", N = "Non-smoker"),
+                                 name = "Smoking status") +
+      ggplot2::scale_color_manual(values = c(Y = UP_COLOR_DEFAULT, N = DOWN_COLOR_DEFAULT),
+                                  labels = c(Y = "Smoker", N = "Non-smoker"),
+                                  name = "Smoking status") +
+      ggplot2::scale_shape_manual(values = c(M = 21, F = 22),
+                                  labels = c(M = "Male", F = "Female"), name = "Sex") +
+      ggplot2::labs(
+        x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+        y = paste0("PC2 (", round(variance_explained[2], 1), "%)"),
+        title = "PCA — Cytokine profiles by smoking status",
+        subtitle = paste0("Last exposure: ", last_exposure, " + PBS")
+      ) +
+      ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::theme(
+        plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+        plot.subtitle = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey40"),
+        panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.grid.major = ggplot2::element_line(color = "gray88"),
+        panel.grid.minor = ggplot2::element_blank()
+      )
+    p_pca_exposure <- ggplot2::ggplot(
+      pca_df, ggplot2::aes(PC1, PC2, fill = EXPOSURE, color = EXPOSURE, shape = SMOKER)
+    ) +
+      ggplot2::stat_ellipse(ggplot2::aes(group = EXPOSURE), geom = "polygon",
+                            alpha = 0.12, linewidth = 0.6, show.legend = FALSE) +
+      ggplot2::geom_point(size = 3, alpha = 0.85, stroke = 0.8) +
+      ggplot2::scale_fill_manual(values = c(exposure_colors, PBS_Control = "grey50"),
+                                 name = "Exposure") +
+      ggplot2::scale_color_manual(values = c(exposure_colors, PBS_Control = "grey50"),
+                                  name = "Exposure") +
+      ggplot2::scale_shape_manual(values = c(Y = 24, N = 21),
+                                  labels = c(Y = "Smoker", N = "Non-smoker"),
+                                  name = "Smoking status") +
+      ggplot2::labs(
+        x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+        y = paste0("PC2 (", round(variance_explained[2], 1), "%)"),
+        title = "PCA — Cytokine profiles by exposure",
+        subtitle = "Shape = smoking status"
+      ) +
+      ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::theme(
+        plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+        plot.subtitle = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey40"),
+        panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.grid.major = ggplot2::element_line(color = "gray88"),
+        panel.grid.minor = ggplot2::element_blank()
+      )
+    combined <- cowplot::plot_grid(p_pca_smoker, p_pca_exposure, nrow = 1,
+                                   labels = c("A", "B"), label_size = 14)
+    if (!is.null(output_path)) {
+      save_plot("smoker_pca_combined.png", combined, width = 14, height = 6,
+                dpi = 300, bg = "white", path = output_path)
+    }
+    list(smoker = p_pca_smoker, exposure = p_pca_exposure, combined = combined)
+  }
+
+  plot_sala_factor_pca <- function(pca_df, pc_labels,
+                                   exposure_colors = EXPOSURE_COLORS_DEEP,
+                                   output_path = NULL) {
+    base_theme <- ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::theme(
+        plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+        plot.subtitle = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey40"),
+        panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.grid.major = ggplot2::element_line(color = "gray88"),
+        panel.grid.minor = ggplot2::element_blank(),
+        strip.text = ggplot2::element_text(face = "bold")
+      )
+    panel <- function(variable, values, legend, title, shape = 21) {
+      ggplot2::ggplot(pca_df, ggplot2::aes(PC1, PC2, fill = .data[[variable]],
+                                          color = .data[[variable]])) +
+        ggplot2::stat_ellipse(ggplot2::aes(group = .data[[variable]]), geom = "polygon",
+                              alpha = 0.10, linewidth = 0.6, show.legend = FALSE) +
+        ggplot2::geom_point(shape = shape, size = 2.5, alpha = 0.85, stroke = 0.6) +
+        ggplot2::scale_fill_manual(values = values, name = legend) +
+        ggplot2::scale_color_manual(values = values, name = legend) +
+        ggplot2::labs(x = pc_labels["x"], y = pc_labels["y"], title = title) +
+        base_theme
+    }
+    plots <- list(
+      exposure = panel("EXPOSURE", c(exposure_colors, PBS_Control = "grey50"),
+                       "Exposure", "PCA — By Exposure (wood fuel)"),
+      airway = panel("CELLTYPE", c(SAE = DOWN_COLOR_DEFAULT, LAE = UP_COLOR_DEFAULT),
+                     "Airway", "PCA — By Airway (SAE vs LAE)"),
+      sex = panel("SEX", c(F = UP_COLOR_DEFAULT, M = DOWN_COLOR_DEFAULT),
+                  "Sex", "PCA — By Sex"),
+      hormone = panel("HORMONE", c(NONE = "grey50", Estradiol = "#4DAF4A"),
+                      "Hormone", "PCA — By Hormone")
+    )
+    combined <- cowplot::plot_grid(
+      plotlist = plots, nrow = 2, ncol = 2, labels = "AUTO", label_size = 14
+    )
+    if (!is.null(output_path)) {
+      save_plot("pca_by_exposure_airway_sex_hormone.png", combined,
+                width = 14, height = 10, dpi = 300, bg = "white", path = output_path)
+      for (name in names(plots)) {
+        save_plot(paste0("pca_by_", name, ".png"), plots[[name]], width = 7, height = 6,
+                  dpi = 300, bg = "white", path = output_path)
+      }
+    }
+    c(plots, list(combined = combined))
+  }
+
+  plot_rnaseq_vst_heatmap <- function(vst_matrix, sample_annotation,
+                                     top_n = 50L, filename = NULL) {
+    gene_variance <- apply(vst_matrix, 1, stats::var, na.rm = TRUE)
+    variable_gene_indices <- which(is.finite(gene_variance) & gene_variance > 0)
+    if (length(variable_gene_indices) < 2 || ncol(vst_matrix) < 2) {
+      message("RNA-seq heatmap skipped; at least two variable genes and samples are needed.")
+      return(invisible(NULL))
+    }
+    top_gene_indices <- utils::head(
+      variable_gene_indices[order(gene_variance[variable_gene_indices], decreasing = TRUE)],
+      top_n
+    )
+    args <- list(
+      mat = vst_matrix[top_gene_indices, , drop = FALSE],
+      scale = "row",
+      annotation_col = sample_annotation,
+      show_rownames = length(top_gene_indices) <= 30,
+      show_colnames = ncol(vst_matrix) <= 40,
+      clustering_method = "complete",
+      silent = TRUE
+    )
+    if (!is.null(filename)) {
+      dir.create(dirname(filename), recursive = TRUE, showWarnings = FALSE)
+      args$filename <- filename
+      args$width <- 14
+      args$height <- 10
+    }
+    do.call(pheatmap::pheatmap, args)
+  }
+
+  plot_rnaseq_vst_pca <- function(pca_scores, variance_pct) {
+    ggplot2::ggplot(
+      pca_scores, ggplot2::aes(x = PC1, y = PC2, color = INFECTION, shape = SEX)
+    ) +
+      ggplot2::geom_point(size = 3, alpha = 0.85) +
+      ggplot2::facet_wrap(~ AIRWAY, scales = "free") +
+      ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::labs(
+        title = "HPIV3 RNA-seq PCA (VST)",
+        x = sprintf("PC1 (%.1f%%)", variance_pct[[1]]),
+        y = sprintf("PC2 (%.1f%%)", variance_pct[[2]]),
+        color = "Infection",
+        shape = "Sex"
+      )
+  }
+
+  plot_rnaseq_gene_overlap_summary <- function(membership_summary) {
+    ggplot2::ggplot(
+      membership_summary,
+      ggplot2::aes(x = membership_class, y = n_genes, fill = membership_class)
+    ) +
+      ggplot2::geom_col(show.legend = FALSE) +
+      ggplot2::facet_grid(airway ~ family, scales = "free_y") +
+      ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::labs(
+        title = "Unique/shared significant-gene overlap across model contrasts",
+        x = NULL, y = "Genes"
+      )
+  }
+
+  plot_rnaseq_gene_overlap_upset <- function(family_membership, group_label) {
+    if (nrow(family_membership) == 0) {
+      return(
+        ggplot2::ggplot() +
+          ggplot2::theme_void() +
+          ggplot2::labs(
+            title = paste("Significant-gene overlap:", group_label),
+            subtitle = "No significant genes in the selected comparisons"
+          )
+      )
+    }
+    ggplot2::ggplot(family_membership, ggplot2::aes(x = sig_sets)) +
+      ggplot2::geom_bar(fill = "steelblue") +
+      ggupset::scale_x_upset(order_by = "freq") +
+      ggupset::theme_combmatrix(
+        combmatrix.panel.point.color.fill = "black",
+        combmatrix.panel.line.size = 0
+      ) +
+      ggplot2::theme_minimal(base_size = 10) +
+      ggplot2::labs(
+        title = paste("Significant-gene overlap:", group_label),
+        subtitle = "Intersections across up to 10 comparisons with the most DEGs",
+        x = NULL, y = "Number of genes"
+      )
+  }
+
   if (save) {
     ensure_dir(here::here(PATH_OUTPUT_FIGS, out_subdir))
   }
