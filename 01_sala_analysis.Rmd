@@ -49,13 +49,8 @@ set.seed(4454)
 source(here::here("_load_all.R"))
 
 suppressPackageStartupMessages({
-  library(lme4)
-  library(emmeans)
   library(variancePartition)
   library(cowplot)
-  library(ggnewscale)
-  library(ggpattern)
-  library(ARTool)
 })
 
 cat("✓ All packages loaded\n")
@@ -161,14 +156,22 @@ teerchange_plot <- plot_teer_ldh(
   SALA_TEER_analyzed, "TEERCHANGE",
   "TEERCHANGE (POST - PRE) by exposure",
   "teerchange_boxplot_all.png", "TEERCHANGE",
-  sig_annotations = build_teer_sig_annotations(teer_ldh_lmer_results, "TEERCHANGE"),
+  sig_annotations = build_teer_sig_annotations(
+    teer_ldh_lmer_results, "TEERCHANGE",
+    colors = c(All = SIG_COLOR_ALL, M = SIG_COLOR_M, F = SIG_COLOR_F)
+  ),
+  sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F),
   grid_break = 100
 )
 ldh_plot <- plot_teer_ldh(
   SALA_TEER_analyzed, "LDH",
   "LDH cytotoxicity by exposure",
   "ldh_boxplot_all.png", "LDH (%)",
-  sig_annotations = build_teer_sig_annotations(teer_ldh_lmer_results, "LDH"),
+  sig_annotations = build_teer_sig_annotations(
+    teer_ldh_lmer_results, "LDH",
+    colors = c(All = SIG_COLOR_ALL, M = SIG_COLOR_M, F = SIG_COLOR_F)
+  ),
+  sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F),
   grid_break = 20
 )
 ```
@@ -796,62 +799,11 @@ if (length(vp_results_list) > 0) {
   cat("✓ smoker_variance_all_exposures.csv saved (all variance-partitioned cytokines)\n")
   cat("  Unique cytokines in VP export:", dplyr::n_distinct(vp_summary_all_out$Cytokine), "\n")
 
-  # Violin plots per exposure
-  vp_plots <- lapply(names(vp_results_list), function(exp) {
-    variancePartition::plotVarPart(
-      variancePartition::sortCols(vp_results_list[[exp]])) +
-      ggplot2::labs(title = exp) +
-      ggplot2::theme(
-        plot.title  = ggplot2::element_text(face = "bold",
-                                            hjust = 0.5, size = 11),
-        axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 9)
-      )
-  })
-
-  p_vp_combined <- cowplot::plot_grid(
-    plotlist   = vp_plots,
-    nrow       = 2, ncol = 2,
-    labels     = "AUTO", label_size = 12
+  vp_plots <- plot_sala_variance_summary(
+    vp_summary_all, vp_results_list, output_path = PATH_OUTPUT_FIGS
   )
-  print(p_vp_combined)
-  save_plot("smoker_variance_partition_all_exposures.png",
-            p_vp_combined, width = 14, height = 10, dpi = 300, bg = "white")
-
-  # SMOKER summary dot plot
-  p_smoker_dot <- vp_summary_all %>%
-    dplyr::select(Cytokine, Exposure, SMOKER) %>%
-    dplyr::mutate(
-      Exposure = factor(Exposure, levels = ALL_HIGH_DOSE_EXPOSURES),
-      Cytokine = reorder(Cytokine, SMOKER, FUN = mean)
-    ) %>%
-    ggplot2::ggplot(ggplot2::aes(x = Exposure, y = Cytokine,
-                                 size = SMOKER, color = SMOKER)) +
-    ggplot2::geom_point(alpha = 0.85) +
-    ggplot2::scale_size_continuous(name   = "% Variance",
-                                   range  = c(1, 8), limits = c(0, NA)) +
-    ggplot2::scale_color_gradient(low    = "grey80",
-                                  high   = UP_COLOR_DEFAULT,
-                                  name   = "% Variance") +
-    ggplot2::labs(
-      title = "SMOKER contribution to cytokine variance by fuel type",
-      x     = NULL,
-      y     = "Cytokine"
-    ) +
-    ggplot2::theme_minimal(base_size = 12) +
-    ggplot2::theme(
-      plot.title       = ggplot2::element_text(face = "bold",
-                                               hjust = 0.5, size = 13),
-      panel.border     = ggplot2::element_rect(color = "black",
-                                               fill = NA, linewidth = 0.5),
-      panel.grid.major = ggplot2::element_line(color = "gray88"),
-      axis.text.x      = ggplot2::element_text(angle = 30,
-                                               hjust = 1, face = "bold"),
-      axis.text.y      = ggplot2::element_text(face = "bold"),
-      legend.position  = "right"
-    )
-  print(p_smoker_dot)
-  save_plot("smoker_variance_summary_dotplot.png",
-            p_smoker_dot, width = 8, height = 7, dpi = 300, bg = "white")
+  print(vp_plots$variance_grid)
+  print(vp_plots$smoker_dotplot)
 
   # PCA (uses last loop's cyt_mat / df_exp)
   pca_mat <- t(cyt_mat)
@@ -868,92 +820,11 @@ if (length(vp_results_list) > 0) {
       by = "SAMPLEID"
     )
 
-  # PCA A: coloured by SMOKER
-  p_pca_smoker <- ggplot2::ggplot(
-    pca_df,
-    ggplot2::aes(PC1, PC2, fill = SMOKER, color = SMOKER, shape = SEX)
-  ) +
-    ggplot2::stat_ellipse(ggplot2::aes(group = SMOKER),
-                          geom = "polygon", alpha = 0.12,
-                          linewidth = 0.6, show.legend = FALSE) +
-    ggplot2::geom_point(size = 3, alpha = 0.85, stroke = 0.8) +
-    ggplot2::scale_fill_manual(
-      values = c("Y" = UP_COLOR_DEFAULT,   "N" = DOWN_COLOR_DEFAULT),
-      labels = c("Y" = "Smoker",   "N" = "Non-smoker"),
-      name   = "Smoking status") +
-    ggplot2::scale_color_manual(
-      values = c("Y" = UP_COLOR_DEFAULT,   "N" = DOWN_COLOR_DEFAULT),
-      labels = c("Y" = "Smoker",   "N" = "Non-smoker"),
-      name   = "Smoking status") +
-    ggplot2::scale_shape_manual(
-      values = c("M" = 21, "F" = 22),
-      labels = c("M" = "Male", "F" = "Female"),
-      name   = "Sex") +
-    ggplot2::labs(
-      x        = paste0("PC1 (", round(var_exp[1], 1), "%)"),
-      y        = paste0("PC2 (", round(var_exp[2], 1), "%)"),
-      title    = "PCA \u2014 Cytokine profiles by smoking status",
-      subtitle = paste0("Last exposure: ", tail(names(vp_results_list), 1),
-                        " + PBS")
-    ) +
-    ggplot2::theme_minimal(base_size = 12) +
-    ggplot2::theme(
-      plot.title       = ggplot2::element_text(face = "bold",
-                                               hjust = 0.5, size = 13),
-      plot.subtitle    = ggplot2::element_text(hjust = 0.5, size = 10,
-                                               color = "grey40"),
-      panel.border     = ggplot2::element_rect(color = "black",
-                                               fill = NA, linewidth = 0.5),
-      panel.grid.major = ggplot2::element_line(color = "gray88"),
-      panel.grid.minor = ggplot2::element_blank()
-    )
-
-  # PCA B: coloured by EXPOSURE
-  p_pca_exposure <- ggplot2::ggplot(
-    pca_df,
-    ggplot2::aes(PC1, PC2, fill = EXPOSURE, color = EXPOSURE, shape = SMOKER)
-  ) +
-    ggplot2::stat_ellipse(ggplot2::aes(group = EXPOSURE),
-                          geom = "polygon", alpha = 0.12,
-                          linewidth = 0.6, show.legend = FALSE) +
-    ggplot2::geom_point(size = 3, alpha = 0.85, stroke = 0.8) +
-    ggplot2::scale_fill_manual(
-      values = c(EXPOSURE_COLORS_DEEP, "PBS_Control" = "grey50"),
-      name   = "Exposure") +
-    ggplot2::scale_color_manual(
-      values = c(EXPOSURE_COLORS_DEEP, "PBS_Control" = "grey50"),
-      name   = "Exposure") +
-    ggplot2::scale_shape_manual(
-      values = c("Y" = 24, "N" = 21),
-      labels = c("Y" = "Smoker", "N" = "Non-smoker"),
-      name   = "Smoking status") +
-    ggplot2::labs(
-      x        = paste0("PC1 (", round(var_exp[1], 1), "%)"),
-      y        = paste0("PC2 (", round(var_exp[2], 1), "%)"),
-      title    = "PCA \u2014 Cytokine profiles by exposure",
-      subtitle = "Shape = smoking status"
-    ) +
-    ggplot2::theme_minimal(base_size = 12) +
-    ggplot2::theme(
-      plot.title       = ggplot2::element_text(face = "bold",
-                                               hjust = 0.5, size = 13),
-      plot.subtitle    = ggplot2::element_text(hjust = 0.5, size = 10,
-                                               color = "grey40"),
-      panel.border     = ggplot2::element_rect(color = "black",
-                                               fill = NA, linewidth = 0.5),
-      panel.grid.major = ggplot2::element_line(color = "gray88"),
-      panel.grid.minor = ggplot2::element_blank()
-    )
-
-  p_pca_combined <- cowplot::plot_grid(
-    p_pca_smoker, p_pca_exposure,
-    nrow       = 1,
-    labels     = c("A", "B"),
-    label_size = 14
+  pca_plots <- plot_sala_smoker_pca(
+    pca_df, var_exp, tail(names(vp_results_list), 1),
+    output_path = PATH_OUTPUT_FIGS
   )
-  print(p_pca_combined)
-  save_plot("smoker_pca_combined.png",
-            p_pca_combined, width = 14, height = 6, dpi = 300, bg = "white")
+  print(pca_plots$combined)
 
   # Decision guide
   cat("\n=== SMOKER DECISION GUIDE ===\n")
@@ -1016,87 +887,10 @@ pc_labs <- c(
   y = paste0("PC2 (", round(var_exp_full[2], 1), "%)")
 )
 
-base_pca_theme <- ggplot2::theme_minimal(base_size = 12) +
-  ggplot2::theme(
-    plot.title       = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
-    plot.subtitle    = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey40"),
-    panel.border     = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
-    panel.grid.major = ggplot2::element_line(color = "gray88"),
-    panel.grid.minor = ggplot2::element_blank(),
-    strip.text       = ggplot2::element_text(face = "bold")
-  )
-
-# ── A) By EXPOSURE (wood fuel) ────────────────────────────────────────────
-p_pca_exposure_all <- ggplot2::ggplot(
-  pca_df_full, ggplot2::aes(PC1, PC2, fill = EXPOSURE, color = EXPOSURE)
-) +
-  ggplot2::stat_ellipse(ggplot2::aes(group = EXPOSURE),
-                        geom = "polygon", alpha = 0.10,
-                        linewidth = 0.6, show.legend = FALSE) +
-  ggplot2::geom_point(shape = 21, size = 2.5, alpha = 0.85, stroke = 0.6) +
-  ggplot2::scale_fill_manual(values = c(EXPOSURE_COLORS_DEEP, "PBS_Control" = "grey50"),
-                             name = "Exposure") +
-  ggplot2::scale_color_manual(values = c(EXPOSURE_COLORS_DEEP, "PBS_Control" = "grey50"),
-                              name = "Exposure") +
-  ggplot2::labs(x = pc_labs["x"], y = pc_labs["y"],
-                title = "PCA \u2014 By Exposure (wood fuel)") +
-  base_pca_theme
-
-# ── B) By AIRWAY (CELLTYPE) ────────────────────────────────────────────────
-p_pca_celltype <- ggplot2::ggplot(
-  pca_df_full, ggplot2::aes(PC1, PC2, fill = CELLTYPE, color = CELLTYPE)
-) +
-  ggplot2::stat_ellipse(ggplot2::aes(group = CELLTYPE),
-                        geom = "polygon", alpha = 0.10,
-                        linewidth = 0.6, show.legend = FALSE) +
-  ggplot2::geom_point(shape = 21, size = 2.5, alpha = 0.85, stroke = 0.6) +
-  ggplot2::scale_fill_manual(values = c("SAE" = DOWN_COLOR_DEFAULT, "LAE" = UP_COLOR_DEFAULT), name = "Airway") +
-  ggplot2::scale_color_manual(values = c("SAE" = DOWN_COLOR_DEFAULT, "LAE" = UP_COLOR_DEFAULT), name = "Airway") +
-  ggplot2::labs(x = pc_labs["x"], y = pc_labs["y"],
-                title = "PCA \u2014 By Airway (SAE vs LAE)") +
-  base_pca_theme
-
-# ── C) By SEX ───────────────────────────────────────────────────────────────
-p_pca_sex <- ggplot2::ggplot(
-  pca_df_full, ggplot2::aes(PC1, PC2, fill = SEX, color = SEX)
-) +
-  ggplot2::stat_ellipse(ggplot2::aes(group = SEX),
-                        geom = "polygon", alpha = 0.10,
-                        linewidth = 0.6, show.legend = FALSE) +
-  ggplot2::geom_point(shape = 21, size = 2.5, alpha = 0.85, stroke = 0.6) +
-  ggplot2::scale_fill_manual(values = c("F" = "#D7191C", "M" = "#2C7BB6"), name = "Sex") +
-  ggplot2::scale_color_manual(values = c("F" = "#D7191C", "M" = "#2C7BB6"), name = "Sex") +
-  ggplot2::labs(x = pc_labs["x"], y = pc_labs["y"], title = "PCA \u2014 By Sex") +
-  base_pca_theme
-
-# ── D) By HORMONE ─────────────────────────────────────────────────────────
-p_pca_hormone <- ggplot2::ggplot(
-  pca_df_full, ggplot2::aes(PC1, PC2, fill = HORMONE, color = HORMONE)
-) +
-  ggplot2::stat_ellipse(ggplot2::aes(group = HORMONE),
-                        geom = "polygon", alpha = 0.10,
-                        linewidth = 0.6, show.legend = FALSE) +
-  ggplot2::geom_point(shape = 21, size = 2.5, alpha = 0.85, stroke = 0.6) +
-  ggplot2::scale_fill_manual(values = c("NONE" = "grey50", "Estradiol" = "#4DAF4A"), name = "Hormone") +
-  ggplot2::scale_color_manual(values = c("NONE" = "grey50", "Estradiol" = "#4DAF4A"), name = "Hormone") +
-  ggplot2::labs(x = pc_labs["x"], y = pc_labs["y"], title = "PCA \u2014 By Hormone") +
-  base_pca_theme
-
-p_pca_factors_combined <- cowplot::plot_grid(
-  p_pca_exposure_all, p_pca_celltype, p_pca_sex, p_pca_hormone,
-  nrow = 2, ncol = 2,
-  labels = "AUTO", label_size = 14
+factor_pca_plots <- plot_sala_factor_pca(
+  pca_df_full, pc_labs, output_path = PATH_OUTPUT_FIGS
 )
-print(p_pca_factors_combined)
-
-save_plot("pca_by_exposure_airway_sex_hormone.png",
-          p_pca_factors_combined, width = 14, height = 10, dpi = 300, bg = "white")
-
-# Individual saves in case you want them separately
-save_plot("pca_by_exposure.png", p_pca_exposure_all, width = 7, height = 6, dpi = 300, bg = "white")
-save_plot("pca_by_airway.png",   p_pca_celltype,      width = 7, height = 6, dpi = 300, bg = "white")
-save_plot("pca_by_sex.png",      p_pca_sex,           width = 7, height = 6, dpi = 300, bg = "white")
-save_plot("pca_by_hormone.png",  p_pca_hormone,       width = 7, height = 6, dpi = 300, bg = "white")
+print(factor_pca_plots$combined)
 ```
 
 # Session Information

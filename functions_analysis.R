@@ -9,6 +9,7 @@ suppressPackageStartupMessages({
   library(ARTool)
 })
 
+# BEGIN RNA-seq selector and contrast helpers
 family_spec <- function(family) {
   switch(
     family,
@@ -283,7 +284,92 @@ patients_by_sex <- function(group_indices, group_cells, metadata) {
     intersection_patients(sex_groups, group_cells, metadata)
   }), sex_levels)
 }
+
+make_rnaseq_failure_row <- function(spec, test, context, reason, label = "",
+                                    model_formula = NA_character_,
+                                    model_terms = NA_character_,
+                                    n_samples = NA_integer_) {
+  tibble::tibble(
+    analysis = test,
+    test = test,
+    airway = spec$AIRWAY,
+    sex_stratum = spec$SEX_STRATUM,
+    family = spec$FAMILY,
+    spec_tag = spec$spec_tag,
+    contrast_id = paste(spec$spec_tag, test, context, label, sep = " | "),
+    contrast_label = label,
+    split_values = context,
+    failure_reason = reason,
+    model_formula = model_formula,
+    model_terms = model_terms,
+    n_samples = n_samples
+  )
+}
+
+fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split) {
+  other_terms <- setdiff(model_factors, core_factors)
+  group_col <- paste0("GROUP__", paste(sort(core_factors), collapse = "_"))
+  group_raw <- if (length(core_factors) == 1) {
+    interaction(model_data[[core_factors]], drop = TRUE, sep = "_")
+  } else {
+    do.call(
+      interaction,
+      c(model_data[core_factors], list(drop = TRUE, lex.order = TRUE, sep = "_"))
+    )
+  }
+  group_levels <- levels(group_raw)
+  group_name_map <- stats::setNames(make.names(group_levels, unique = TRUE), group_levels)
+  model_data[[group_col]] <- factor(
+    unname(group_name_map[as.character(group_raw)]),
+    levels = unname(group_name_map)
+  )
+  group_cells <- unique(model_data[, c(core_factors, group_col), drop = FALSE])
+  names(group_cells)[names(group_cells) == group_col] <- "GROUP"
+  term_labels <- paste(c(paste(core_factors, collapse = ":"), other_terms), collapse = " + ")
+  fixed_formula <- stats::reformulate(c(group_col, other_terms), intercept = FALSE)
+  design <- stats::model.matrix(fixed_formula, data = model_data)
+  formula_label <- paste(deparse(fixed_formula), collapse = " ")
+  if (qr(design)$rank < ncol(design)) {
+    return(list(
+      ok = FALSE,
+      reason = paste0(
+        "Fixed-effect design is rank-deficient for terms [", term_labels,
+        "]; the requested factor combination is not estimable for this spec."
+      ),
+      formula_label = formula_label, term_labels = term_labels,
+      model_data = model_data
+    ))
+  }
+  group_design_cols <- paste0(group_col, levels(model_data[[group_col]]))
+  stopifnot(all(group_design_cols %in% colnames(design)))
+  full_formula <- stats::as.formula(
+    paste(paste(deparse(fixed_formula), collapse = " "), "+ (1 | PATIENTCODE)")
+  )
+  fit_attempt <- tryCatch({
+    voom_i <- variancePartition::voomWithDreamWeights(
+      dge_split, full_formula, data = model_data
+    )
+    variancePartition::dream(voom_i, full_formula, data = model_data)
+    voom_i
+  }, error = function(e) e)
+  if (inherits(fit_attempt, "error")) {
+    return(list(
+      ok = FALSE, reason = conditionMessage(fit_attempt),
+      formula_label = paste(deparse(full_formula), collapse = " "),
+      term_labels = term_labels, model_data = model_data
+    ))
+  }
+  list(
+    ok = TRUE, core_factors = core_factors, group_cells = group_cells,
+    group_coef_map = stats::setNames(group_design_cols, levels(model_data[[group_col]])),
+    voom_i = fit_attempt, full_formula = full_formula,
+    formula_label = paste(deparse(full_formula), collapse = " "),
+    term_labels = term_labels, n_samples = nrow(model_data),
+    model_data = model_data
+  )
+}
 # END RNA-seq contrast helpers
+# END RNA-seq selector and contrast helpers
 
 run_teer_ldh_models <- function(data, response_name, alpha_q = ALPHA_Q) {
   strata <- tidyr::expand_grid(

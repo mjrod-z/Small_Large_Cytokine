@@ -5,9 +5,7 @@
 # This script does NOT require edgeR/limma/variancePartition. It validates
 # the *design* side of the refactor directly with base R:
 #
-#   1. It extracts the actual contrast-weight helper functions
-#      (`observed_factor_levels`, `factor_contrast_options`,
-#      `contrast_label_for`, `build_contrast_weights`) verbatim from the Rmd,
+#   1. It loads the selector and contrast helpers from functions_analysis.R,
 #      so this check stays in sync with the real implementation.
 #   2. It reproduces an unbalanced HORMONE x EXPOSURE sample layout like the
 #      one described in the issue: EXPOSURE = "PEAT" has zero HORMONE = "E2"
@@ -40,6 +38,17 @@ stopifnot(
 rmd_lines <- readLines(rmd_path, warn = FALSE)
 rmd_text <- paste(rmd_lines, collapse = "\n")
 
+analysis_lines <- readLines(file.path(dirname(rmd_path), "functions_analysis.R"), warn = FALSE)
+analysis_start <- match("# BEGIN RNA-seq selector and contrast helpers", analysis_lines)
+analysis_end <- match("# END RNA-seq selector and contrast helpers", analysis_lines)
+stopifnot(
+  "Cannot locate extracted RNA-seq helpers in functions_analysis.R" =
+    !is.na(analysis_start) && !is.na(analysis_end) && analysis_end > analysis_start
+)
+helper_env <- new.env(parent = globalenv())
+eval(parse(text = analysis_lines[seq.int(analysis_start + 1L, analysis_end - 1L)]),
+     envir = helper_env)
+
 selector_start <- match("```{r analysis-selector}", rmd_lines)
 selector_end <- if (is.na(selector_start)) {
   NA_integer_
@@ -52,6 +61,7 @@ stopifnot(
     !is.na(selector_start) && !is.na(selector_end)
 )
 selector_env <- new.env(parent = globalenv())
+list2env(as.list(helper_env), envir = selector_env)
 eval(parse(text = rmd_lines[seq.int(selector_start + 1L, selector_end - 1L)]),
      envir = selector_env)
 
@@ -130,27 +140,13 @@ stopifnot(
     }, logical(1)))
 )
 
-extract_block <- function(text, start_anchor, end_anchor) {
-  start_i <- regexpr(start_anchor, text, fixed = TRUE)
-  stopifnot("start anchor not found in Rmd" = start_i > 0)
-  end_i <- regexpr(end_anchor, text, fixed = TRUE)
-  stopifnot("end anchor not found in Rmd" = end_i > 0)
-  substr(text, start_i, end_i - 1L)
-}
-
-helper_source <- extract_block(
-  rmd_text,
-  "# BEGIN contrast-weight helpers",
-  "# END contrast-weight helpers"
-)
-
 # Selector constants referenced by the extracted helpers.
 RNA_HORMONE_LEVELS <- c("NONE", "E2")
 RNA_EXPOSURE_LEVELS <- c("PBS", "PEAT", "PINE")
 RNA_FACTOR_LEVELS <- list(HORMONE = RNA_HORMONE_LEVELS, EXPOSURE = RNA_EXPOSURE_LEVELS)
 EXPOSURE_CONTRASTS <- c("PEAT-PBS", "PINE-PBS")
 
-eval(parse(text = helper_source), envir = globalenv())
+list2env(as.list(helper_env), envir = globalenv())
 stopifnot(
   is.function(observed_factor_levels),
   is.function(factor_contrast_options),
@@ -197,8 +193,10 @@ stopifnot(
     qr(design)$rank == ncol(design)
 )
 
-effect_levels <- observed_factor_levels(model_data, "HORMONE")
-vectors <- list(factor_contrast_options("HORMONE", effect_levels)[[1]])
+effect_levels <- observed_factor_levels(model_data, "HORMONE", RNA_FACTOR_LEVELS)
+vectors <- list(factor_contrast_options(
+  "HORMONE", effect_levels, EXPOSURE_CONTRASTS, RNA_FACTOR_LEVELS
+)[[1]])
 weights_result <- build_contrast_weights(
   effect_factors = "HORMONE", vectors = vectors, conditions = character(),
   model_factors = core_factors, group_cells = group_cells

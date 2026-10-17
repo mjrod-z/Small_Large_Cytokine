@@ -905,32 +905,19 @@ make_cytokine_barplot_single_combo <- function(
     )
 }
 
-plot_all_cytokine_single_combo_bars <- function(
-    df,
-    cytokines,
-    exposures  = ALL_HIGH_DOSE_EXPOSURES,
-    sexes      = c("M", "F"),
-    airways    = c("LAE", "SAE"),
-    sig_data   = NULL,
-    save       = TRUE,
-    out_subdir = "single_combo_barplots",
-    width      = 8,
-    height     = 5,
-    dpi        = 150
-) {
-  out <- list()
-  
-  if (!is.null(sig_data)) {
-    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
-    missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
-    if (length(missing_sig_cols) > 0) {
-      stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
-    }
-  }
-
-  plot_sala_variance_summary <- function(vp_summary, vp_plots,
+  plot_sala_variance_summary <- function(vp_summary, vp_results,
                                         exposure_levels = ALL_HIGH_DOSE_EXPOSURES,
                                         output_path = NULL) {
+    vp_plots <- lapply(names(vp_results), function(exposure) {
+      variancePartition::plotVarPart(
+        variancePartition::sortCols(vp_results[[exposure]])
+      ) +
+        ggplot2::labs(title = exposure) +
+        ggplot2::theme(
+          plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 11),
+          axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 9)
+        )
+    })
     p_vp_combined <- cowplot::plot_grid(
       plotlist = vp_plots, nrow = 2, ncol = 2, labels = "AUTO", label_size = 12
     )
@@ -1167,6 +1154,19 @@ plot_all_cytokine_single_combo_bars <- function(
       )
   }
 
+plot_all_cytokine_single_combo_bars_impl <- function(
+    df, cytokines, exposures = ALL_HIGH_DOSE_EXPOSURES,
+    sexes = c("M", "F"), airways = c("LAE", "SAE"),
+    sig_data = NULL, save = TRUE, out_subdir = "single_combo_barplots",
+    width = 8, height = 5, dpi = 150) {
+  out <- list()
+  if (!is.null(sig_data)) {
+    required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
+    missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
+    if (length(missing_sig_cols) > 0) {
+      stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
+    }
+  }
   if (save) {
     ensure_dir(here::here(PATH_OUTPUT_FIGS, out_subdir))
   }
@@ -1217,6 +1217,8 @@ plot_all_cytokine_single_combo_bars <- function(
   
   invisible(out)
 }
+
+plot_all_cytokine_single_combo_bars <- plot_all_cytokine_single_combo_bars_impl
 
 # ── Save helpers ──────────────────────────────────────────────────────────────
 
