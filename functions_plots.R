@@ -406,7 +406,8 @@ build_teer_sig_annotations <- function(results, response_name,
 
 plot_teer_ldh <- function(data, response_name, title, filename, y_label,
                           sig_annotations = NULL, grid_break = NULL,
-                          sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F)) {
+                          sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F),
+                          output_path = PATH_OUTPUT_FIGURES) {
   d <- data %>%
     dplyr::filter(!is.na(.data[[response_name]])) %>%
     dplyr::mutate(
@@ -498,13 +499,17 @@ plot_teer_ldh <- function(data, response_name, title, filename, y_label,
       dplyr::ungroup() %>%
       dplyr::mutate(EXPOSURE = factor(EXPOSURE,
                                       levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)))
-    p <- p + ggplot2::geom_text(
-      data = star_data, ggplot2::aes(x = EXPOSURE, y = y_star, label = sig_label),
-      color = star_data$sig_color, size = 5, fontface = "bold",
-      inherit.aes = FALSE
-    )
+    p <- p +
+      ggnewscale::new_scale_color() +
+      ggplot2::geom_text(
+        data = star_data,
+        ggplot2::aes(x = EXPOSURE, y = y_star, label = sig_label, color = sig_color),
+        size = 5, fontface = "bold", inherit.aes = FALSE
+      ) +
+      ggplot2::scale_color_identity()
   }
-  save_plot(filename, p, width = 12, height = 8, dpi = 300, bg = "white")
+  save_plot(filename, p, width = 12, height = 8, dpi = 300,
+            bg = "white", path = output_path)
   p
 }
 

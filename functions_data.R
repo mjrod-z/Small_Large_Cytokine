@@ -732,7 +732,8 @@ filter_rnaseq_count_matrix <- function(
     drop = FALSE
   ]
   library_sizes <- colSums(count_matrix)
-  cpm_matrix <- sweep(count_matrix, 2, library_sizes / 1e6, "/")
+  safe_library_sizes <- ifelse(library_sizes == 0, 1, library_sizes)
+  cpm_matrix <- sweep(count_matrix, 2, safe_library_sizes / 1e6, "/")
   cpm_matrix[, library_sizes == 0] <- 0
 
   stratum_values <- unique(sample_metadata[, strata_cols, drop = FALSE])
