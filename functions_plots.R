@@ -7,6 +7,10 @@
 UP_COLOR_DEFAULT   <- "#D7191C"
 DOWN_COLOR_DEFAULT <- "#2C7BB6"
 ESTRADIOL_FILL_DEFAULT <- "#E8F5E9"
+# TEER/LDH significance colors encode sex strata, not up/down effect direction.
+SIG_COLOR_ALL <- UP_COLOR_DEFAULT
+SIG_COLOR_M <- DOWN_COLOR_DEFAULT
+SIG_COLOR_F <- "#9B59B6"
 
 # ── Label helpers ───────────────────────────────────────────────────────────────
 
@@ -375,6 +379,167 @@ add_rescaled_size <- function(df, value_col,
                           log1p = log1p(mag2),
                           none  = mag2)
   df
+}
+
+build_teer_sig_annotations <- function(results, response_name,
+                                       alpha_q = ALPHA_Q,
+                                       colors = c(All = SIG_COLOR_ALL, M = SIG_COLOR_M,
+                                                  F = SIG_COLOR_F)) {
+  results %>%
+    dplyr::filter(response == response_name, significant == TRUE) %>%
+    dplyr::mutate(
+      sig_label = dplyr::case_when(
+        p_adj < 0.001 ~ "***", p_adj < 0.01 ~ "**", p_adj < alpha_q ~ "*",
+        TRUE ~ ""
+      ),
+      sig_color = dplyr::case_when(
+        SEX == "All" ~ colors[["All"]],
+        SEX == "M" ~ colors[["M"]],
+        SEX == "F" ~ colors[["F"]],
+        TRUE ~ NA_character_
+      ),
+      EXPOSURE = exposure
+    ) %>%
+    dplyr::filter(sig_label != "") %>%
+    dplyr::select(CELLTYPE, HORMONE, EXPOSURE, SEX, sig_label, sig_color)
+}
+
+plot_teer_ldh <- function(data, response_name, title, filename, y_label,
+                          sig_annotations = NULL, grid_break = NULL,
+                          sig_colors = c(M = SIG_COLOR_M, F = SIG_COLOR_F),
+                          output_path = PATH_OUTPUT_FIGS,
+                          alpha_q = ALPHA_Q) {
+  if (!all(c("M", "F") %in% names(sig_colors))) {
+    stop("sig_colors must include named colors for M and F.")
+  }
+  star_strata_caption <- "none"
+  if (!is.null(sig_annotations) && nrow(sig_annotations) > 0) {
+    star_strata_caption <- paste(unique(as.character(sig_annotations$SEX)), collapse = ", ")
+  }
+  d <- data %>%
+    dplyr::filter(!is.na(.data[[response_name]])) %>%
+    dplyr::mutate(
+      EXPOSURE = factor(EXPOSURE, levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)),
+      CELLTYPE = factor(as.character(CELLTYPE), levels = c("LAE", "SAE")),
+      HORMONE = factor(as.character(HORMONE), levels = c("NONE", "Estradiol")),
+      SEX = factor(as.character(SEX), levels = SEX_LEVELS)
+    )
+  bg_df <- tidyr::expand_grid(
+    CELLTYPE = factor(c("LAE", "SAE"), levels = c("LAE", "SAE")),
+    HORMONE = factor(c("NONE", "Estradiol"), levels = c("NONE", "Estradiol"))
+  ) %>%
+    dplyr::mutate(panel_fill = dplyr::if_else(
+      HORMONE == "Estradiol", ESTRADIOL_FILL_DEFAULT, "white"
+    ))
+  p <- ggplot2::ggplot(d, ggplot2::aes(x = EXPOSURE, y = .data[[response_name]])) +
+    ggplot2::geom_rect(
+      data = bg_df, ggplot2::aes(fill = panel_fill),
+      xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+      inherit.aes = FALSE, show.legend = FALSE
+    ) +
+    ggplot2::scale_fill_identity() +
+    ggnewscale::new_scale_fill() +
+    ggplot2::geom_boxplot(ggplot2::aes(fill = EXPOSURE),
+                          outlier.shape = NA, alpha = 0.25, na.rm = TRUE) +
+    ggplot2::geom_jitter(ggplot2::aes(color = SEX, shape = SEX),
+                         width = 0.12, height = 0, alpha = 0.8, size = 1.8,
+                         na.rm = TRUE) +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+    ggplot2::facet_grid(CELLTYPE ~ HORMONE, drop = FALSE) +
+    ggplot2::scale_fill_manual(values = color_exposure, drop = FALSE) +
+    ggplot2::scale_color_manual(
+      name = "Sex", values = sig_colors, drop = FALSE
+    ) +
+    ggplot2::scale_shape_manual(name = "Sex", values = c(M = 16, F = 17),
+                                drop = FALSE) +
+    ggplot2::scale_x_discrete(drop = FALSE) +
+    ggplot2::scale_y_continuous(
+      breaks = if (is.null(grid_break)) ggplot2::waiver() else
+        scales::breaks_width(grid_break),
+      expand = ggplot2::expansion(mult = c(0.02, 0.15))
+    ) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.background = ggplot2::element_rect(fill = NA, color = "grey35", linewidth = 1.2),
+      panel.grid.major.x = ggplot2::element_blank(),
+      panel.grid.major.y = if (is.null(grid_break)) ggplot2::element_blank() else
+        ggplot2::element_line(color = "grey85"),
+      panel.grid.minor = ggplot2::element_blank(),
+      axis.line.x = ggplot2::element_line(color = "grey35", linewidth = 0.6),
+      axis.ticks.x = ggplot2::element_line(color = "grey35", linewidth = 0.6),
+      axis.ticks.length.x = grid::unit(4, "pt"),
+      strip.background = ggplot2::element_rect(fill = "grey35", color = "grey35", linewidth = 1.2),
+      strip.text = ggplot2::element_text(color = "white", face = "bold", size = 11),
+      axis.text.x = ggplot2::element_text(angle = 30, hjust = 1, face = "bold", size = 11),
+      axis.text.y = ggplot2::element_text(face = "bold", size = 10),
+      axis.title.y = ggplot2::element_text(face = "bold"),
+      plot.title = ggplot2::element_text(face = "bold", size = 13, hjust = 0.5),
+      legend.position = "bottom"
+    ) +
+    ggplot2::labs(
+      title = title, x = NULL, y = y_label,
+      caption = paste0(
+        "Points are individual samples; boxplots show median, IQR (box), ",
+        "and whiskers extending to 1.5x IQR.\n",
+        "Points: M circles, F triangles; point color encodes sex. ",
+        "Significance-star colors encode strata: ", star_strata_caption,
+        " (BH-adjusted p < ", format(alpha_q, trim = TRUE), ")."
+      )
+    )
+  if (!is.null(sig_annotations) && nrow(sig_annotations) > 0) {
+    facet_range <- d %>%
+      dplyr::group_by(CELLTYPE, HORMONE) %>%
+      dplyr::summarise(y_range = diff(range(.data[[response_name]], na.rm = TRUE)),
+                       .groups = "drop")
+    y_max_by_facet <- d %>%
+      dplyr::group_by(CELLTYPE, HORMONE, EXPOSURE) %>%
+      dplyr::summarise(y_max = max(.data[[response_name]], na.rm = TRUE),
+                       .groups = "drop") %>%
+      dplyr::left_join(facet_range, by = c("CELLTYPE", "HORMONE"))
+    star_data <- sig_annotations %>%
+      dplyr::inner_join(y_max_by_facet,
+                        by = c("CELLTYPE", "HORMONE", "EXPOSURE")) %>%
+      dplyr::mutate(SEX = factor(SEX, levels = c("All", "M", "F"))) %>%
+      dplyr::arrange(CELLTYPE, HORMONE, EXPOSURE, SEX) %>%
+      dplyr::group_by(CELLTYPE, HORMONE, EXPOSURE) %>%
+      dplyr::mutate(stack_pos = dplyr::row_number(),
+                    y_star = y_max + y_range * (0.05 + 0.07 * (stack_pos - 1))) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(EXPOSURE = factor(EXPOSURE,
+                                      levels = c(PBS_LEVEL, ALL_HIGH_DOSE_EXPOSURES)))
+    p <- p +
+      ggnewscale::new_scale_color() +
+      ggplot2::geom_text(
+        data = star_data,
+        ggplot2::aes(x = EXPOSURE, y = y_star, label = sig_label, color = sig_color),
+        size = 5, fontface = "bold", inherit.aes = FALSE
+      ) +
+      # Keep significance-star colors separate from the SEX colors used for points.
+      ggplot2::scale_color_identity()
+  }
+  save_plot(filename, p, width = 12, height = 8, dpi = 300,
+            bg = "white", path = output_path)
+  p
+}
+
+make_plot_df <- function(df, grp_vars, sig_join, sig_col, cyt_order,
+                         e2_label, panel_fill_none,
+                         estradiol_fill = ESTRADIOL_FILL_DEFAULT) {
+  df %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(grp_vars))) %>%
+    dplyr::summarise(mean_log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
+    dplyr::mutate(CYTOKINE = factor(as.character(CYTOKINE), levels = cyt_order)) %>%
+    add_rescaled_size("mean_log2FC", transform = "none", out_col = "size_val") %>%
+    dplyr::left_join(sig_join, by = grp_vars) %>%
+    dplyr::mutate(
+      q = ifelse(is.na(q), 1, q),
+      !!sig_col := ifelse(is.na(.data[[sig_col]]), FALSE, .data[[sig_col]]),
+      panel_fill = ifelse(as.character(HORMONE) == e2_label,
+                          estradiol_fill, panel_fill_none),
+      direction = dplyr::case_when(
+        mean_log2FC > 0 ~ "Up", mean_log2FC < 0 ~ "Down", TRUE ~ "Zero"
+      )
+    )
 }
 
 # ── Cytokine dotplot (pooled or sex-stratified) ───────────────────────────────
@@ -758,21 +923,270 @@ make_cytokine_barplot_single_combo <- function(
     )
 }
 
+plot_sala_variance_summary <- function(vp_summary, vp_results,
+                                      exposure_levels = ALL_HIGH_DOSE_EXPOSURES,
+                                      output_path = NULL) {
+  vp_plots <- lapply(names(vp_results), function(exposure) {
+    variancePartition::plotVarPart(
+      variancePartition::sortCols(vp_results[[exposure]])
+    ) +
+      ggplot2::labs(title = exposure) +
+      ggplot2::theme(
+        plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 11),
+        axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 9)
+      )
+  })
+  p_vp_combined <- cowplot::plot_grid(
+    plotlist = vp_plots, nrow = 2, ncol = 2, labels = "AUTO", label_size = 12
+  )
+  p_smoker_dot <- vp_summary %>%
+    dplyr::select(Cytokine, Exposure, SMOKER) %>%
+    dplyr::mutate(
+      Exposure = factor(Exposure, levels = exposure_levels),
+      Cytokine = reorder(Cytokine, SMOKER, FUN = mean)
+    ) %>%
+    ggplot2::ggplot(ggplot2::aes(x = Exposure, y = Cytokine,
+                                 size = SMOKER, color = SMOKER)) +
+    ggplot2::geom_point(alpha = 0.85) +
+    ggplot2::scale_size_continuous(name = "% Variance", range = c(1, 8),
+                                   limits = c(0, NA)) +
+    ggplot2::scale_color_gradient(low = "grey80", high = UP_COLOR_DEFAULT,
+                                  name = "% Variance") +
+    ggplot2::labs(title = "SMOKER contribution to cytokine variance by fuel type",
+                  x = NULL, y = "Cytokine") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+      panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+      panel.grid.major = ggplot2::element_line(color = "gray88"),
+      axis.text.x = ggplot2::element_text(angle = 30, hjust = 1, face = "bold"),
+      axis.text.y = ggplot2::element_text(face = "bold"),
+      legend.position = "right"
+    )
+  if (!is.null(output_path)) {
+    save_plot("smoker_variance_partition_all_exposures.png", p_vp_combined,
+              width = 14, height = 10, dpi = 300, bg = "white", path = output_path)
+    save_plot("smoker_variance_summary_dotplot.png", p_smoker_dot,
+              width = 8, height = 7, dpi = 300, bg = "white", path = output_path)
+  }
+  list(variance_grid = p_vp_combined, smoker_dotplot = p_smoker_dot)
+}
+
+plot_sala_smoker_pca <- function(pca_df, variance_explained, last_exposure,
+                                 output_path = NULL,
+                                 exposure_colors = EXPOSURE_COLORS_DEEP) {
+  p_pca_smoker <- ggplot2::ggplot(
+    pca_df, ggplot2::aes(PC1, PC2, fill = SMOKER, color = SMOKER, shape = SEX)
+  ) +
+    ggplot2::stat_ellipse(ggplot2::aes(group = SMOKER), geom = "polygon",
+                          alpha = 0.12, linewidth = 0.6, show.legend = FALSE) +
+    ggplot2::geom_point(size = 3, alpha = 0.85, stroke = 0.8) +
+    ggplot2::scale_fill_manual(values = c(Y = UP_COLOR_DEFAULT, N = DOWN_COLOR_DEFAULT),
+                               labels = c(Y = "Smoker", N = "Non-smoker"),
+                               name = "Smoking status") +
+    ggplot2::scale_color_manual(values = c(Y = UP_COLOR_DEFAULT, N = DOWN_COLOR_DEFAULT),
+                                labels = c(Y = "Smoker", N = "Non-smoker"),
+                                name = "Smoking status") +
+    ggplot2::scale_shape_manual(values = c(M = 21, F = 22),
+                                labels = c(M = "Male", F = "Female"), name = "Sex") +
+    ggplot2::labs(
+      x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+      y = paste0("PC2 (", round(variance_explained[2], 1), "%)"),
+      title = "PCA — Cytokine profiles by smoking status",
+      subtitle = paste0("Last exposure: ", last_exposure, " + PBS")
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+      plot.subtitle = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey40"),
+      panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+      panel.grid.major = ggplot2::element_line(color = "gray88"),
+      panel.grid.minor = ggplot2::element_blank()
+    )
+  p_pca_exposure <- ggplot2::ggplot(
+    pca_df, ggplot2::aes(PC1, PC2, fill = EXPOSURE, color = EXPOSURE, shape = SMOKER)
+  ) +
+    ggplot2::stat_ellipse(ggplot2::aes(group = EXPOSURE), geom = "polygon",
+                          alpha = 0.12, linewidth = 0.6, show.legend = FALSE) +
+    ggplot2::geom_point(size = 3, alpha = 0.85, stroke = 0.8) +
+    ggplot2::scale_fill_manual(values = c(exposure_colors, PBS_Control = "grey50"),
+                               name = "Exposure") +
+    ggplot2::scale_color_manual(values = c(exposure_colors, PBS_Control = "grey50"),
+                                name = "Exposure") +
+    ggplot2::scale_shape_manual(values = c(Y = 24, N = 21),
+                                labels = c(Y = "Smoker", N = "Non-smoker"),
+                                name = "Smoking status") +
+    ggplot2::labs(
+      x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+      y = paste0("PC2 (", round(variance_explained[2], 1), "%)"),
+      title = "PCA — Cytokine profiles by exposure",
+      subtitle = "Shape = smoking status"
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+      plot.subtitle = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey40"),
+      panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+      panel.grid.major = ggplot2::element_line(color = "gray88"),
+      panel.grid.minor = ggplot2::element_blank()
+    )
+  combined <- cowplot::plot_grid(p_pca_smoker, p_pca_exposure, nrow = 1,
+                                 labels = c("A", "B"), label_size = 14)
+  if (!is.null(output_path)) {
+    save_plot("smoker_pca_combined.png", combined, width = 14, height = 6,
+              dpi = 300, bg = "white", path = output_path)
+  }
+  list(smoker = p_pca_smoker, exposure = p_pca_exposure, combined = combined)
+}
+
+plot_sala_factor_pca <- function(pca_df, pc_labels,
+                                 exposure_colors = EXPOSURE_COLORS_DEEP,
+                                 output_path = NULL) {
+  base_theme <- ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+      plot.subtitle = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey40"),
+      panel.border = ggplot2::element_rect(color = "black", fill = NA, linewidth = 0.5),
+      panel.grid.major = ggplot2::element_line(color = "gray88"),
+      panel.grid.minor = ggplot2::element_blank(),
+      strip.text = ggplot2::element_text(face = "bold")
+    )
+  panel <- function(variable, values, legend, title, shape = 21) {
+    ggplot2::ggplot(pca_df, ggplot2::aes(PC1, PC2, fill = .data[[variable]],
+                                        color = .data[[variable]])) +
+      ggplot2::stat_ellipse(ggplot2::aes(group = .data[[variable]]), geom = "polygon",
+                            alpha = 0.10, linewidth = 0.6, show.legend = FALSE) +
+      ggplot2::geom_point(shape = shape, size = 2.5, alpha = 0.85, stroke = 0.6) +
+      ggplot2::scale_fill_manual(values = values, name = legend) +
+      ggplot2::scale_color_manual(values = values, name = legend) +
+      ggplot2::labs(x = pc_labels["x"], y = pc_labels["y"], title = title) +
+      base_theme
+  }
+  plots <- list(
+    exposure = panel("EXPOSURE", c(exposure_colors, PBS_Control = "grey50"),
+                     "Exposure", "PCA — By Exposure (wood fuel)"),
+    airway = panel("CELLTYPE", c(SAE = DOWN_COLOR_DEFAULT, LAE = UP_COLOR_DEFAULT),
+                   "Airway", "PCA — By Airway (SAE vs LAE)"),
+    sex = panel("SEX", c(F = UP_COLOR_DEFAULT, M = DOWN_COLOR_DEFAULT),
+                "Sex", "PCA — By Sex"),
+    hormone = panel("HORMONE", c(NONE = "grey50", Estradiol = "#4DAF4A"),
+                    "Hormone", "PCA — By Hormone")
+  )
+  plot_file_names <- c(
+    exposure = "pca_by_exposure.png",
+    airway = "pca_by_airway.png",
+    sex = "pca_by_sex.png",
+    hormone = "pca_by_hormone.png"
+  )
+  if (!setequal(names(plots), names(plot_file_names))) {
+    stop("PCA plot names and individual output filenames must stay in sync.")
+  }
+  combined <- cowplot::plot_grid(
+    plotlist = plots, nrow = 2, ncol = 2, labels = "AUTO", label_size = 14
+  )
+  if (!is.null(output_path)) {
+    save_plot("pca_by_exposure_airway_sex_hormone.png", combined,
+              width = 14, height = 10, dpi = 300, bg = "white", path = output_path)
+    for (name in names(plot_file_names)) {
+      save_plot(plot_file_names[[name]], plots[[name]], width = 7, height = 6,
+                dpi = 300, bg = "white", path = output_path)
+    }
+  }
+  c(plots, list(combined = combined))
+}
+
+plot_rnaseq_vst_heatmap <- function(vst_matrix, sample_annotation,
+                                   top_n = 50L, filename = NULL) {
+  gene_variance <- apply(vst_matrix, 1, stats::var, na.rm = TRUE)
+  variable_gene_indices <- which(is.finite(gene_variance) & gene_variance > 0)
+  if (length(variable_gene_indices) < 2 || ncol(vst_matrix) < 2) {
+    message("RNA-seq heatmap skipped; at least two variable genes and samples are needed.")
+    return(invisible(NULL))
+  }
+  top_gene_indices <- utils::head(
+    variable_gene_indices[order(gene_variance[variable_gene_indices], decreasing = TRUE)],
+    top_n
+  )
+  args <- list(
+    mat = vst_matrix[top_gene_indices, , drop = FALSE],
+    scale = "row",
+    annotation_col = sample_annotation,
+    show_rownames = length(top_gene_indices) <= 30,
+    show_colnames = ncol(vst_matrix) <= 40,
+    clustering_method = "complete",
+    silent = TRUE
+  )
+  if (!is.null(filename)) {
+    dir.create(dirname(filename), recursive = TRUE, showWarnings = FALSE)
+    args$filename <- filename
+    args$width <- 14
+    args$height <- 10
+  }
+  do.call(pheatmap::pheatmap, args)
+}
+
+plot_rnaseq_vst_pca <- function(pca_scores, variance_pct) {
+  ggplot2::ggplot(
+    pca_scores, ggplot2::aes(x = PC1, y = PC2, color = INFECTION, shape = SEX)
+  ) +
+    ggplot2::geom_point(size = 3, alpha = 0.85) +
+    ggplot2::facet_wrap(~ AIRWAY, scales = "free") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::labs(
+      title = "HPIV3 RNA-seq PCA (VST)",
+      x = sprintf("PC1 (%.1f%%)", variance_pct[[1]]),
+      y = sprintf("PC2 (%.1f%%)", variance_pct[[2]]),
+      color = "Infection",
+      shape = "Sex"
+    )
+}
+
+plot_rnaseq_gene_overlap_summary <- function(membership_summary) {
+  ggplot2::ggplot(
+    membership_summary,
+    ggplot2::aes(x = membership_class, y = n_genes, fill = membership_class)
+  ) +
+    ggplot2::geom_col(show.legend = FALSE) +
+    ggplot2::facet_grid(airway ~ family, scales = "free_y") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::labs(
+      title = "Unique/shared significant-gene overlap across model contrasts",
+      x = NULL, y = "Genes"
+    )
+}
+
+plot_rnaseq_gene_overlap_upset <- function(family_membership, group_label) {
+  if (nrow(family_membership) == 0) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::theme_void() +
+        ggplot2::labs(
+          title = paste("Significant-gene overlap:", group_label),
+          subtitle = "No significant genes in the selected comparisons"
+        )
+    )
+  }
+  ggplot2::ggplot(family_membership, ggplot2::aes(x = sig_sets)) +
+    ggplot2::geom_bar(fill = "steelblue") +
+    ggupset::scale_x_upset(order_by = "freq") +
+    ggupset::theme_combmatrix(
+      combmatrix.panel.point.color.fill = "black",
+      combmatrix.panel.line.size = 0
+    ) +
+    ggplot2::theme_minimal(base_size = 10) +
+    ggplot2::labs(
+      title = paste("Significant-gene overlap:", group_label),
+      subtitle = "Intersections across up to 10 comparisons with the most DEGs",
+      x = NULL, y = "Number of genes"
+    )
+}
+
 plot_all_cytokine_single_combo_bars <- function(
-    df,
-    cytokines,
-    exposures  = ALL_HIGH_DOSE_EXPOSURES,
-    sexes      = c("M", "F"),
-    airways    = c("LAE", "SAE"),
-    sig_data   = NULL,
-    save       = TRUE,
-    out_subdir = "single_combo_barplots",
-    width      = 8,
-    height     = 5,
-    dpi        = 150
-) {
+    df, cytokines, exposures = ALL_HIGH_DOSE_EXPOSURES,
+    sexes = c("M", "F"), airways = c("LAE", "SAE"),
+    sig_data = NULL, save = TRUE, out_subdir = "single_combo_barplots",
+    width = 8, height = 5, dpi = 150) {
   out <- list()
-  
   if (!is.null(sig_data)) {
     required_sig_cols <- c("CELLTYPE", "HORMONE", "SEX", "EXPOSURE", "CYTOKINE", "q")
     missing_sig_cols <- setdiff(required_sig_cols, names(sig_data))
@@ -780,7 +1194,6 @@ plot_all_cytokine_single_combo_bars <- function(
       stop("sig_data is missing required columns: ", paste(missing_sig_cols, collapse = ", "))
     }
   }
-  
   if (save) {
     ensure_dir(here::here(PATH_OUTPUT_FIGS, out_subdir))
   }

@@ -118,6 +118,7 @@ build_sala_full <- function(sala_avg, metadata) {
       } else {
         joined[[field]] <- joined[[meta_field]]
       }
+
     }
   }
 
@@ -135,6 +136,30 @@ build_sala_full <- function(sala_avg, metadata) {
   }
 
   joined
+}
+
+ensure_all_analyzed_for_export <- function(df,
+                                           cytokine_col = "CYTOKINE",
+                                           q_col = "q",
+                                           sig_col = "sig",
+                                           ref_cytokines = NULL) {
+  stopifnot(cytokine_col %in% names(df))
+  if (!q_col %in% names(df)) df[[q_col]] <- NA_real_
+  if (!sig_col %in% names(df)) df[[sig_col]] <- NA
+
+  if (!is.null(ref_cytokines)) {
+    missing_cyts <- setdiff(ref_cytokines, unique(df[[cytokine_col]]))
+    if (length(missing_cyts) > 0) {
+      stub <- tibble::tibble(!!cytokine_col := missing_cyts)
+      df <- dplyr::bind_rows(df, stub)
+    }
+  }
+
+  df %>%
+    dplyr::mutate(
+      analyzed_by_model = !is.na(.data[[q_col]]),
+      !!sig_col := dplyr::coalesce(.data[[sig_col]], FALSE)
+    )
 }
 
 extract_hpiv3_sample_components <- function(sample_names) {
@@ -666,6 +691,110 @@ build_hpiv3_analysis_data <- function(
       unmatched_metadata_ids = unmatched_metadata_ids,
       metadata_mismatches = mismatch_table
     )
+  )
+}
+
+filter_rnaseq_count_matrix <- function(
+    count_matrix,
+    sample_metadata,
+    strata_cols,
+    cpm_threshold,
+    min_sample_fraction,
+    min_total_count,
+    include_qc = TRUE) {
+  count_matrix <- as.matrix(count_matrix)
+  if (is.null(rownames(count_matrix)) || is.null(colnames(count_matrix)) ||
+      any(!is.finite(count_matrix)) ||
+      any(count_matrix < 0)) {
+    stop("count_matrix must be a named matrix of finite, non-negative counts.")
+  }
+  if (!is.data.frame(sample_metadata) || length(strata_cols) == 0 ||
+      !all(c("SAMPLENAME", strata_cols) %in% names(sample_metadata))) {
+    stop("sample_metadata must include SAMPLENAME and all requested stratum columns.")
+  }
+  if (anyDuplicated(sample_metadata$SAMPLENAME) ||
+      !setequal(colnames(count_matrix), sample_metadata$SAMPLENAME)) {
+    stop("count_matrix columns must match unique sample_metadata SAMPLENAME values.")
+  }
+  if (length(cpm_threshold) != 1 || !is.numeric(cpm_threshold) ||
+      !is.finite(cpm_threshold) || cpm_threshold < 0 ||
+      length(min_sample_fraction) != 1 || !is.numeric(min_sample_fraction) ||
+      !is.finite(min_sample_fraction) || min_sample_fraction < 0 ||
+      min_sample_fraction > 1 ||
+      length(min_total_count) != 1 || !is.numeric(min_total_count) ||
+      !is.finite(min_total_count) || min_total_count < 0) {
+    stop("RNA-seq filter thresholds must be non-negative; min_sample_fraction must be in [0, 1].")
+  }
+
+  sample_metadata <- sample_metadata[
+    match(colnames(count_matrix), sample_metadata$SAMPLENAME),
+    ,
+    drop = FALSE
+  ]
+  library_sizes <- colSums(count_matrix)
+  # Zero-library columns contain only zeros; a unit denominator keeps their CPM at zero.
+  safe_library_sizes <- ifelse(library_sizes == 0, 1, library_sizes)
+  cpm_matrix <- sweep(count_matrix, 2, safe_library_sizes / 1e6, "/")
+
+  stratum_values <- unique(sample_metadata[, strata_cols, drop = FALSE])
+  stratum_qc_rows <- if (include_qc) vector("list", nrow(stratum_values)) else NULL
+  passes_any_stratum <- rep(FALSE, nrow(count_matrix))
+  for (i in seq_len(nrow(stratum_values))) {
+    stratum_i <- stratum_values[i, , drop = FALSE]
+    sample_idx <- rep(TRUE, nrow(sample_metadata))
+    for (column in strata_cols) {
+      value_i <- as.character(stratum_i[[column]][[1]])
+      if (is.na(value_i)) {
+        sample_idx <- sample_idx & is.na(sample_metadata[[column]])
+      } else {
+        sample_idx <- sample_idx & !is.na(sample_metadata[[column]]) &
+          as.character(sample_metadata[[column]]) == value_i
+      }
+    }
+    sample_names_i <- sample_metadata$SAMPLENAME[sample_idx]
+    fraction_above <- if (length(sample_names_i) == 0) {
+      rep(0, nrow(cpm_matrix))
+    } else {
+      rowMeans(cpm_matrix[, sample_names_i, drop = FALSE] >= cpm_threshold)
+    }
+    passes_stratum <- fraction_above >= min_sample_fraction
+    passes_any_stratum <- passes_any_stratum | passes_stratum
+    if (include_qc) {
+      stratum_row <- tibble::tibble(GENEID = rownames(cpm_matrix))
+      for (column in strata_cols) {
+        stratum_row[[column]] <- as.character(stratum_i[[column]][[1]])
+      }
+      stratum_row$n_samples <- length(sample_names_i)
+      stratum_row$fraction_above_cpm <- fraction_above
+      stratum_row$passes_stratum <- passes_stratum
+      stratum_qc_rows[[i]] <- stratum_row
+    }
+  }
+  total_counts <- rowSums(count_matrix)
+  if (!include_qc) {
+    return(list(keep_genes = total_counts >= min_total_count & passes_any_stratum))
+  }
+  stratum_qc <- dplyr::bind_rows(stratum_qc_rows)
+  gene_status <- stratum_qc %>%
+    dplyr::group_by(GENEID) %>%
+    dplyr::summarise(
+      max_fraction_above_cpm = max(fraction_above_cpm, na.rm = TRUE),
+      passes_any_stratum = any(passes_stratum),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      total_count = unname(total_counts[match(GENEID, names(total_counts))]),
+      passes_total_count = total_count >= min_total_count,
+      included = passes_any_stratum & passes_total_count,
+      cpm_threshold = cpm_threshold,
+      min_sample_fraction = min_sample_fraction,
+      min_total_count = min_total_count
+    )
+  keep_genes <- gene_status$included[match(rownames(count_matrix), gene_status$GENEID)]
+  list(
+    keep_genes = keep_genes,
+    stratum_qc = stratum_qc,
+    gene_status = gene_status
   )
 }
 
