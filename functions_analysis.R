@@ -384,6 +384,7 @@ fit_rnaseq_design <- function(core_factors, model_data, model_factors, dge_split
     voom_i <- variancePartition::voomWithDreamWeights(
       dge_split, full_formula, data = model_data
     )
+    # Validate the baseline model now; contrast-specific fits reuse voom_i below.
     variancePartition::dream(voom_i, full_formula, data = model_data)
     voom_i
   }, error = function(e) e)

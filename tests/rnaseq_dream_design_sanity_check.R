@@ -41,10 +41,17 @@ rmd_text <- paste(rmd_lines, collapse = "\n")
 analysis_path <- file.path(dirname(rmd_path), "functions_analysis.R")
 analysis_expressions <- parse(analysis_path)
 helper_env <- new.env(parent = globalenv())
+helper_names <- c(
+  "family_spec", "selector_slug", "validate_factor_vector",
+  "selector_comparison_description", "validate_rnaseq_spec",
+  "observed_factor_levels", "factor_contrast_options",
+  "contrast_label_for", "build_contrast_weights"
+)
 for (expr in analysis_expressions) {
   if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
       is.symbol(expr[[2]]) && is.call(expr[[3]]) &&
-      identical(expr[[3]][[1]], as.name("function"))) {
+      identical(expr[[3]][[1]], as.name("function")) &&
+      as.character(expr[[2]]) %in% helper_names) {
     eval(expr, envir = helper_env)
   }
 }

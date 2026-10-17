@@ -729,6 +729,7 @@ if (!RUN_RNASEQ_CAMPAIGN) {
     # remains estimable even when some unrelated factor's cells are
     # unbalanced with respect to it. Fits are cached by their factor set so
     # repeated TESTS/REPORT_WITHIN combinations reuse the same voom/dream fit.
+    # Each get_or_fit call reassigns fit_cache from the returned cache state.
     fit_cache <- list()
 
     for (test in VALID_TESTS) {
